@@ -96,6 +96,10 @@ const phase: Check = {
   test: (v) => PHASES.some((p) => p.id === v),
   expected: `one of ${PHASES.map((p) => `"${p.id}"`).join(", ")}`,
 };
+const phaseList: Check = {
+  test: (v) => Array.isArray(v) && v.every((item) => phase.test(item)),
+  expected: `an array of ${phase.expected}`,
+};
 
 type Shape = Record<string, { check: Check; optional?: boolean }>;
 
@@ -223,6 +227,34 @@ const HANDLERS: { [M in BoundMethod]: Handler<M> } = {
   listMembers(ctx, params) {
     validate("listMembers", params, {});
     return ctx.core.listMembers();
+  },
+  requestAttention(ctx, params, member) {
+    const p = validate("requestAttention", params, {
+      id: { check: integer },
+      to: { check: integer },
+      note: { check: string },
+      moves: { check: phaseList, optional: true },
+    });
+    return ctx.core.requestAttention(
+      p.id as number,
+      {
+        to: p.to as number,
+        note: p.note as string,
+        moves: p.moves as Methods["requestAttention"]["params"]["moves"],
+      },
+      member.id,
+    );
+  },
+  resolveAttention(ctx, params, member) {
+    const p = validate("resolveAttention", params, {
+      id: { check: integer },
+      text: { check: string, optional: true },
+    });
+    return ctx.core.resolveAttention(p.id as number, p.text as string | undefined, member.id);
+  },
+  listAttention(ctx, params) {
+    const p = validate("listAttention", params, { to: { check: integer, optional: true } });
+    return ctx.core.listAttention(p.to === undefined ? {} : { to: p.to as number });
   },
   subscribe(ctx, params) {
     const p = validate("subscribe", params, { since: { check: integer, optional: true } });

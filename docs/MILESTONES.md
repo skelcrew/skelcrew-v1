@@ -130,6 +130,17 @@ Findings and decisions from the spec workflow itself, newest last:
   is stored client-side. Path discovery (`findRepoRoot`, `resolveDataDir`, `dataPaths`)
   lives in `@skelcrew/shared` so the CLI and the daemon find the same socket from the same
   walk; a dead socket is reported, never removed or auto-started, by a client.
+- **"Waiting" is `Card.attention`, and `SKELCREW_NOTIFY` overrides the notifier (010).** A
+  card is waiting on someone exactly when its `attention` is non-null: `{ to, note, moves,
+  raisedBy, raisedAt }`, one per card, replaced on re-raise, stored as a JSON column and
+  listed by `listAttention` in raise order. It resolves by a move to another phase, by
+  archiving, or by `resolveAttention` (`skelcrew resolve`, the addressee's or the owner's
+  answer) — never by a bare comment — each recorded as `attention_resolved { how }`. The
+  CLI's no-command default is `queue`, and `skelcrew watch` tails the activity stream and
+  pings the invoking member's requests through `osascript` on macOS or `notify-send` on
+  PATH; `SKELCREW_NOTIFY=<command>` replaces that with a command receiving the title and text
+  as arguments, which is how tests record pings without notifying anyone. 009's "queued" and
+  "running" are the other two statuses of the same derived kind.
 
 ## 001 — Project scaffold
 

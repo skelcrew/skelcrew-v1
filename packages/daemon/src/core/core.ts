@@ -9,6 +9,7 @@ import { userInfo } from "node:os";
 import {
   type Activity,
   type ActivityEvent,
+  type Attention,
   BODY_MAX_BYTES,
   BRANCH_MAX_BYTES,
   type Card,
@@ -19,6 +20,7 @@ import {
   MEMBER_NAME_MAX_BYTES,
   type Member,
   type MemberKind,
+  type OpenAttention,
   PHASES,
   type Phase,
   type PhaseDef,
@@ -45,6 +47,21 @@ export interface Core {
   setRefs(id: number, refs: CardRefs, actorId: number): Card;
   archiveCard(id: number, actorId: number): Card;
 
+  /**
+   * Hands the card to member `to` with a note and the phases suggested as resolutions.
+   * Replaces an open request. Resolved by a move to another phase, by archiving, or by
+   * `resolveAttention`; never by a comment alone.
+   */
+  requestAttention(
+    id: number,
+    request: { to: number; note: string; moves?: Phase[] },
+    actorId: number,
+  ): Card;
+  /** Answers the open request. Only the addressee or the owner may; `text` is a comment first. */
+  resolveAttention(id: number, text: string | undefined, actorId: number): Card;
+  /** Open requests, oldest first, optionally only those addressed to `to`. */
+  listAttention(options?: { to?: number }): OpenAttention[];
+
   /** Every event with `seq` greater than the given one, in `seq` order. */
   activitySince(seq: number): Activity[];
   /** Delivers every event as it is recorded, in `seq` order. Returns the unsubscribe. */
@@ -66,6 +83,7 @@ interface CardRow {
   body: string;
   phase: Phase;
   refs: string;
+  attention: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -94,6 +112,7 @@ function toCard(row: CardRow): Card {
     body: row.body,
     phase: row.phase,
     refs: JSON.parse(row.refs) as CardRefs,
+    attention: row.attention === null ? null : (JSON.parse(row.attention) as Attention),
     archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -240,6 +259,19 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
   const updateArchived = db.query<never, [number, number, number]>(
     "UPDATE cards SET archived_at = ?, updated_at = ? WHERE id = ?",
   );
+  const updateAttention = db.query<never, [string | null, number, number]>(
+    "UPDATE cards SET attention = ?, updated_at = ? WHERE id = ?",
+  );
+  // Oldest first means raise order: the seq of the card's latest `attention_requested`,
+  // which two raises in the same millisecond still tell apart.
+  const RAISED_SEQ =
+    "(SELECT MAX(seq) FROM activity WHERE activity.card_id = cards.id AND activity.type = 'attention_requested')";
+  const selectOpenAttention = db.query<CardRow, []>(
+    `SELECT * FROM cards WHERE attention IS NOT NULL ORDER BY ${RAISED_SEQ}`,
+  );
+  const selectOpenAttentionTo = db.query<CardRow, [number]>(
+    `SELECT * FROM cards WHERE attention IS NOT NULL AND json_extract(attention, '$.to') = ? ORDER BY ${RAISED_SEQ}`,
+  );
 
   const selectCardActivity = db.query<ActivityRow, [number]>(
     "SELECT * FROM activity WHERE card_id = ? ORDER BY seq",
@@ -274,6 +306,28 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
       throw new CoreError("invalid", `card ${id} is archived`);
     }
     return card;
+  }
+
+  /** The note as stored: non-empty and within the comment cap, like a comment. */
+  function requireText(what: "comment" | "note", text: string): void {
+    if (typeof text !== "string" || text.trim().length === 0) {
+      throw new CoreError("invalid", `${what} must not be empty`);
+    }
+    if (byteLength(text) > COMMENT_MAX_BYTES) {
+      throw new CoreError("invalid", `${what} exceeds ${COMMENT_MAX_BYTES} bytes`);
+    }
+  }
+
+  function validateMoves(moves: unknown): Phase[] {
+    if (moves === undefined) return [];
+    if (!Array.isArray(moves)) throw new CoreError("invalid", "moves must be an array of phases");
+    for (let i = 0; i < moves.length; i += 1) {
+      const move: unknown = moves[i];
+      if (typeof move !== "string" || !phaseDef(move as Phase)) {
+        throw new CoreError("invalid", `unknown phase "${String(move)}" in moves`);
+      }
+    }
+    return moves as Phase[];
   }
 
   /**
@@ -416,8 +470,14 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
           });
           return error;
         }
-        updatePhase.run(phase, Date.now(), id);
+        const now = Date.now();
+        updatePhase.run(phase, now, id);
         log(id, actorId, { type: "card_moved", data: { from: from.id, to: phase } });
+        // The move is the decision: an open request resolves in the same transaction.
+        if (card.attention !== null) {
+          updateAttention.run(null, now, id);
+          log(id, actorId, { type: "attention_resolved", data: { how: "moved", phase } });
+        }
         return readCard(id);
       });
     },
@@ -440,10 +500,7 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
       return mutate((log) => {
         getMember(actorId);
         readCard(id);
-        if (text.trim().length === 0) throw new CoreError("invalid", "comment must not be empty");
-        if (byteLength(text) > COMMENT_MAX_BYTES) {
-          throw new CoreError("invalid", `comment exceeds ${COMMENT_MAX_BYTES} bytes`);
-        }
+        requireText("comment", text);
         return log(id, actorId, { type: "comment", data: { text } });
       });
     },
@@ -467,7 +524,72 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
         const now = Date.now();
         updateArchived.run(now, now, id);
         log(id, actorId, { type: "card_archived", data: {} });
+        if (card.attention !== null) {
+          updateAttention.run(null, now, id);
+          log(id, actorId, { type: "attention_resolved", data: { how: "archived" } });
+        }
         return readCard(id);
+      });
+    },
+
+    requestAttention(id, request, actorId) {
+      return mutate((log) => {
+        getMember(actorId);
+        readMutableCard(id);
+        const to = getMember(request.to).id;
+        requireText("note", request.note);
+        const moves = validateMoves(request.moves);
+        const now = Date.now();
+        const attention: Attention = {
+          to,
+          note: request.note,
+          moves,
+          raisedBy: actorId,
+          raisedAt: now,
+        };
+        updateAttention.run(JSON.stringify(attention), now, id);
+        // The event carries the record itself, so a consumer can match it to the card's
+        // open request by value rather than by comparing two clock reads.
+        log(id, actorId, { type: "attention_requested", data: attention });
+        return readCard(id);
+      });
+    },
+
+    resolveAttention(id, text, actorId) {
+      return mutate((log) => {
+        const actor = getMember(actorId);
+        const card = readCard(id);
+        if (card.attention === null) {
+          throw new CoreError("invalid", `card ${id} has no open attention request`);
+        }
+        // Fails closed: an agent cannot clear a request addressed to someone else.
+        if (actor.kind !== "human" && actor.id !== card.attention.to) {
+          throw new CoreError(
+            "forbidden",
+            `card ${id} is waiting on member ${card.attention.to}; ${actor.name} may not resolve it`,
+          );
+        }
+        if (text !== undefined) {
+          requireText("comment", text);
+          log(id, actorId, { type: "comment", data: { text } });
+        }
+        updateAttention.run(null, Date.now(), id);
+        log(id, actorId, { type: "attention_resolved", data: { how: "answered" } });
+        return readCard(id);
+      });
+    },
+
+    listAttention(options = {}) {
+      let rows: CardRow[];
+      if (options.to === undefined) {
+        rows = selectOpenAttention.all();
+      } else {
+        requireId("member", options.to);
+        rows = selectOpenAttentionTo.all(options.to);
+      }
+      return rows.map((row) => {
+        const card = toCard(row);
+        return { cardId: card.id, ...(card.attention as Attention) };
       });
     },
 

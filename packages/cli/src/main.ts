@@ -15,15 +15,32 @@ import {
 } from "@skelcrew/shared";
 import { add } from "./commands/add";
 import { archive } from "./commands/archive";
+import { attention } from "./commands/attention";
 import { body } from "./commands/body";
 import { type Args, type Command, UsageError } from "./commands/command";
 import { comment } from "./commands/comment";
 import { ls } from "./commands/ls";
 import { mv } from "./commands/mv";
+import { queue } from "./commands/queue";
 import { refs } from "./commands/refs";
+import { resolve } from "./commands/resolve";
 import { show } from "./commands/show";
+import { watch } from "./commands/watch";
 
-const COMMANDS: Record<string, Command> = { add, ls, show, comment, mv, body, refs, archive };
+const COMMANDS: Record<string, Command> = {
+  queue,
+  add,
+  ls,
+  show,
+  comment,
+  mv,
+  body,
+  refs,
+  archive,
+  attention,
+  resolve,
+  watch,
+};
 
 const GLOBAL_OPTIONS: ParseArgsOptionsConfig = {
   as: { type: "string" },
@@ -40,6 +57,7 @@ function usage(name?: string): string {
   return [
     "usage:",
     ...lines,
+    ...(name === undefined ? ["", "  skelcrew with no command is: skelcrew queue"] : []),
     "",
     "options:",
     "  --as <name>   speak as that agent member (or set SKELCREW_AS); default: the owner",
@@ -72,15 +90,13 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`skelcrew ${VERSION}\n`);
     return 0;
   }
-  const name = loose.positionals[0];
-  if (name === undefined || name === "help") {
-    if (name === "help" || loose.values.help === true) {
-      process.stdout.write(`${usage()}\n`);
-      return 0;
-    }
-    fail("missing <command>", usage());
-    return 2;
+  const word = loose.positionals[0];
+  if (word === "help" || (word === undefined && loose.values.help === true)) {
+    process.stdout.write(`${usage()}\n`);
+    return 0;
   }
+  // No command is the home view: what is waiting on the invoking member.
+  const name = word ?? "queue";
   const command = COMMANDS[name];
   if (command === undefined) {
     fail(`unknown command "${name}"`, usage());
@@ -150,7 +166,9 @@ async function main(argv: string[]): Promise<number> {
     const outcome = await command.run(
       {
         client,
+        socketPath,
         stdin: () => Bun.stdin.text(),
+        out: (line) => process.stdout.write(`${line}\n`),
         warn: (line) => process.stderr.write(`${line}\n`),
       },
       input,

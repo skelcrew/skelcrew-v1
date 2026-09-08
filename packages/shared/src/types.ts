@@ -16,6 +16,23 @@ export interface CardRefs {
   prUrl?: string;
 }
 
+/**
+ * A pending decision: the card is handed to `to` with a note and the phases the raiser
+ * suggests as resolutions. A card has at most one; raising again replaces it.
+ */
+export interface Attention {
+  to: number;
+  note: string;
+  moves: Phase[];
+  raisedBy: number;
+  raisedAt: number;
+}
+
+/** An open request as `listAttention` returns it: the request plus the card it is on. */
+export interface OpenAttention extends Attention {
+  cardId: number;
+}
+
 export interface Card {
   id: number;
   title: string;
@@ -23,6 +40,8 @@ export interface Card {
   body: string;
   phase: Phase;
   refs: CardRefs;
+  /** Who the card is waiting on, or null. "Waiting" is this being non-null. */
+  attention: Attention | null;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -56,7 +75,16 @@ export type ActivityEvent =
   | { type: "body_set"; data: { bytes: number } }
   | { type: "comment"; data: { text: string } }
   | { type: "refs_set"; data: { refs: CardRefs } }
-  | { type: "card_archived"; data: Record<string, never> };
+  | { type: "card_archived"; data: Record<string, never> }
+  /** The same fields as `Card.attention`, so an event can be matched to the open request. */
+  | { type: "attention_requested"; data: Attention }
+  | { type: "attention_resolved"; data: AttentionResolution };
+
+/** How an open request went away. The resolving actor is the event's `actorId`. */
+export type AttentionResolution =
+  | { how: "moved"; phase: Phase }
+  | { how: "archived" }
+  | { how: "answered" };
 
 export type ActivityType = ActivityEvent["type"];
 

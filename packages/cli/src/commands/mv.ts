@@ -1,18 +1,8 @@
-import { type Card, PHASES, type Phase } from "@skelcrew/shared";
+import type { Card, Phase } from "@skelcrew/shared";
 import { formatId, phaseName } from "../render";
-import { type Command, noExtraPositionals, parseId, string, UsageError } from "./command";
+import { type Command, noExtraPositionals, parseId, parsePhase, string } from "./command";
 
 type Input = { id: number; phase: Phase; message?: string };
-
-function parsePhase(raw: string | undefined): Phase {
-  if (raw === undefined) throw new UsageError("missing <phase>");
-  const phase = PHASES.find((p) => p.id === raw.toLowerCase());
-  if (!phase) {
-    const ids = PHASES.map((p) => p.id).join(", ");
-    throw new UsageError(`unknown phase "${raw}"; expected one of ${ids}`);
-  }
-  return phase.id;
-}
 
 /** Moves first, then comments: a rejected move posts nothing. */
 export const mv: Command<Input, Card> = {

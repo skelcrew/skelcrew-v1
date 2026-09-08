@@ -38,6 +38,11 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX activity_card_seq ON activity (card_id, seq);
   `,
+  // 010: the open attention request, as JSON `{ to, note, moves, raisedBy, raisedAt }` or
+  // NULL. One request per card, so it is a column of the card, like phase.
+  `
+  ALTER TABLE cards ADD COLUMN attention TEXT;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

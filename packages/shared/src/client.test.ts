@@ -190,6 +190,27 @@ test("a pending call rejects when the server closes the connection", async () =>
   await expect(client.call("listCards", {})).rejects.toThrow(/closed/);
 });
 
+test("closed resolves when the server goes away, and after close()", async () => {
+  serve(answerHello());
+  const client = await connect(socketPath, { kind: "human" });
+  let settled = false;
+  client.closed.then(() => {
+    settled = true;
+  });
+  await settle();
+  expect(settled).toBe(false);
+
+  listener?.stop(true);
+  listener = undefined;
+  await client.closed;
+  expect(settled).toBe(true);
+
+  serve(answerHello());
+  const second = await connect(socketPath, { kind: "human" });
+  await second.close();
+  await second.closed;
+});
+
 test("subscribe and unsubscribe send their requests, and activity notifications reach the handler", async () => {
   const event: Activity = {
     seq: 1,

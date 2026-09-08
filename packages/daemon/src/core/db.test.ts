@@ -97,3 +97,97 @@ test("a database with a newer schema version is refused and left untouched", () 
   expect(readFileSync(path).equals(before)).toBe(true);
   expect(userVersion(path)).toBe(newer);
 });
+
+test("open attention requests survive close and reopen", () => {
+  const first = openCore(path, { owner: "simon" });
+  const owner = first.listMembers()[0];
+  if (!owner) throw new Error("no owner");
+  const agent = first.ensureMember("crew-1", "agent");
+  const a = first.createCard({ title: "a" }, owner.id);
+  const b = first.createCard({ title: "b" }, owner.id);
+  first.requestAttention(b.id, { to: owner.id, note: "spec ready", moves: ["code"] }, agent.id);
+  first.requestAttention(a.id, { to: agent.id, note: "please" }, owner.id);
+  const snapshot = { list: first.listAttention(), cards: first.listCards() };
+  expect(snapshot.list.map((r) => r.cardId)).toEqual([b.id, a.id]);
+  first.close();
+
+  const second = openCore(path, { owner: "simon" });
+  try {
+    expect(second.listAttention()).toEqual(snapshot.list);
+    expect(second.listAttention({ to: owner.id }).map((r) => r.cardId)).toEqual([b.id]);
+    expect(second.listCards()).toEqual(snapshot.cards);
+    expect(second.getCard(b.id).attention).toEqual(snapshot.cards[1]?.attention ?? null);
+  } finally {
+    second.close();
+  }
+});
+
+/** The 002 schema, verbatim: what a database written before this spec's migration holds. */
+const SCHEMA_002 = `
+  CREATE TABLE members (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    kind       TEXT    NOT NULL CHECK (kind IN ('human', 'agent')),
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX members_name_kind ON members (name, kind);
+  CREATE TABLE cards (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT    NOT NULL,
+    body        TEXT    NOT NULL DEFAULT '',
+    phase       TEXT    NOT NULL CHECK (phase IN ('idea', 'spec', 'code', 'pr', 'done')),
+    refs        TEXT    NOT NULL DEFAULT '{}',
+    archived_at INTEGER,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+  );
+  CREATE TABLE activity (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id    INTEGER REFERENCES cards (id),
+    actor_id   INTEGER NOT NULL REFERENCES members (id),
+    type       TEXT    NOT NULL,
+    data       TEXT    NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX activity_card_seq ON activity (card_id, seq);
+  PRAGMA user_version = 1;
+`;
+
+test("a database created by 002's schema migrates forward and its cards read back with attention null", () => {
+  const raw = new Database(path, { create: true });
+  raw.exec(SCHEMA_002);
+  raw.exec("INSERT INTO members (name, kind, created_at) VALUES ('simon', 'human', 1)");
+  raw.exec(
+    `INSERT INTO cards (title, body, phase, refs, created_at, updated_at) VALUES ('old', 'b', 'spec', '{"branch":"feat/x"}', 1, 2)`,
+  );
+  raw.exec(
+    `INSERT INTO activity (card_id, actor_id, type, data, created_at) VALUES (1, 1, 'card_created', '{"title":"old"}', 1)`,
+  );
+  raw.close();
+  expect(userVersion(path)).toBe(1);
+
+  const core = openCore(path, { owner: "someone-else" });
+  try {
+    expect(core.listMembers().map((m) => m.name)).toEqual(["simon"]);
+    const [card] = core.listCards();
+    expect(card).toEqual({
+      id: 1,
+      title: "old",
+      body: "b",
+      phase: "spec",
+      refs: { branch: "feat/x" },
+      attention: null,
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    expect(core.getCard(1).attention).toBeNull();
+    expect(core.getCard(1).activity).toHaveLength(1);
+    expect(core.listAttention()).toEqual([]);
+    core.requestAttention(1, { to: 1, note: "after the migration" }, 1);
+    expect(core.listAttention().map((r) => r.cardId)).toEqual([1]);
+  } finally {
+    core.close();
+  }
+  expect(userVersion(path)).toBe(SCHEMA_VERSION);
+});

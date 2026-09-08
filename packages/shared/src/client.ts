@@ -38,6 +38,8 @@ export interface Client {
   unsubscribe(): Promise<void>;
   /** Rejects every pending `call`; resolves once the socket has closed. */
   close(): Promise<void>;
+  /** Resolves once the connection has closed, from either side. Never rejects. */
+  readonly closed: Promise<void>;
 }
 
 interface Pending {
@@ -151,8 +153,14 @@ export async function connect(socketPath: string, hello: HelloParams): Promise<C
     throw error;
   }
 
+  const closedPromise = new Promise<void>((resolve) => {
+    if (closed) resolve();
+    else closeWaiters.push(resolve);
+  });
+
   return {
     member: greeting.member,
+    closed: closedPromise,
     call,
     async subscribe(next, since) {
       handler = next;

@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +17,7 @@ import {
   type Card,
   type CardDetail,
   type Member,
+  type OpenAttention,
   PHASES,
   TITLE_MAX_BYTES,
   VERSION,
@@ -24,6 +33,7 @@ let core: Core;
 let server: { stop(): void };
 const extraServers: Array<{ stop(): void }> = [];
 const extraDirs: string[] = [];
+const watchers: Array<{ kill(): void }> = [];
 
 beforeEach(() => {
   // Real path: macOS's temp dir is a symlink, and the CLI names the path it resolved.
@@ -34,6 +44,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const w of watchers.splice(0)) w.kill();
   for (const s of extraServers.splice(0)) s.stop();
   server.stop();
   core.close();
@@ -332,7 +343,6 @@ test("usage errors exit 2 and daemon errors exit 1, with stdout empty", async ()
   expect(notFound).toContain("999");
 
   await failed(2, ["frob"]);
-  await failed(2, []);
   await failed(2, ["show"]);
   await failed(2, ["show", "abc"]);
   await failed(2, ["ls", "--bogus"]);
@@ -532,4 +542,438 @@ test("from a subdirectory of a git repository the CLI reaches the daemon on <roo
   const run = await ok(["ls"], { dataDir: null, cwd: nested });
   expect(run.stdout).toContain("in the repo");
   expect(existsSync(join(nested, ".skelcrew"))).toBe(false);
+});
+
+// --- attention requests (010) ---
+
+function openAttention(): OpenAttention[] {
+  return core.listAttention();
+}
+
+test("no command and queue print what waits on the invoking member; --json is listAttention", async () => {
+  core.createCard({ title: "First card" }, member("simon").id);
+  core.createCard({ title: "Second" }, member("simon").id);
+
+  const empty = await ok([]);
+  expect(empty.stdout.toLowerCase()).toContain("nothing");
+  expect(await ok(["queue"])).toEqual(empty);
+  expect(json<OpenAttention[]>(await ok(["queue", "--json"]))).toEqual([]);
+
+  await ok(["attention", "1", "spec ready", "--move", "code", "--as", "crew-1"]);
+  const crew = member("crew-1");
+  expect(core.getCard(1).attention).toMatchObject({
+    to: member("simon").id,
+    note: "spec ready",
+    moves: ["code"],
+    raisedBy: crew.id,
+  });
+
+  const home = await ok([]);
+  for (const fragment of [
+    "#1",
+    "First card",
+    "Idea",
+    "crew-1",
+    "spec ready",
+    "skelcrew mv 1 code",
+    "skelcrew resolve 1",
+    localTime(core.getCard(1).attention?.raisedAt as number),
+  ]) {
+    expect(home.stdout).toContain(fragment);
+  }
+  expect(home.stdout).not.toContain("#2");
+  expect(await ok(["queue"])).toEqual(home);
+  expect(json<OpenAttention[]>(await ok(["queue", "--json"]))).toEqual(
+    core.listAttention({ to: member("simon").id }),
+  );
+
+  // Addressed to crew-1: not in the owner's queue, in crew-1's, and in --all.
+  const toCrew = await ok(["queue", "--as", "crew-1"]);
+  expect(toCrew.stdout.toLowerCase()).toContain("nothing");
+  await ok(["attention", "2", "your turn", "--to", "crew-1"]);
+  const crewQueue = await ok(["queue", "--as", "crew-1"]);
+  expect(crewQueue.stdout).toContain("#2");
+  expect(crewQueue.stdout).toContain("your turn");
+  expect(crewQueue.stdout).not.toContain("#1");
+  expect(json<OpenAttention[]>(await ok(["queue", "--as", "crew-1", "--json"]))).toEqual(
+    core.listAttention({ to: crew.id }),
+  );
+  const mine = await ok(["queue"]);
+  expect(mine.stdout).toContain("#1");
+  expect(mine.stdout).not.toContain("#2");
+
+  const all = await ok(["queue", "--all"]);
+  expect(all.stdout).toContain("#1");
+  expect(all.stdout).toContain("#2");
+  expect(all.stdout.indexOf("#1")).toBeLessThan(all.stdout.indexOf("#2"));
+  expect(json<OpenAttention[]>(await ok(["queue", "--all", "--json"]))).toEqual(openAttention());
+  expect(openAttention()).toHaveLength(2);
+
+  await failed(2, ["queue", "extra"]);
+  await failed(2, ["frob"]);
+});
+
+test("attention raises to the owner by default, to --to by name, and validates its arguments", async () => {
+  core.createCard({ title: "a" }, member("simon").id);
+  core.ensureMember("crew-2", "agent");
+
+  const raised = json<Card>(
+    await ok(["attention", "1", "spec ready", "--move", "code", "--as", "crew-1", "--json"]),
+  );
+  expect(raised.attention).toMatchObject({ to: member("simon").id, moves: ["code"] });
+  expect(raised).toEqual(core.listCards()[0] as Card);
+  const plain = await ok(["attention", "1", "again", "--move", "code", "--move", "pr"]);
+  expect(plain.stdout).toContain("#1");
+  expect(plain.stdout).toContain("simon");
+  expect(core.getCard(1).attention).toMatchObject({ note: "again", moves: ["code", "pr"] });
+
+  await ok(["attention", "1", "please look", "--to", "crew-2"]);
+  expect(core.getCard(1).attention).toMatchObject({
+    to: member("crew-2").id,
+    note: "please look",
+    moves: [],
+    raisedBy: member("simon").id,
+  });
+  const requested = core.getCard(1).activity.filter((e) => e.type === "attention_requested");
+  expect(requested).toHaveLength(3);
+
+  const nobody = await failed(1, ["attention", "1", "hi", "--to", "nobody"]);
+  expect(nobody).toContain("not_found");
+  expect(nobody).toContain("nobody");
+  const badPhase = await failed(2, ["attention", "1", "hi", "--move", "review"]);
+  for (const phase of PHASES) expect(badPhase).toContain(phase.id);
+  await failed(2, ["attention", "1"]);
+  await failed(2, ["attention"]);
+  const empty = await failed(1, ["attention", "1", "  "]);
+  expect(empty).toContain("invalid");
+  await failed(1, ["attention", "999", "hi"]);
+  expect(core.getCard(1).attention?.note).toBe("please look");
+  expect(core.listMembers().map((m) => m.name)).not.toContain("nobody");
+});
+
+test("mv resolves the request; resolve answers it; invalid and forbidden exit 1", async () => {
+  core.createCard({ title: "r" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  core.requestAttention(
+    1,
+    { to: member("simon").id, note: "spec ready", moves: ["code"] },
+    agent.id,
+  );
+
+  await ok(["mv", "1", "code"]);
+  expect(openAttention()).toEqual([]);
+  expect(json<OpenAttention[]>(await ok(["queue", "--json"]))).toEqual([]);
+  expect(
+    core
+      .getCard(1)
+      .activity.slice(-2)
+      .map((e) => e.type),
+  ).toEqual(["card_moved", "attention_resolved"]);
+
+  core.requestAttention(1, { to: member("simon").id, note: "pr ready" }, agent.id);
+  const resolved = json<Card>(await ok(["resolve", "1", "-m", "looks fine", "--json"]));
+  expect(resolved.attention).toBeNull();
+  const tail = core.getCard(1).activity.slice(-2);
+  expect(tail[0]).toMatchObject({ type: "comment", data: { text: "looks fine" } });
+  expect(tail[1]).toMatchObject({ type: "attention_resolved", data: { how: "answered" } });
+  expect(openAttention()).toEqual([]);
+
+  const again = await failed(1, ["resolve", "1"]);
+  expect(again).toContain("invalid");
+
+  core.requestAttention(1, { to: member("simon").id, note: "one more" }, agent.id);
+  const forbidden = await failed(1, ["resolve", "1", "--as", "crew-9"]);
+  expect(forbidden).toContain("forbidden");
+  expect(core.getCard(1).attention?.note).toBe("one more");
+
+  const plain = await ok(["resolve", "1"]);
+  expect(plain.stdout).toContain("#1");
+  expect(core.getCard(1).attention).toBeNull();
+  await failed(2, ["resolve"]);
+  await failed(2, ["resolve", "1", "extra"]);
+});
+
+test("ls marks a card waiting on me with ! and on someone else with ?; show prints the request", async () => {
+  core.createCard({ title: "Mine" }, member("simon").id);
+  core.createCard({ title: "Theirs" }, member("simon").id);
+  core.createCard({ title: "Nobody's" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  core.requestAttention(
+    1,
+    { to: member("simon").id, note: "spec ready", moves: ["code", "pr"] },
+    agent.id,
+  );
+  core.requestAttention(2, { to: agent.id, note: "your turn" }, member("simon").id);
+
+  const asOwner = lines(await ok(["ls"]));
+  expect(asOwner).toHaveLength(3);
+  expect(asOwner[0]?.startsWith("!")).toBe(true);
+  expect(asOwner[0]).toContain("#1");
+  expect(asOwner[1]?.startsWith("?")).toBe(true);
+  expect(asOwner[1]).toContain("#2");
+  expect(asOwner[2]?.startsWith("!")).toBe(false);
+  expect(asOwner[2]?.startsWith("?")).toBe(false);
+  expect(asOwner[2]).toContain("#3");
+  expect(asOwner[2]).toContain(TRACK.idea);
+
+  const asAgent = lines(await ok(["ls", "--as", "crew-1"]));
+  expect(asAgent[0]?.startsWith("?")).toBe(true);
+  expect(asAgent[1]?.startsWith("!")).toBe(true);
+  expect(json<Card[]>(await ok(["ls", "--json"]))).toEqual(core.listCards());
+
+  const shown = await ok(["show", "1"]);
+  const header = shown.stdout.split("\n\n")[0] as string;
+  expect(header).toContain("simon");
+  expect(header).toContain("crew-1");
+  expect(header).toContain("spec ready");
+  expect(header).toContain("code");
+  expect(header).toContain("pr");
+  expect(header).toContain(localTime(core.getCard(1).attention?.raisedAt as number));
+  const requestedLine = lines(shown).find((l) => l.includes("crew-1") && l.includes("spec ready"));
+  expect(requestedLine).toBeDefined();
+
+  await ok(["resolve", "1", "-m", "approved"]);
+  await ok(["mv", "2", "spec"]);
+  const after = lines(await ok(["ls"]));
+  expect(after.every((l) => !l.startsWith("!") && !l.startsWith("?"))).toBe(true);
+  const shownAfter = await ok(["show", "1"]);
+  const headerAfter = shownAfter.stdout.split("\n\n")[0] as string;
+  expect(headerAfter).not.toContain("spec ready");
+  const activity = lines(shownAfter).filter((l) => l.includes("attention") || l.includes("asked"));
+  const resolvedLine = lines(shownAfter).find((l) => l.includes("resolved"));
+  expect(resolvedLine).toContain("simon");
+  expect(resolvedLine).toContain("answered");
+  expect(activity.length).toBeGreaterThanOrEqual(2);
+  expect(json<CardDetail>(await ok(["show", "1", "--json"]))).toEqual(core.getCard(1));
+  const movedLine = lines(await ok(["show", "2"])).find((l) => l.includes("resolved"));
+  expect(movedLine).toContain("Spec");
+});
+
+/** Reads a stream line by line, on demand, with a timeout so a silent watch fails the test. */
+function lineReader(stream: ReadableStream<Uint8Array>) {
+  const decoder = new TextDecoder();
+  const queue: string[] = [];
+  const waiters: Array<(line: string) => void> = [];
+  let buffer = "";
+  (async () => {
+    for await (const chunk of stream) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const waiter = waiters.shift();
+        if (waiter) waiter(line);
+        else queue.push(line);
+        newline = buffer.indexOf("\n");
+      }
+    }
+  })();
+  return {
+    next(): Promise<string> {
+      const line = queue.shift();
+      if (line !== undefined) return Promise.resolve(line);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("no line within 4s")), 4000);
+        waiters.push((l) => {
+          clearTimeout(timer);
+          resolve(l);
+        });
+      });
+    },
+  };
+}
+
+/** A notifier that records `(title, text)` pairs to a file instead of notifying anyone. */
+function recordingNotifier() {
+  const log = join(dir, "notify.log");
+  const script = join(dir, "notify.sh");
+  writeFileSync(script, `#!/bin/sh\nprintf '%s\\t%s\\n' "$1" "$2" >> "${log}"\n`, { mode: 0o755 });
+  return {
+    script,
+    entries(): string[][] {
+      if (!existsSync(log)) return [];
+      return readFileSync(log, "utf8")
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => l.split("\t"));
+    },
+  };
+}
+
+function spawnWatch(args: string[], env: Record<string, string>) {
+  const full: Record<string, string | undefined> = { ...process.env };
+  delete full.SKELCREW_AS;
+  full.SKELCREW_DIR = dir;
+  full.TZ = TZ;
+  Object.assign(full, env);
+  const proc = Bun.spawn([process.execPath, MAIN, "watch", ...args], {
+    cwd: dir,
+    env: full,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  watchers.push({
+    kill() {
+      if (proc.exitCode === null) proc.kill();
+    },
+  });
+  return {
+    proc,
+    stdout: lineReader(proc.stdout as ReadableStream<Uint8Array>),
+    stderr: lineReader(proc.stderr as ReadableStream<Uint8Array>),
+  };
+}
+
+test("watch tails events, pings once for a request to me and not for one to someone else, exits 0 on SIGINT", async () => {
+  const card = core.createCard({ title: "Watched" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  const rec = recordingNotifier();
+  const watch = spawnWatch([], { SKELCREW_NOTIFY: rec.script });
+  const ready = await watch.stderr.next();
+  expect(ready).toContain("simon");
+
+  core.comment(card.id, "hello there", agent.id);
+  const commented = await watch.stdout.next();
+  expect(commented).toContain("hello there");
+  expect(commented).toContain("crew-1");
+
+  core.moveCard(card.id, "spec", member("simon").id);
+  const moved = await watch.stdout.next();
+  expect(moved).toContain("Spec");
+  expect(moved).toContain("simon");
+  expect(rec.entries()).toEqual([]);
+
+  core.requestAttention(
+    card.id,
+    { to: member("simon").id, note: "spec ready", moves: ["code"] },
+    agent.id,
+  );
+  const requested = await watch.stdout.next();
+  expect(requested).toContain("spec ready");
+  expect(requested).toContain("crew-1");
+
+  // Events are handled in order, so once the next event's line is out, the ping for the
+  // previous one has finished: exactly one, for the request addressed to the watcher.
+  core.comment(card.id, "after the ping", agent.id);
+  expect(await watch.stdout.next()).toContain("after the ping");
+  const entries = rec.entries();
+  expect(entries).toHaveLength(1);
+  expect(entries[0]?.[0]).toBe("skelcrew");
+  expect(entries[0]?.[1]).toContain("#1");
+  expect(entries[0]?.[1]).toContain("Watched");
+  expect(entries[0]?.[1]).toContain("spec ready");
+
+  // A request to someone else, on another card so the watcher's stays open: no ping.
+  const theirs = core.createCard({ title: "Theirs" }, member("simon").id);
+  expect(await watch.stdout.next()).toContain("Theirs");
+  core.requestAttention(theirs.id, { to: agent.id, note: "your turn" }, member("simon").id);
+  const other = await watch.stdout.next();
+  expect(other).toContain("your turn");
+  core.comment(theirs.id, "settled", agent.id);
+  expect(await watch.stdout.next()).toContain("settled");
+  expect(rec.entries()).toHaveLength(1);
+
+  core.resolveAttention(theirs.id, "thanks", agent.id);
+  expect(await watch.stdout.next()).toContain("thanks");
+  expect(await watch.stdout.next()).toContain("resolved");
+
+  watch.proc.kill("SIGINT");
+  expect(await watch.proc.exited).toBe(0);
+  expect(rec.entries()).toHaveLength(1);
+});
+
+test("watch --since replays existing events first, in order, without pinging for a resolved request", async () => {
+  const card = core.createCard({ title: "History" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  core.comment(card.id, "one", agent.id);
+  core.requestAttention(card.id, { to: member("simon").id, note: "spec ready" }, agent.id);
+  core.moveCard(card.id, "spec", member("simon").id);
+  core.comment(card.id, "two", member("simon").id);
+  const history = core.activitySince(0);
+  expect(history.map((e) => e.type)).toEqual([
+    "card_created",
+    "member_joined",
+    "comment",
+    "attention_requested",
+    "card_moved",
+    "attention_resolved",
+    "comment",
+  ]);
+
+  const rec = recordingNotifier();
+  const watch = spawnWatch(["--since", "0"], { SKELCREW_NOTIFY: rec.script });
+  const replayed: string[] = [];
+  for (let i = 0; i < history.length; i += 1) replayed.push(await watch.stdout.next());
+  expect(replayed[0]).toContain("History");
+  expect(replayed[1]).toContain("crew-1");
+  expect(replayed[2]).toContain("one");
+  expect(replayed[3]).toContain("spec ready");
+  expect(replayed[4]).toContain("Spec");
+  expect(replayed[5]).toContain("resolved");
+  expect(replayed[6]).toContain("two");
+  expect(rec.entries()).toEqual([]);
+
+  // Live events follow the replay.
+  core.comment(card.id, "three", agent.id);
+  expect(await watch.stdout.next()).toContain("three");
+
+  watch.proc.kill("SIGINT");
+  expect(await watch.proc.exited).toBe(0);
+
+  await failed(2, ["watch", "--since", "x"]);
+  await failed(2, ["watch", "extra"]);
+});
+
+test("watch replays only after the given seq", async () => {
+  const card = core.createCard({ title: "Partial" }, member("simon").id);
+  core.comment(card.id, "old", member("simon").id);
+  const pivot = core.activitySince(0).at(-1)?.seq as number;
+  core.comment(card.id, "new", member("simon").id);
+
+  const rec = recordingNotifier();
+  const watch = spawnWatch(["--since", String(pivot)], { SKELCREW_NOTIFY: rec.script });
+  const first = await watch.stdout.next();
+  expect(first).toContain("new");
+  expect(first).not.toContain("old");
+  watch.proc.kill("SIGINT");
+  expect(await watch.proc.exited).toBe(0);
+});
+
+test("watch exits 1 with an error naming the socket when the daemon goes away", async () => {
+  core.createCard({ title: "Orphan" }, member("simon").id);
+  const rec = recordingNotifier();
+  const watch = spawnWatch([], { SKELCREW_NOTIFY: rec.script });
+  await watch.stderr.next();
+
+  server.stop();
+
+  expect(await watch.proc.exited).toBe(1);
+  const error = await watch.stderr.next();
+  expect(error.startsWith("error: ")).toBe(true);
+  expect(error).toContain(socketPath);
+});
+
+test("watch still prints the event line when the notifier fails, and reports the failure", async () => {
+  const card = core.createCard({ title: "Unpingable" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  const watch = spawnWatch([], { SKELCREW_NOTIFY: join(dir, "missing-notifier.sh") });
+  await watch.stderr.next();
+
+  core.requestAttention(card.id, { to: member("simon").id, note: "spec ready" }, agent.id);
+  const line = await watch.stdout.next();
+  expect(line).toContain("spec ready");
+  const error = await watch.stderr.next();
+  expect(error.startsWith("error: ")).toBe(true);
+
+  // The tail goes on after a failed ping.
+  core.comment(card.id, "still here", agent.id);
+  expect(await watch.stdout.next()).toContain("still here");
+  watch.proc.kill("SIGINT");
+  expect(await watch.proc.exited).toBe(0);
+});
+
+test("watch --json is a usage error", async () => {
+  await failed(2, ["watch", "--json"]);
 });

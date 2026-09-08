@@ -16,7 +16,9 @@ export const ls: Command<{ includeArchived: boolean }, Card[]> = {
     return {
       result: cards,
       render: () =>
-        cards.length === 0 ? 'no cards yet; file one with: skelcrew add "<title>"' : rows(cards),
+        cards.length === 0
+          ? 'no cards yet; file one with: skelcrew add "<title>"'
+          : rows(cards, ctx.client.member.id),
     };
   },
 };
