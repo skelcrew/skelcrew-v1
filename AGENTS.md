@@ -37,15 +37,16 @@ These are correctness requirements, not preferences. A change that violates one 
   commit shas, PR URLs, file paths, log excerpts an agent chose to post — never a checkout.
   Code lives in the user's repositories and in the runner's worktrees.
 - **Skelcrew never calls a model.** No LLM API keys, clients, or SDKs anywhere. All
-  intelligence enters through members: the human over a client, agents over MCP, and the
-  coding agents the runner spawns as subprocesses. Model auth is strictly between the user
+  intelligence enters through members: the human over the CLI, agents over the same CLI as
+  agent members, and the coding agents the runner spawns as subprocesses. Model auth is strictly between the user
   and their harness — skelcrew holds no credentials.
 - **Cards drive the runner, not the other way round.** Work exists because a card entered a
   claimable phase; nothing runs that a card didn't ask for, and a run's only outputs are
   updates to its card and artefacts in the target repo.
-- **Agents are members, not plugins.** An agent connecting over MCP uses the same primitives
-  a human does — see the cards, take one, advance it, comment. If a capability is worth
-  building, both kinds of member get it. No agent-only side channels, and no agent-to-agent
+- **Agents are members, not plugins.** An agent uses the same CLI and the same primitives a
+  human does — see the cards, take one, advance it, comment — identified as an agent member.
+  There is no agent-only surface (an MCP server was planned as 005 and dropped for this
+  reason). If a capability is worth building, both kinds of member get it. No agent-to-agent
   channels at all: coordination happens on the card or it doesn't happen.
 - **Conversation is never load-bearing.** No phase requires chat to advance. Talking is
   allowed — comments on a card are how feedback and mid-run answers travel — but every
@@ -63,8 +64,8 @@ Skelcrew is additive, never a required replacement. The owner's existing setup (
 Claude Code sessions) remains the tool for synchronous, attended, exploratory work; skelcrew
 owns the asynchronous tier — deferrable, well-defined work that the crew advances unattended
 while finished results queue for the owner's judgment. Three consequences bind design:
-adding a card must cost less than opening a terminal tab (CLI, and cards filed from live
-sessions over MCP); every piece of skelcrew work must have an exit ramp into the terminal
+adding a card must cost less than opening a terminal tab (one CLI, usable by the owner and
+by an agent in a live session alike); every piece of skelcrew work must have an exit ramp into the terminal
 (it's all plain branches and worktrees — escalations say where to `cd`); and the measure of
 success is net-new throughput through the final gate — work that wouldn't otherwise have
 existed — not work relocated from the terminal with extra ceremony.

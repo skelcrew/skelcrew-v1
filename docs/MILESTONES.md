@@ -101,13 +101,19 @@ Findings and decisions from the spec workflow itself, newest last:
   without them (007). Title, phase, repo, and references stay structured data.
 - **The repo is the only container, and milestones are cards (settled 2026-09-08).** No
   workspace, project, or milestone entity. A file like this one lives in the target repo as
-  project knowledge; its entries become Idea cards by bulk filing (004 from stdin, 005 over
-  MCP), in order; findings keep being written into the file by the develop playbook, as
-  001's was. Once a card exists it is authoritative and the file entry is history.
+  project knowledge; its entries become Idea cards by bulk filing (004, from stdin), in
+  order; findings keep being written into the file by the develop playbook, as 001's was.
+  Once a card exists it is authoritative and the file entry is history.
 - **002 was too big and is split (settled 2026-09-08).** Core state stays 002; claims as
-  leases become 009, built before 006; attention requests become 010, built after 005. Each
+  leases become 009, built before 006; attention requests become 010, built after 004. Each
   is one review-sized diff with its own state machine and tests. Card archiving moves from
   008 into 002.
+- **No MCP server; agents use the CLI (settled 2026-09-08).** Every agent skelcrew deals
+  with has a shell, so a second surface would only have to be kept at parity with the first
+  by discipline, and would bring the repo's first external dependency. 005 is dropped. The
+  CLI identifies an agent member with `--as <name>` (or the environment variable the runner
+  sets at spawn), and offers `--json` output so agents parse rather than scrape. "Agents are
+  members" then holds by construction: there is one client.
 
 ## 001 — Project scaffold
 
@@ -132,7 +138,7 @@ on first run, plus agents by name; every mutation carries an actor. An append-on
 log holds each mutation as a typed event — created, moved, commented, references set,
 archived — and comments are events, not a table; a rejected gate move is logged too. One
 typed interface fronts all of it and is the only way to write — this is what "everything
-observable" hangs off, and every later surface (003, 005) is a client of it. SQLite through
+observable" hangs off, and every later surface (003, 004) is a client of it. SQLite through
 Bun's driver, one file under the daemon's data directory, migrations from day one. Card
 archiving is here (the spike's mis-pasted card). Text and references only: no column can
 hold a file, and a comment has a size cap so a log excerpt stays an excerpt (see AGENTS.md).
@@ -149,36 +155,36 @@ beyond transport.
 
 ## 004 — CLI
 
-The owner's first client: file a card in one line (and many at once from stdin, so a
-milestones file becomes cards in one command), list cards as rows with a phase track, open a
-card to read its activity and comment, and move it — into Spec to start it, approve into
-Code, send back with feedback, mark Done. No attention queue yet; 010 adds it, with
-the ping. Talks only to 003.
+The one client, for the owner and for agents: file a card in one line (and many at once from
+stdin, so a milestones file becomes cards in one command), list cards as rows with a phase
+track, open a card to read its activity and comment, and move it — into Spec to start it,
+approve into Code, send back with feedback, mark Done. Run with `--as <name>` (or the
+runner's environment variable) it acts as that agent member, so an agent in a live session
+files and advances cards with the same commands the owner uses; `--json` gives agents output
+to parse. No attention queue yet; 010 adds it, with the ping. Talks only to 003.
 
-## 005 — Agents join over MCP
+## 005 — Dropped
 
-The MCP server, in the daemon: an agent connects, appears as a member, and gets the same
-primitives a human has — see cards, take one, advance it, comment. Same 002 interface
-underneath, so agent actions show up live in every connected client. The parity rule is the
-acceptance bar: anything an agent can do must be visible and attributable on its card.
+Was "Agents join over MCP". Dropped 2026-09-08: agents use the CLI (004) as agent members.
+The number stays so earlier references resolve.
 
 ## 010 — Attention requests
 
-Carved out of 002; built after 005, whose agents are the first real producers. An agent
+Carved out of 002; built after 004, whose agent invocations are the first real producers. An agent
 finishing or blocking hands the card to a member with the resolving choices attached —
 approve → next phase, send back with feedback, answer a question — recorded as activity.
 Resolving one is an ordinary move or comment through the 002 interface, so nothing bypasses
 the log. The CLI gains its home view: what's waiting on you, resolvable in place, plus the
 ping — an attention request reaches the owner without polling (OS notification from a watch
-mode; the spec decides the mechanism). Over MCP an agent raises and sees them the same way.
+mode; the spec decides the mechanism). An agent raises and sees them through the same CLI.
 
 ## 009 — Claims as leases
 
 Carved out of 002; built before 006, its first consumer. A member claims a card in a
 claimable phase atomically; the claim is a lease renewed by heartbeat; an expired lease
 returns the card to its queue as a first-class "run interrupted" event, so sleep, crash, and
-kill collapse into one visible path. Enforced in the core and exposed over 003 and 005 like
-everything else — an agent over MCP claims exactly as the runner does.
+kill collapse into one visible path. Enforced in the core and exposed over 003 and the CLI
+like everything else — an agent at the CLI claims exactly as the runner does.
 
 ## 006 — Runner skeleton
 
