@@ -1,0 +1,13 @@
+{
+  "name": "@kanbot/daemon",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kanbot/shared": "*"
+  }
+}

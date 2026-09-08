@@ -1,0 +1,20 @@
+{
+  "name": "kanbot",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "board": "npm run dev -w @kanbot/board",
+    "daemon": "tsx packages/daemon/src/main.ts",
+    "kanbot": "tsx packages/cli/src/main.ts",
+    "check": "npm run check --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

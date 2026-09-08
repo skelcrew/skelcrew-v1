@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kanbot</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🤖</text></svg>" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">◧</span>
+        <span class="brand-name">kanbot</span>
+      </div>
+      <div class="topbar-right">
+        <div id="members" class="members"></div>
+        <button id="add-idea" class="btn btn-primary">+ Add idea</button>
+        <span id="live" class="live" title="activity stream">live</span>
+      </div>
+    </header>
+
+    <section id="attention" class="attention" hidden>
+      <div class="attention-head">
+        <span class="attention-title">Waiting on you</span>
+        <span id="attention-count" class="pill"></span>
+      </div>
+      <div id="attention-list" class="attention-list"></div>
+    </section>
+
+    <main id="lanes" class="lanes"></main>
+
+    <div id="modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close></div>
+      <div class="modal-panel" role="dialog" aria-modal="true">
+        <button class="modal-close" data-close aria-label="Close">✕</button>
+        <div id="modal-body"></div>
+      </div>
+    </div>
+
+    <div id="toasts" class="toasts"></div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

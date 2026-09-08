@@ -1,0 +1,13 @@
+{
+  "name": "@kanbot/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kanbot/shared": "*"
+  }
+}
