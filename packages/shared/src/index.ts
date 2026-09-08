@@ -1,6 +1,14 @@
 export const VERSION = "0.0.1";
 
 export { type Client, connect, RpcError } from "./client";
+export {
+  DATA_DIR_NAME,
+  DB_FILE,
+  dataPaths,
+  findRepoRoot,
+  resolveDataDir,
+  SOCKET_FILE,
+} from "./paths";
 export { PHASES, type Phase, type PhaseDef } from "./phases";
 export {
   type ActivityNotification,

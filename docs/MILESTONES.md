@@ -7,13 +7,13 @@ rewrite the entry, not the number. A number identifies an entry and never change
 the build order does: entries are listed below in intended build order, so a later-numbered
 entry can precede an earlier one when it was carved out of it.
 
-Status: 001 landed (PR #1, 2026-09-08); 002 is next. A prototype spike (2026-09-07,
-preserved on the `prototype` branch) built the previous architecture — separate board server,
-web UI, MCP endpoint, daemon — end to end and ran a real spec stage and develop stage against
-a toy repo. The project has since been renamed skelcrew and pivoted to the single-headless-
-daemon architecture (see AGENTS.md); the milestone entries below are written for the new
-architecture, and the spike's findings — recorded here in its own lane/board vocabulary —
-must be absorbed by the numbered specs:
+Status: 001, 002, and 003 landed (PRs #1, #2, #3, all 2026-09-08); 004 is in progress. A
+prototype spike (2026-09-07, preserved on the `prototype` branch) built the previous
+architecture — separate board server, web UI, MCP endpoint, daemon — end to end and ran a
+real spec stage and develop stage against a toy repo. The project has since been renamed
+skelcrew and pivoted to the single-headless-daemon architecture (see AGENTS.md); the
+milestone entries below are written for the new architecture, and the spike's findings —
+recorded here in its own lane/board vocabulary — must be absorbed by the numbered specs:
 
 - **Talk-to-the-agent is the core gap (007).** The spike spawns fire-and-forget `claude -p`;
   when the sandbox blocked `npm run check`, the agent asked for approval *on the card* and
@@ -123,6 +123,13 @@ Findings and decisions from the spec workflow itself, newest last:
   agent — and every later method acts as that member; nothing carries an `actorId`, so an
   agent's CLI invocation (004, `--as <name>`) is a connection that says hello as that agent.
   `ensureMember` reaches the wire only as `hello`; `getMember` only as `listMembers`.
+- **`SKELCREW_AS` names the agent the CLI speaks as (004).** `skelcrew --as <name>` or the
+  environment variable `SKELCREW_AS=<name>` binds the invocation to that agent member via
+  `hello` (the flag wins); without either, it is the owner. The runner (006/007) sets
+  `SKELCREW_AS` at spawn so a playbook's commands need no flag, and nothing about identity
+  is stored client-side. Path discovery (`findRepoRoot`, `resolveDataDir`, `dataPaths`)
+  lives in `@skelcrew/shared` so the CLI and the daemon find the same socket from the same
+  walk; a dead socket is reported, never removed or auto-started, by a client.
 
 ## 001 — Project scaffold
 
