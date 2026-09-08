@@ -66,6 +66,10 @@ must be absorbed by the numbered specs:
   in core (403 over both HTTP and MCP), spec-stage worktree/branch cleanup, throttled 🛠
   activity streaming — and two daemons sharing one board coordinated by claims alone, no
   collisions.
+- **A green check needs at least one test (001).** `bun test` on Bun 1.3.14 exits non-zero
+  when it finds no test files, so a "green with zero tests" scaffold is impossible. The
+  scaffold therefore ships one wiring test per package — each proves the workspace resolves
+  `@skelcrew/shared`'s version string — and nothing more.
 
 ## 001 — Project scaffold
 
