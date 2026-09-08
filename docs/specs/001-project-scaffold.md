@@ -154,9 +154,10 @@ colocated with source as `*.test.ts`, which is Bun's default discovery pattern.
    directories under `packages/` contain a `package.json`, named `@skelcrew/shared`,
    `@skelcrew/daemon`, and `@skelcrew/cli`. `@skelcrew/daemon` and `@skelcrew/cli` each list
    `@skelcrew/shared` as `workspace:*`; `@skelcrew/shared` lists no dependencies.
-10. No `package.json` in the repository has a `dependencies` field with entries. The root's
-    `devDependencies` contains `typescript`, `@types/bun`, and `@biomejs/biome`, and nothing
-    else.
+10. No `package.json` in the repository declares a dependency on anything outside the
+    workspace: the only `dependencies` entries anywhere are the `@skelcrew/shared`
+    `workspace:*` links required by criterion 9. The root's `devDependencies` contains
+    `typescript`, `@types/bun`, and `@biomejs/biome`, and nothing else.
 11. `bun.lock` is tracked in git. `node_modules/` is not.
 12. `AGENTS.md`'s *Definition of done* section no longer contains the words "not configured"
     and states that `bun run check` runs Biome's lint and format check, `tsc` per package,
