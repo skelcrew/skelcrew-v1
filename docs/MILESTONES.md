@@ -93,10 +93,12 @@ Findings and decisions from the spec workflow itself, newest last:
   within its phase, derived from claims and attention requests, never a phase of its own.
   Review cycles are visible as activity, not as positions. "Spec'ing", "Developing", and
   "Ready" in the spike findings above are the old names.
-- **The card body is markdown, not fields (settled 2026-09-08).** The spec is one markdown
-  text with a section contract — Goal, Acceptance criteria, Out of scope, each non-empty —
-  checked when the owner approves it out of Spec, the same shape as `docs/specs/`, so the
-  develop phase commits it verbatim. Title, phase, repo, and references stay structured data.
+- **The card body is markdown, not fields, and the core never inspects it (settled
+  2026-09-08).** The spec is one markdown text, the same shape as `docs/specs/`, so the
+  develop phase commits it verbatim. A gate-time check for Goal, Acceptance criteria, and Out
+  of scope sections was considered and dropped to keep the model simple; the push toward
+  those sections is the spec playbook's template and the develop playbook refusing a card
+  without them (007). Title, phase, repo, and references stay structured data.
 - **The repo is the only container, and milestones are cards (settled 2026-09-08).** No
   workspace, project, or milestone entity. A file like this one lives in the target repo as
   project knowledge; its entries become Idea cards by bulk filing (004 from stdin, 005 over
@@ -118,10 +120,9 @@ zero tests) before anything else lands. No product code beyond what proves the w
 ## 002 — Core state
 
 The smallest model that lets a card be filed, moved, commented on, and seen — no network,
-no runner. A card is a title, a markdown body (the spec, as one text; the move out of Spec
-checks it has non-empty Goal, Acceptance criteria, and Out of scope sections), a repo
-reference, its phase, its references (branch, commit shas, PR URL), and its order within
-the repo. Ids are short integers, typeable at a CLI. The phase track is a typed constant in
+no runner. A card is a title, a markdown body (the spec, as one text the core never
+inspects), a repo reference, its phase, its references (branch, commit shas, PR URL), and
+its order within the repo. Ids are short integers, typeable at a CLI. The phase track is a typed constant in
 `shared`, not a table: Idea, Spec, Code, PR, Done — each declaring its
 artefact contract (a spec on the card; a branch with commits and a PR; a merge) and who may
 move a card out of it. Spec → Code and PR → Done are the owner's alone; a
