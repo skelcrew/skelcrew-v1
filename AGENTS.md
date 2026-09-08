@@ -127,6 +127,11 @@ which runs lint, format check, typecheck, and tests. Until the scaffold spec lan
 `package.json` exists, these checks are **not configured** — record them as such rather than
 inventing substitutes.
 
+- Red, then green. Write the failing test first, run it, and confirm it fails for the
+  intended reason — an import error or fixture error is a broken test, not red. Then write
+  the smallest implementation that passes, and refactor with the test still green. Never
+  write the implementation first and backfill a test: a test written against existing code
+  asserts what the code does, not what it should do.
 - Tests assert observable behavior — what a member sees on the cards — not private helpers.
 - Tests never spawn real coding agents or call external services; the runner's
   agent-spawning boundary is faked in tests.
