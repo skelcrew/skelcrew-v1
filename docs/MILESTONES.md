@@ -114,6 +114,15 @@ Findings and decisions from the spec workflow itself, newest last:
   CLI identifies an agent member with `--as <name>` (or the environment variable the runner
   sets at spawn), and offers `--json` output so agents parse rather than scrape. "Agents are
   members" then holds by construction: there is one client.
+- **The data directory is `<repo root>/.skelcrew/`, and identity is per connection (003).**
+  The daemon serves one repository and keeps its database and socket under that repo's
+  `.skelcrew/` (already gitignored; `SKELCREW_DIR` overrides it), found by walking up to
+  `.git` from wherever it is started, so a shell inside the repo needs no registry to find
+  the socket. The socket file's mode is the access control. On the wire, a connection's first
+  request is `hello` — `{ kind: "human" }` for the owner, `{ kind: "agent", name }` for an
+  agent — and every later method acts as that member; nothing carries an `actorId`, so an
+  agent's CLI invocation (004, `--as <name>`) is a connection that says hello as that agent.
+  `ensureMember` reaches the wire only as `hello`; `getMember` only as `listMembers`.
 
 ## 001 — Project scaffold
 

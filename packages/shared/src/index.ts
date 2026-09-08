@@ -1,6 +1,28 @@
 export const VERSION = "0.0.1";
 
+export { type Client, connect, RpcError } from "./client";
 export { PHASES, type Phase, type PhaseDef } from "./phases";
+export {
+  type ActivityNotification,
+  ERROR_CODES,
+  encodeLine,
+  type HelloParams,
+  type HelloResult,
+  type JsonRpcError,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+  LineDecoder,
+  LineTooLongError,
+  MAX_LINE_BYTES,
+  METHOD_NAMES,
+  type MethodName,
+  type Methods,
+  type Params,
+  PROTOCOL_VERSION,
+  type ProtocolErrorCode,
+  type RequestId,
+  type Result,
+} from "./protocol";
 export {
   type Activity,
   type ActivityEvent,
