@@ -1,0 +1,12 @@
+{
+  "name": "@skelcrew/cli",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@skelcrew/shared": "workspace:*"
+  }
+}

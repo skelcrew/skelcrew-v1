@@ -123,9 +123,9 @@ usual when agents write most of the code.
 bun run check
 ```
 
-which runs lint, format check, typecheck, and tests. Until the scaffold spec lands and
-`package.json` exists, these checks are **not configured** — record them as such rather than
-inventing substitutes.
+which runs, in order: Biome's lint and format check (`bun run lint`, i.e. `biome ci .`),
+`tsc` per package (`bun run typecheck`), and `bun test` (`bun run test`). `check` never
+writes files; `bun run fix` applies Biome's formatting and safe fixes.
 
 - Red, then green. Write the failing test first, run it, and confirm it fails for the
   intended reason — an import error or fixture error is a broken test, not red. Then write
