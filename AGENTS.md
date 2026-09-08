@@ -71,7 +71,9 @@ existed — not work relocated from the terminal with extra ceremony.
 
 Landscape: chat-first agents (OpenClaw, Hermes) make conversation load-bearing; parallel-run
 orchestrators (Conductor, Superset) multiplex sessions; peer boards (Baton) share a surface
-but not a pipeline. The gap skelcrew fills is the phase-driven, headless, no-chat harness.
+but not a pipeline; coordination layers (Korey, from the Shortcut team) sit over a team's
+tracker and chat, chat-driven, and stop short of running the work. The gap skelcrew fills is
+the phase-driven, headless, no-chat harness.
 
 ## Settled architecture
 
@@ -99,10 +101,15 @@ Decisions already made; specs build on these rather than reopening them.
 - **Phases end in artefact contracts, enforced by the runner.** The runner verifies the
   artefact exists before handing off — a develop finish with no commits is a failed run and
   an attention request, never a handoff. A dirty worktree is salvaged, never force-removed.
-- **Approval gates are human-only transitions.** Approval moves a card to a claimable
-  queue; the runner claims from the queue and itself moves the card into the in-flight
-  phase, so a card's position always reflects true state. Feedback is a comment plus a move
-  back a phase, which re-dispatches with history intact — revision loops need no machinery.
+- **Five phases: Idea, Spec, Code, PR, Done.** The repo's own workflow, made
+  live: a milestones entry, `/spec`, `/develop`, the PR, the merge. Review cycles happen
+  inside a phase and show as activity, never as phases of their own. Whether a card is
+  queued, running, or waiting on the owner is a status within its phase, derived from claims
+  and attention requests.
+- **Approval gates are human-only transitions.** Approval moves a card into the next phase
+  as queued; the runner claims it and the card shows as running, so position and status
+  always reflect true state. Feedback is a comment plus a move back a phase, which
+  re-dispatches with history intact — revision loops need no machinery.
 - **Attention requests are first-class and carry their actions.** An agent finishing or
   blocking hands the card to a member with the resolving choices attached ("approve spec" /
   "send back with feedback"). The owner's home view is this queue — the human is the

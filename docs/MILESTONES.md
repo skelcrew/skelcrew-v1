@@ -3,9 +3,11 @@
 The planned sequence of specs. Entries ahead of the current milestone are provisional —
 `/spec <NNN>` turns one into a real specification, and what a spec's implementation teaches
 gets recorded here against the milestones it affects. Never renumber; if the plan changes,
-rewrite the entry, not the number.
+rewrite the entry, not the number. A number identifies an entry and never changes, even when
+the build order does: entries are listed below in intended build order, so a later-numbered
+entry can precede an earlier one when it was carved out of it.
 
-Status: nothing implemented yet through the spec workflow. A prototype spike (2026-09-07,
+Status: 001 landed (PR #1, 2026-09-08); 002 is next. A prototype spike (2026-09-07,
 preserved on the `prototype` branch) built the previous architecture — separate board server,
 web UI, MCP endpoint, daemon — end to end and ran a real spec stage and develop stage against
 a toy repo. The project has since been renamed skelcrew and pivoted to the single-headless-
@@ -66,10 +68,44 @@ must be absorbed by the numbered specs:
   in core (403 over both HTTP and MCP), spec-stage worktree/branch cleanup, throttled 🛠
   activity streaming — and two daemons sharing one board coordinated by claims alone, no
   collisions.
+
+Findings and decisions from the spec workflow itself, newest last:
+
 - **A green check needs at least one test (001).** `bun test` on Bun 1.3.14 exits non-zero
   when it finds no test files, so a "green with zero tests" scaffold is impossible. The
   scaffold therefore ships one wiring test per package — each proves the workspace resolves
   `@skelcrew/shared`'s version string — and nothing more.
+- **Specs ship with defects, and fixing one mid-run needs a rule (007/008).** Spec 001's
+  acceptance criteria 9 and 10 contradicted each other. The implementer built to 9, reported
+  the conflict instead of editing the spec, and the owner approved a one-line rewording while
+  the run was in flight. That is the shape the live pipeline needs: an agent never edits the
+  card's spec to match its code; it raises an attention request naming the conflict, and the
+  owner's resolution is a spec edit plus a comment the run continues from.
+- **Worktrees inside the target repo leak into its tooling (006).** The repo's own
+  `biome ci .` walked `.claude/worktrees/` and turned `bun run check` on `main` red with a
+  sibling worktree's work in progress. The runner should create worktrees outside the target
+  repo's tree (under the daemon's data directory), so no target-repo tooling ever sees them.
+- **Five phases, named as states (settled with the owner 2026-09-08).** Idea → Spec →
+  Code → PR → Done — exactly this repo's workflow: a milestones entry, `/spec`
+  with the owner's approval inside it, `/develop` with implement, review, and verify inside
+  it, the PR, the merge. The eight-phase track that split out Spec review, Ready, and Agent
+  review is gone: whether a card is queued, running, or waiting on the owner is a status
+  within its phase, derived from claims and attention requests, never a phase of its own.
+  Review cycles are visible as activity, not as positions. "Spec'ing", "Developing", and
+  "Ready" in the spike findings above are the old names.
+- **The card body is markdown, not fields (settled 2026-09-08).** The spec is one markdown
+  text with a section contract — Goal, Acceptance criteria, Out of scope, each non-empty —
+  checked when the owner approves it out of Spec, the same shape as `docs/specs/`, so the
+  develop phase commits it verbatim. Title, phase, repo, and references stay structured data.
+- **The repo is the only container, and milestones are cards (settled 2026-09-08).** No
+  workspace, project, or milestone entity. A file like this one lives in the target repo as
+  project knowledge; its entries become Idea cards by bulk filing (004 from stdin, 005 over
+  MCP), in order; findings keep being written into the file by the develop playbook, as
+  001's was. Once a card exists it is authoritative and the file entry is history.
+- **002 was too big and is split (settled 2026-09-08).** Core state stays 002; claims as
+  leases become 009, built before 006; attention requests become 010, built after 005. Each
+  is one review-sized diff with its own state machine and tests. Card archiving moves from
+  008 into 002.
 
 ## 001 — Project scaffold
 
@@ -81,15 +117,25 @@ zero tests) before anything else lands. No product code beyond what proves the w
 
 ## 002 — Core state
 
-The domain model and persistence, no network: cards, phases (each with its artefact
-contract), members (the one human owner plus agents), an append-only activity log, claims as
-leases (atomic, heartbeat-renewed, expiring back to the queue as a visible "run interrupted"
-event), and attention requests that carry their resolving actions (approve → next phase /
-send back with feedback). SQLite. Every mutation goes through one typed interface and
-produces an activity entry — this is what "everything observable" hangs off, and every later
-surface (JSON-RPC, MCP) is a client of this interface. Human-only phase transitions are
-enforced here, in the core, not in any client. Card content is text and references only;
-nothing here may ever hold file contents (see AGENTS.md).
+The smallest model that lets a card be filed, moved, commented on, and seen — no network,
+no runner. A card is a title, a markdown body (the spec, as one text; the move out of Spec
+checks it has non-empty Goal, Acceptance criteria, and Out of scope sections), a repo
+reference, its phase, its references (branch, commit shas, PR URL), and its order within
+the repo. Ids are short integers, typeable at a CLI. The phase track is a typed constant in
+`shared`, not a table: Idea, Spec, Code, PR, Done — each declaring its
+artefact contract (a spec on the card; a branch with commits and a PR; a merge) and who may
+move a card out of it. Spec → Code and PR → Done are the owner's alone; a
+card's queued / running / waiting-on-you status inside a phase is derived (from 009 and
+010 later), not stored. Members are the one owner, seeded
+on first run, plus agents by name; every mutation carries an actor. An append-only activity
+log holds each mutation as a typed event — created, moved, commented, references set,
+archived — and comments are events, not a table; a rejected gate move is logged too. One
+typed interface fronts all of it and is the only way to write — this is what "everything
+observable" hangs off, and every later surface (003, 005) is a client of it. SQLite through
+Bun's driver, one file under the daemon's data directory, migrations from day one. Card
+archiving is here (the spike's mis-pasted card). Text and references only: no column can
+hold a file, and a comment has a size cap so a log excerpt stays an excerpt (see AGENTS.md).
+Claims and attention requests are deliberately absent — they are 009 and 010.
 
 ## 003 — Client protocol
 
@@ -102,11 +148,11 @@ beyond transport.
 
 ## 004 — CLI
 
-The owner's first client: file a card in one line, list cards as rows with a phase track,
-open a card to read its activity and comment, and — front and centre — the attention queue:
-what's waiting on you, resolvable in place (approve / send back with feedback). Includes the
-ping: an attention request should reach the owner without them polling (OS notification from
-a watch mode; the spec decides the mechanism). Talks only to 003.
+The owner's first client: file a card in one line (and many at once from stdin, so a
+milestones file becomes cards in one command), list cards as rows with a phase track, open a
+card to read its activity and comment, and move it — into Spec to start it, approve into
+Code, send back with feedback, mark Done. No attention queue yet; 010 adds it, with
+the ping. Talks only to 003.
 
 ## 005 — Agents join over MCP
 
@@ -115,11 +161,30 @@ primitives a human has — see cards, take one, advance it, comment. Same 002 in
 underneath, so agent actions show up live in every connected client. The parity rule is the
 acceptance bar: anything an agent can do must be visible and attributable on its card.
 
+## 010 — Attention requests
+
+Carved out of 002; built after 005, whose agents are the first real producers. An agent
+finishing or blocking hands the card to a member with the resolving choices attached —
+approve → next phase, send back with feedback, answer a question — recorded as activity.
+Resolving one is an ordinary move or comment through the 002 interface, so nothing bypasses
+the log. The CLI gains its home view: what's waiting on you, resolvable in place, plus the
+ping — an attention request reaches the owner without polling (OS notification from a watch
+mode; the spec decides the mechanism). Over MCP an agent raises and sees them the same way.
+
+## 009 — Claims as leases
+
+Carved out of 002; built before 006, its first consumer. A member claims a card in a
+claimable phase atomically; the claim is a lease renewed by heartbeat; an expired lease
+returns the card to its queue as a first-class "run interrupted" event, so sleep, crash, and
+kill collapse into one visible path. Enforced in the core and exposed over 003 and 005 like
+everything else — an agent over MCP claims exactly as the runner does.
+
 ## 006 — Runner skeleton
 
 The execution half, behind the internal seam: watch claimable phases, claim a card on its
-lease, and create a git worktree for it — branched from an explicit base (the repo's default
-branch), never from wherever a checkout happens to be parked. No coding agent yet — the
+lease (009), and create a git worktree for it — branched from an explicit base (the repo's
+default branch), never from wherever a checkout happens to be parked, and placed outside the
+target repo's tree so its tooling never sees it. No coding agent yet — the
 deliverable is the watch/claim/worktree lifecycle, its states visible on the card, and clean
 teardown that never destroys work: a dirty worktree is salvaged (left in place and reported,
 or WIP-committed), never force-removed. Process management and crash recovery are the
@@ -141,26 +206,27 @@ never a handoff. Output posted to the card is excerpts and status, never a code 
 
 ## 008 — The full loop
 
-Close the loop the product exists for: Idea → Spec'ing → Spec review → Ready → Developing →
-**Agent review** → PR review → Done. An idea card gets spec'd by an agent onto the card, the
-owner approves (approval ends the human gesture: the card moves to a claimable queue, and
-the runner itself moves it into the in-flight phase when work starts, so position always
-reflects true state), an agent develops it (committing the spec to `docs/specs/` as it
-starts), and an *independent* agent reviews the branch before the owner ever sees it — Agent
-review is its own phase with a review playbook, claimed by a different member than the one
-that implemented where a peer exists (runners deprioritize reviewing branches they produced,
-falling back to fresh-context self-review only when alone). Findings land as card comments;
-APPROVED advances the card with the review attached, CHANGES REQUESTED sends it back to
-Developing — the same gesture as human feedback. Bounded cycle budget (3): after that the
-card goes to the owner with what's unresolved instead of ping-ponging. What reaches PR
-review has therefore survived independent review — the owner's queue only holds work worth
-their time. The owner merges, the card lands in Done. When the default branch moves, the
-runner dry-run-merges each in-flight card's branch; a conflicted card auto-bounces to
-Developing with a rebase brief and re-passes Agent review before its PR updates. Includes
-failure and abandonment paths (worktree salvaged, card returned with a reason, attention
-request to the owner) and card deletion/archiving. Depends on what 006 and 007 turn out to
-need — expect this entry to be rewritten from their findings before it is specified. When
-this lands, skelcrew can start building skelcrew.
+Close the loop the product exists for: Idea → Spec → Code → PR → Done. The
+owner moves an idea into Spec; the runner claims it and an agent writes the spec onto the
+card; the finish is an attention request, and approving it is the owner's move into
+Code (approval ends the human gesture: the card is queued there, the runner claims
+it and its status shows running, so position and status always reflect true state). The
+develop playbook is this repo's `/develop` made live: it commits the spec to `docs/specs/`
+as it starts, implements, then reviews the branch in a *fresh* context before the owner
+ever sees it, and verifies — review findings land as card comments, CHANGES REQUESTED loops
+back to the implementer within the run, and a bounded cycle budget (3) sends the card to
+the owner with what's unresolved instead of ping-ponging. The finish contract is a branch
+with commits and a PR; meeting it moves the card to PR, where the owner's queue only
+holds work that has survived independent review. The owner merges; the card lands in Done.
+Send back from PR is a comment plus a move to Code, which re-dispatches with
+history intact. When the default branch moves, the runner dry-run-merges each PR
+card's branch; a conflicted card auto-bounces to Code with a rebase brief and
+re-passes the in-run review before its PR updates. Includes failure and abandonment paths
+(worktree salvaged, card returned with a reason, attention request to the owner).
+Cross-member review — a different runner reviewing than the one that implemented — is
+deferred until a second runner exists. Depends on what 006 and 007 turn out to need —
+expect this entry to be rewritten from their findings before it is specified. When this
+lands, skelcrew can start building skelcrew.
 
 ## Later, deliberately unplanned
 
@@ -169,6 +235,8 @@ daemon on an always-on machine. Second runners and hosted runner tiers over the 
 seam. Teams — hosted multi-human mode (auth, tenancy, sync). Multiple repositories per
 daemon, notification channels beyond the local ping (Slack, email, push), card attachments,
 and per-repo override of the built-in phase playbooks (users supplying their own spec/develop
-skills; skelcrew ships the workflow until real use demands customization). None of these may
+skills; skelcrew ships the workflow until real use demands customization). Grouping cards
+into milestones or projects: deferred until 008, when skelcrew builds skelcrew and this file
+either becomes cards or shows what a grouping entity would have to add. None of these may
 be pulled forward into an earlier spec's scope: the product is optimized 100% for a single
 owner until the solo loop proves itself.
