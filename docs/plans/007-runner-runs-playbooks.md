@@ -285,3 +285,56 @@ code, checked against a deliberately broken translation.
   not the claim survived, warning if the card refuses it) rather than `post`, exactly as the
   `stopWith` comment beside it already did. Test: the agent runs one tool, the owner releases
   the card, and the card shows `ran 1 tool: Read` before `run stopped: released by simon`.
+
+## External review (Codex)
+
+Two findings on the pushed branch, both real against the code, both taken. Red first for the
+first (three failing tests); the second is documentation, so it has no red phase.
+
+- **Finding 1** — the success path discarded an unresolved blocker. Round 1's Important 1
+  taught `fail()` not to clobber a question the agent raised (`open === null || isOwn(open)`);
+  `finish()` never learned it. An agent that writes the card's body, then finds a genuine
+  conflict and raises it with `skelcrew attention <id> "<question>"`, then ends its session
+  normally, satisfies the Spec contract — so `finish("spec ready", ["code"])` replaced the
+  question with `spec ready` and offered the owner an approval into Code over a question they
+  had never seen. The Code path is reachable the same way: nothing clears an open request, so
+  an agent that commits, pushes, records the PR, and then asks a question still passes the
+  contract and reached the same `finish`. The red run showed it exactly — two
+  `attention_requested` events after the move, the second the runner's, and the release
+  `finished` where the test expected `blocked`.
+  The fix mirrors `fail()`: when the card's open request is not the run's own, `finish()`
+  posts the artefact as a comment — `spec ready; not handed on while the agent's question is
+  open — answering it runs the phase again`, and the same suffix after `ready for review:
+  <url>` — raises nothing, and releases with reason **`blocked`**. `finished` would say the
+  phase was handed on and `failed` would say the artefact was not earned; neither is true, so
+  the reason is its own word. The Code path still writes `commits` to the refs before the
+  release: the artefact and its references are on the card, only the handoff is withheld.
+  **What the owner sees**: the card is in its phase with no claim, its attention request is
+  the agent's question with no moves (so `mv`-by-approval is not among the resolving
+  choices), and the last comment says the artefact landed and why the card stopped there.
+  **What happens after they answer**: `runner.ts`'s `isReady` requires `card.attention ===
+  null`, so the card sits out of the queue while the question stands, and answering it
+  (`skelcrew resolve <id> -m "<answer>"`) makes the card ready again — the runner claims it
+  and the phase runs **afresh** in the same worktree, with the answer on the card as a comment
+  for the new run's `skelcrew show <id>`. It does not resume, and it does not advance: a
+  fresh run has to satisfy the contract again before the owner is offered anything. Resolving
+  by moving the card is still the owner's other exit. Tests: a spec run and a code run where
+  the agent raises its own question and finishes successfully (the question survives, the
+  artefact is a comment, exactly one request after the move, release `blocked`), and a third
+  that answers the question and asserts the second run happens and hands the card on with
+  `spec ready` / moves `["code"]`. **This deviates from the spec**, which gives the Spec and
+  Code contracts one success shape each (`attention … moves … release finished`); the
+  deviation is the same one round 1 made on the failure path, for the constraint that
+  attention requests are first-class and that what an agent does is visible on its card.
+  `docs/MILESTONES.md` now records the whole rule in one place instead of the failure half.
+- **Finding 2** — `code.md` Stage 1 step 6 mishandled a revision run. The branch a card sent
+  back from PR returns to already carries the spec this card committed on its first run, so
+  a card that names its number hit "the card names a number that is already taken … do not
+  guess: ask … and stop" — its own spec deadlocking the revision loop — and a card that names
+  none allocated the next free number and committed a duplicate. Stage 5 step 4 had been
+  taught about revision runs in round 4; Stage 1 had not. The step now looks for this card's
+  spec under `docs/specs/` first — a file whose number the card names or whose content is
+  this card's spec is done, left alone — and only a number belonging to a *different* spec is
+  a collision worth stopping for. "Do not edit it" is untouched: reusing means leaving the
+  committed file alone. No test asserts this prose (the playbook tests assert non-emptiness
+  and `skelcrew attention`), so nothing needed updating; `bun run check` is green.

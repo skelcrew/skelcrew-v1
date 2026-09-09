@@ -1187,3 +1187,86 @@ test("the last window of tool activity still lands when the owner takes the run 
   expect(posted.at(-2)).toBe("ran 1 tool: Read");
   expect(posted.at(-1)).toBe("run stopped: released by simon");
 });
+
+// --- external review (Codex) ---
+
+test("a question the agent raised survives a successful spec run: the spec lands as a comment, not a handoff", async () => {
+  await initRepo();
+  const { driver } = scripted(function* () {
+    core.setBody(1, "# Spec\n\nGoal.", runnerMember.id);
+    askOwner(1, "spec conflict: the card asks for X but AGENTS.md forbids it");
+    yield { type: "result", ok: true };
+  });
+  start({ driver });
+  core.createCard({ title: "Written but blocked" }, owner.id);
+  const done = untilEvent((e) => e.cardId === 1 && e.type === "released");
+  core.moveCard(1, "spec", owner.id);
+  const release = await done;
+
+  const card = core.getCard(1);
+  expect(release.type === "released" && release.data.reason).toBe("blocked");
+  expect(comments(1).at(-1)).toContain("spec ready");
+  expect(card.attention).toMatchObject({
+    to: owner.id,
+    raisedBy: runnerMember.id,
+    note: "spec conflict: the card asks for X but AGENTS.md forbids it",
+    moves: [],
+  });
+  expect(requests(1)).toHaveLength(1);
+  expect(card.phase).toBe("spec");
+  expect(card.body).toBe("# Spec\n\nGoal.");
+  expect(card.claim).toBeNull();
+});
+
+test("the same on the code path: the pull request is a comment and the question still holds the card", async () => {
+  await initRepo();
+  const { driver } = scripted(async function* () {
+    await sh(worktreePath(1), "commit", "-q", "--allow-empty", "-m", "feat");
+    core.setRefs(1, { prUrl: PR }, runnerMember.id);
+    askOwner(1, "the spec's schema does not match the migration; which wins?");
+    yield { type: "result", ok: true };
+  });
+  start({ driver });
+  core.createCard({ title: "Shipped but blocked" }, owner.id);
+  const done = untilEvent((e) => e.cardId === 1 && e.type === "released");
+  core.moveCard(1, "code", owner.id);
+  const release = await done;
+
+  const card = core.getCard(1);
+  expect(release.type === "released" && release.data.reason).toBe("blocked");
+  expect(comments(1).at(-1)).toContain(`ready for review: ${PR}`);
+  expect(card.attention).toMatchObject({
+    note: "the spec's schema does not match the migration; which wins?",
+    moves: [],
+  });
+  expect(requests(1)).toHaveLength(1);
+  expect(card.phase).toBe("code");
+  expect(card.refs.commits).toEqual([
+    await sh(repo, "rev-parse", "skelcrew/1-shipped-but-blocked"),
+  ]);
+});
+
+test("answering the question runs the phase again, and that run hands the card on", async () => {
+  await initRepo();
+  let runs = 0;
+  const { driver } = scripted(function* () {
+    runs += 1;
+    core.setBody(1, `# Spec\n\nGoal, take ${runs}.`, runnerMember.id);
+    if (runs === 1) askOwner(1, "which base branch?");
+    yield { type: "result", ok: true };
+  });
+  start({ driver });
+  core.createCard({ title: "Answered" }, owner.id);
+  const blocked = untilEvent(released(1, "blocked"));
+  core.moveCard(1, "spec", owner.id);
+  await blocked;
+
+  const finished = untilEvent(released(1, "finished"));
+  core.resolveAttention(1, "main", owner.id);
+  await finished;
+
+  expect(runs).toBe(2);
+  const card = core.getCard(1);
+  expect(card.body).toBe("# Spec\n\nGoal, take 2.");
+  expect(card.attention).toMatchObject({ to: owner.id, note: "spec ready", moves: ["code"] });
+});

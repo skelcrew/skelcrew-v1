@@ -509,6 +509,22 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     core.releaseCard(id, { reason: "failed" }, member.id);
   };
   const finish = (note: string, moves: Phase[]): void => {
+    // The same rule as `fail()`, and it binds harder here: a question the agent raised
+    // outranks the handoff, because approving over an unanswered question is exactly what
+    // the owner must not be offered. The artefact landed, so it is said as a comment; the
+    // question stays as the card's request, which keeps the card out of the ready set until
+    // the owner answers it — and answering it makes the card ready again, so the phase runs
+    // afresh rather than advancing on the agent's word.
+    const open = core.getCard(id).attention;
+    if (open !== null && !isOwn(open)) {
+      core.comment(
+        id,
+        `${note}; not handed on while the agent's question is open — answering it runs the phase again`,
+        member.id,
+      );
+      core.releaseCard(id, { reason: "blocked" }, member.id);
+      return;
+    }
     core.requestAttention(id, { to: ownerId, note, moves }, member.id);
     core.releaseCard(id, { reason: "finished" }, member.id);
   };

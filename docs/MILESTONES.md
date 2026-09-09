@@ -231,9 +231,14 @@ Findings and decisions from the spec workflow itself, newest last:
   aborts the run.
   Permission requests queue — one is open on the card at a time, the next is raised when
   it resolves — and none is raised over a question the agent itself put on the card with
-  `skelcrew attention`, which the owner answers first; a failed run leaves such a question
-  in place and posts only its comment and release, replacing nothing but the run's own
-  request. Excerpts: each
+  `skelcrew attention`, which the owner answers first; a run that ends with such a question
+  open leaves it in place and replaces nothing but the run's own request — a failed run
+  posts only its comment and release, and a run whose artefact landed posts the artefact as
+  a comment (`spec ready; not handed on while the agent's question is open — answering it
+  runs the phase again`) and releases with reason `blocked`, so the owner is never offered
+  the phase-advancing approval over an unanswered question. An open request keeps the card
+  out of the ready set, so answering the question re-dispatches the card and the phase runs
+  afresh. Excerpts: each
   assistant text turn is a comment, cut at 2 KiB with a `… [truncated: N bytes; the full
   text is in the run log]` marker; tool calls are one comment per thirty seconds and at
   the end of the run (`ran 4 tools: Read ×2, Bash \`bun test\`, Edit`); every driver
