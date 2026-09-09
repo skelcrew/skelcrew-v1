@@ -20,6 +20,7 @@ import {
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
 import { allowlistFor } from "./allowlist";
+import { raiseAttention } from "./attention";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
@@ -282,7 +283,8 @@ export function startRunner(options: RunnerOptions): Runner {
           : undefined;
       if (driver === undefined || playbook === undefined) {
         core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
-        core.requestAttention(
+        raiseAttention(
+          core,
           id,
           { to: ownerId(), note: `no playbook for ${card.phase} yet; work in ${path}` },
           member.id,
@@ -335,7 +337,10 @@ export function startRunner(options: RunnerOptions): Runner {
       const text = within(`${step} failed: ${message(error)}`);
       try {
         core.comment(id, text, member.id);
-        core.requestAttention(id, { to: ownerId(), note: text }, member.id);
+        // A step that threw — git gone during the contract check, say — says so as a
+        // comment and a failed release, but never over a question the agent raised: that
+        // is what the owner has to answer, and `raiseAttention` leaves it standing.
+        raiseAttention(core, id, { to: ownerId(), note: text }, member.id);
       } catch (inner) {
         warn(`skelcrew runner: card ${id}: ${text}; and could not say so: ${message(inner)}`);
       }

@@ -21,6 +21,7 @@ import {
 } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
+import { raiseAttention } from "./attention";
 import type { Git } from "./git";
 
 /** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
@@ -318,7 +319,8 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   /**
    * Raises the next queued request — never over the run's own open one, and never over a
    * question the agent itself raised on the card (`skelcrew attention`), which the owner
-   * must answer first.
+   * must answer first. `raiseAttention` declines both, so the ask stays at the front of
+   * the queue and is raised again when the card is free.
    */
   const raiseNext = (): void => {
     if (abort.signal.aborted) {
@@ -326,19 +328,21 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       return;
     }
     while (current === undefined && asks.length > 0) {
-      if (core.getCard(id).attention !== null) return;
-      const ask = asks.shift() as Ask;
+      const ask = asks[0] as Ask;
+      let raised: Attention | undefined;
       try {
-        const raised = core.requestAttention(id, { to: ownerId, note: ask.note }, member.id)
-          .attention as Attention;
-        current = { ...ask, raised };
+        raised = raiseAttention(core, id, { to: ownerId, note: ask.note }, member.id);
       } catch (error) {
+        asks.shift();
         ask.resolve(deny(`could not ask: ${message(error)}`));
+        continue;
       }
+      if (raised === undefined) return;
+      asks.shift();
+      current = { ...ask, raised };
     }
   };
-  const isOwn = (open: Attention | null): boolean =>
-    open !== null &&
+  const isOwn = (open: Attention): boolean =>
     current !== undefined &&
     open.raisedAt === current.raised.raisedAt &&
     open.note === current.raised.note &&
@@ -386,11 +390,15 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // artefact before any handoff, and a card the agent moved on has skipped that gate.
       case "card_moved":
         movedAway = true;
+        // A move supersedes a release that came just before it: the card the release would
+        // have been reported on is not this card any more, so the run abandons instead.
+        releasedBy = undefined;
         if (event.actorId === member.id) selfAction ??= `moved its own card (to ${event.data.to})`;
         check();
         return;
       case "card_archived":
         movedAway = true;
+        releasedBy = undefined;
         if (event.actorId === member.id) selfAction ??= "archived its own card";
         check();
         return;
@@ -492,11 +500,15 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (graceTimer !== undefined) clearTimeout(graceTimer);
   }
 
-  /** The card is waiting on the owner with `note`, whether or not the claim survived. */
+  /**
+   * The card is waiting on the owner with `note`, whether or not the claim survived — and
+   * still waiting on the agent's question instead, if one is open, since `raiseAttention`
+   * leaves that one alone. The comment lands either way.
+   */
   const stopWith = (note: string): void => {
     try {
       core.comment(id, note, member.id);
-      core.requestAttention(id, { to: ownerId, note }, member.id);
+      raiseAttention(core, id, { to: ownerId, note }, member.id, isOwn);
     } catch (error) {
       warn(`skelcrew runner: card ${id}: ${note}; and could not say so: ${message(error)}`);
     }
@@ -525,10 +537,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     core.comment(id, note, member.id);
     // A question the agent raised on the card during the run outranks a generic failure:
     // it is what the owner has to answer, so it stays; only the run's own request is replaced.
-    const open = core.getCard(id).attention;
-    if (open === null || isOwn(open)) {
-      core.requestAttention(id, { to: ownerId, note }, member.id);
-    }
+    raiseAttention(core, id, { to: ownerId, note }, member.id, isOwn);
     core.releaseCard(id, { reason: "failed" }, member.id);
   };
   const finish = (note: string, moves: Phase[]): void => {
@@ -538,8 +547,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     // question stays as the card's request, which keeps the card out of the ready set until
     // the owner answers it — and answering it makes the card ready again, so the phase runs
     // afresh rather than advancing on the agent's word.
-    const open = core.getCard(id).attention;
-    if (open !== null && !isOwn(open)) {
+    if (raiseAttention(core, id, { to: ownerId, note, moves }, member.id, isOwn) === undefined) {
       core.comment(
         id,
         `${note}; not handed on while the agent's question is open — answering it runs the phase again`,
@@ -548,7 +556,6 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       core.releaseCard(id, { reason: "blocked" }, member.id);
       return;
     }
-    core.requestAttention(id, { to: ownerId, note, moves }, member.id);
     core.releaseCard(id, { reason: "finished" }, member.id);
   };
 

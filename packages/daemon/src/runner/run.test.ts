@@ -1323,3 +1323,73 @@ test("two runs of one card in the same second get separate logs, and the first r
   ]);
   expect(warnings).toEqual([]);
 });
+
+// --- external review (Codex), round 3 ---
+
+test("a git failure while verifying the code contract keeps the agent's question: the error is a comment and a failed release", async () => {
+  await initRepo();
+  const { driver } = scripted(async function* () {
+    await sh(worktreePath(1), "commit", "-q", "--allow-empty", "-m", "feat");
+    core.setRefs(1, { prUrl: PR }, runnerMember.id);
+    askOwner(1, "Which schema is correct?");
+    yield { type: "result", ok: true };
+  });
+  start({
+    driver,
+    git: {
+      ...git,
+      revList: () => Promise.reject(new Error("git unavailable during verification")),
+    },
+  });
+  await runCard("Verification broke", "code", "failed");
+
+  const card = core.getCard(1);
+  expect(comments(1).at(-1)).toBe("run playbook failed: git unavailable during verification");
+  expect(card.attention).toMatchObject({ to: owner.id, note: "Which schema is correct?" });
+  expect(requests(1)).toHaveLength(1);
+  expect(card.claim).toBeNull();
+});
+
+test("a run stopped by the agent's own hand keeps the agent's question too: the comment lands, the request does not", async () => {
+  await initRepo();
+  const { driver } = scripted(function* () {
+    askOwner(1, "Which schema is correct?");
+    core.releaseCard(1, { reason: "done, I think" }, runnerMember.id);
+    yield { type: "result", ok: true };
+  });
+  start({ driver });
+  core.createCard({ title: "Asked then let go" }, owner.id);
+  const failed = untilEvent(commentContaining(1, "run failed"));
+  core.moveCard(1, "spec", owner.id);
+  await failed;
+  await Bun.sleep(150);
+
+  const card = core.getCard(1);
+  expect(comments(1).at(-1)).toBe("run failed: the agent released its own card (done, I think)");
+  expect(card.attention).toMatchObject({ to: owner.id, note: "Which schema is correct?" });
+  expect(requests(1)).toHaveLength(1);
+  expect(card.claim).toBeNull();
+});
+
+test("a move that follows a release supersedes it: the run is abandoned and the moved card is left alone", async () => {
+  await initRepo();
+  const driver = endless();
+  start({ driver: driver.driver });
+  core.createCard({ title: "Taken back then moved" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working…"));
+  core.moveCard(1, "spec", owner.id);
+  await working;
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  core.releaseCard(1, { reason: "I'll take it from here" }, owner.id);
+  core.moveCard(1, "idea", owner.id);
+  await abandoned;
+  await Bun.sleep(300);
+
+  expect(driver.aborted()).toBe(true);
+  const card = core.getCard(1);
+  expect(card.phase).toBe("idea");
+  expect(card.attention).toBeNull();
+  expect(comments(1).filter((c) => c.startsWith("run "))).toEqual([
+    "run abandoned: claim lost; card is in idea",
+  ]);
+});
