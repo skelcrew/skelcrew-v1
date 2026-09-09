@@ -3,7 +3,7 @@ name: reviewer
 description: Independent senior-engineer review of an implementation against its specification. Use after the implementer reports done, in a fresh context. Reads the spec and the full diff against the base branch, classifies findings Critical/Important/Minor, and ends with APPROVED or CHANGES REQUESTED. Never modifies code.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: inherit
+model: fable
 effort: high
 color: red
 ---
