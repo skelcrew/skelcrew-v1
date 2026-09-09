@@ -401,4 +401,92 @@ is red first (one failing test).
   still insists the path is in the card's *first* comment; the new `runLogPaths` helper reads
   all of them alongside it.
 
-`bun run check`: green, 350 tests.
+### Round 3
+
+Four findings on the branch (`docs/plans/007-runner-runs-playbooks-conformance-review.md`,
+committed here as the external review record); the first two are one defect and were taken
+as one. Red first for that one and for the transcript; the playbook fix is documentation and
+has no red phase, said plainly rather than dressed up as one. Three commits, one per item, so
+the red-before-green order is in the branch history and not only in this file.
+
+- **Findings 1 and 2 — the attention invariant was hand-copied, so two of five raises did not
+  have it.** Round 1 taught `fail()` not to clobber a question the agent raised
+  (`open === null || isOwn(open)`); external round 1 taught `finish()` the same; `stopWith()`
+  and `runner.ts`'s outer catch were never taught it, and neither would the sixth site be.
+  Codex injected a rejecting `git.revList()` during Code contract verification and got the
+  agent's `Which schema is correct?` replaced by `run playbook failed: git unavailable during
+  verification` — the exception escapes `runPlaybook` and never reaches its guarded `fail()`.
+  **Mechanism: one helper, not the core.** The core route — `requestAttention` refusing to
+  replace an open request raised by a *different* member — was surveyed and rejected on
+  evidence, not on cost: the agent's `skelcrew attention` runs under `SKELCREW_AS=runner`, so
+  its question is raised by the **same** member as the run's own requests
+  (`run.test.ts`'s `askOwner` uses `runnerMember.id` for exactly that reason). "A different
+  member" cannot tell the agent's question from the runner's own note; only the run can, from
+  what the core recorded for its own request (`raisedAt`, `note`, `raisedBy`). A core rule
+  would therefore have been the wrong rule, whatever its architectural appeal — so
+  `runner/attention.ts` holds it instead: `raiseAttention(core, id, request, actor, mine?)`
+  raises unless a request the caller did not raise for itself is open, and returns `undefined`
+  when it declines, which each caller reports its own way (`fail` says nothing more, `finish`
+  posts the artefact and releases `blocked`, `stopWith` leaves its comment, `runner.ts`
+  releases `failed`). All five raises go through it and nothing under `runner/` calls
+  `core.requestAttention` any more; `raiseNext`'s hand-written `attention !== null` check and
+  the two copies of the guard are gone into it. `raiseNext` now peeks at the head of the queue
+  and only shifts once the raise succeeded, which keeps round 1's queueing behaviour exactly.
+  Also taken: `releasedBy` ignored a move that followed the release, so an owner who released
+  a card and then moved it got `run stopped: released by simon` on a card already in Idea.
+  `card_moved` and `card_archived` now clear `releasedBy`, so the move supersedes it and the
+  run abandons and leaves the new card state alone — which is what the `!movedAway` condition
+  already intended for the other order. `selfAction` is deliberately not cleared the same way:
+  round 2 designed it to speak on a card the agent itself moved, and the finding did not name
+  it.
+  **Red**, three tests: `expect(received).toMatchObject(expected)` /
+  `- "note": "Which schema is correct?"` / `+ "note": "run playbook failed: git unavailable
+  during verification"` for the git exception, the same with
+  `+ "note": "run failed: the agent released its own card (done, I think)"` for `stopWith`,
+  and for release-then-move `no matching event within 2000 ms; saw … 1:released 1:card_moved
+  1:comment 1:attention_requested 1:comment` — the run stopped instead of abandoning.
+- **Finding 3 — the run log was the display projection, not the stream.** `toEvents` ends in
+  `default: return []` and `run.ts` wrote the log from events, so an SDK `system/init`, a
+  plain user message and a thinking-only assistant turn reached the log not at all, while a
+  turn with several recognised blocks was written once per event through its `raw`. This
+  file's own "so the transcript holds the full stream" was false and is corrected above;
+  `docs/MILESTONES.md`'s "every driver event is a JSON line" is corrected too.
+  **Mechanism: a `log` callback on `AgentRunOptions`, and the driver writes.** `agent.ts`
+  already said the transcript is the driver's business; the run owns the file
+  (`log: (entry) => appendLog(logPath, entry)`), the driver owns what goes in it. `claude.ts`
+  gains `drive(messages, log)` — log the message, then yield what the card shows of it, and
+  return at the first result — which is also the first thing in that file testable without a
+  spawn. `AgentEvent` keeps its four kinds and loses `raw`: it existed only to carry the
+  transcript, and the union is now what the spec describes. The card's display is untouched.
+  The scripted test driver logs each event it yields, as the real one logs each message it
+  receives, so every existing run-log assertion holds verbatim.
+  **Red**: a new `claude.test.ts` test drives `[system/init, plain user, thinking-only,
+  two-block turn, result, one more]` and expects the first five in the log —
+  `expect(received).toEqual(expected)` with `- { "subtype": "init", … "type": "system" }`
+  received as `+ { "raw": { … }, "text": "Reading the card.", "type": "text" }`: three
+  messages missing and the one turn present twice. The table test at `claude.test.ts:27` was
+  fixed rather than kept: it still asserts that the system message and a message whose content
+  is not blocks produce no *display* event, and now also that both are in the transcript.
+- **Finding 4 — an unnumbered card lost its committed spec across a revision.** `code.md`
+  step 6 re-derived the file every run, by number or by content; a card with no number whose
+  approved text changed matches neither, so the refresh branch was unreachable and the
+  fallback allocated a second number. **Mechanism: record it, do not re-derive it.**
+  `skelcrew refs` carries `branch`, `commits`, and `prUrl` and has no key for a path, and
+  adding one is more core and CLI surface than this finding warrants — so the run posts
+  `spec committed: <path>` on the card and the next run reads it back from `skelcrew show
+  <id>`, which is only what exists today and is what "everything an agent does is visible on
+  its card" asks for anyway. The step is now three named parts — which file, what to write,
+  record the path — with number and content demoted to fallbacks for a card whose spec
+  predates the record, and every identified file compared against the card's body rather than
+  declared done, which is what keeps the revision loop from deadlocking and from duplicating.
+  `Do not edit it` is unchanged. **No red phase**: it is playbook prose, and the playbook
+  tests assert non-emptiness and `skelcrew attention` only. Nothing here was verified by
+  spawning a model.
+- **Not taken: amending the spec.** Codex asked for `code.md`'s three-round review budget
+  (`:101`, `:118`) to be reconciled by clarifying the specification. `AGENTS.md` forbids
+  editing an approved spec — it is the only record of what was intended — so the spec and the
+  playbook are both left alone and the tension is recorded in `docs/MILESTONES.md` as a note
+  for 008, which distinguishes the playbook's in-session bound from the runner-managed cycle
+  machinery 007 defers.
+
+`bun run check`: green, 354 tests.
