@@ -34,12 +34,15 @@ let server: { stop(): void };
 const extraServers: Array<{ stop(): void }> = [];
 const extraDirs: string[] = [];
 const watchers: Array<{ kill(): void }> = [];
+/** Shifts the daemon's clock relative to the CLI's real one; zero unless a test moves it. */
+let clockOffsetMs = 0;
 
 beforeEach(() => {
   // Real path: macOS's temp dir is a symlink, and the CLI names the path it resolved.
   dir = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
   socketPath = join(dir, "skelcrew.sock");
-  core = openCore(":memory:", { owner: "simon" });
+  clockOffsetMs = 0;
+  core = openCore(":memory:", { owner: "simon", now: () => Date.now() + clockOffsetMs });
   server = startServer({ core, socketPath });
 });
 
@@ -147,7 +150,19 @@ test("--version prints the shared version without a daemon or a repository", asy
 
 test("help and <command> --help print usage and exit 0", async () => {
   const help = await ok(["help"], { dataDir: null });
-  for (const verb of ["add", "ls", "show", "comment", "mv", "body", "refs", "archive"]) {
+  for (const verb of [
+    "add",
+    "ls",
+    "show",
+    "comment",
+    "mv",
+    "body",
+    "refs",
+    "archive",
+    "claim",
+    "heartbeat",
+    "release",
+  ]) {
     expect(help.stdout).toContain(verb);
   }
   const mv = await ok(["mv", "--help"], { dataDir: null });
@@ -976,4 +991,157 @@ test("watch still prints the event line when the notifier fails, and reports the
 
 test("watch --json is a usage error", async () => {
   await failed(2, ["watch", "--json"]);
+});
+
+// --- claims as leases (009) ---
+
+test("claim, heartbeat, and release as the holder, a second agent, and the owner", async () => {
+  core.createCard({ title: "Claimed" }, member("simon").id);
+  core.moveCard(1, "code", member("simon").id);
+
+  const claimed = await ok(["claim", "1", "--as", "crew-1"]);
+  const crew1 = member("crew-1");
+  const claim = core.getCard(1).claim;
+  expect(claim).toMatchObject({ by: crew1.id, ttlSeconds: 120 });
+  expect(claimed.stdout).toContain("#1");
+  expect(claimed.stdout).toContain("crew-1");
+  expect(claimed.stdout).toContain(localTime(claim?.expiresAt as number));
+
+  const shown = await ok(["show", "1"]);
+  const header = shown.stdout.split("\n\n")[0] as string;
+  expect(header).toContain("crew-1");
+  expect(header).toContain(localTime(claim?.claimedAt as number));
+  expect(header).toContain(localTime(claim?.expiresAt as number));
+  const claimedLine = lines(shown).find((l) => l.includes("claimed"));
+  expect(claimedLine).toContain("crew-1");
+  expect(claimedLine).toContain("120");
+
+  const conflict = await failed(1, ["claim", "1", "--as", "crew-2"]);
+  expect(conflict).toContain("conflict");
+  expect(conflict).toContain("crew-1");
+  expect(core.getCard(1).claim).toEqual(claim);
+
+  const beat = await ok(["heartbeat", "1", "--as", "crew-1"]);
+  expect(beat.stdout).toContain("#1");
+  expect(core.getCard(1).claim?.expiresAt).toBeGreaterThanOrEqual(claim?.expiresAt as number);
+  expect(core.getCard(1).claim?.claimedAt).toBe(claim?.claimedAt as number);
+  expect((await failed(1, ["heartbeat", "1", "--as", "crew-2"])).includes("conflict")).toBe(true);
+  expect((await failed(1, ["heartbeat", "1"])).includes("conflict")).toBe(true);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+
+  const forbidden = await failed(1, ["release", "1", "--as", "crew-2"]);
+  expect(forbidden).toContain("forbidden");
+  expect(core.getCard(1).claim?.by).toBe(crew1.id);
+
+  const released = json<Card>(await ok(["release", "1", "-m", "done", "--as", "crew-1", "--json"]));
+  expect(released.claim).toBeNull();
+  expect(released).toEqual(core.listCards()[0] as Card);
+  expect(core.getCard(1).activity.at(-1)).toMatchObject({
+    type: "released",
+    actorId: crew1.id,
+    data: { reason: "done" },
+  });
+
+  // The owner releases anyone's claim; without -m the reason is null.
+  const short = json<Card>(await ok(["claim", "1", "--ttl", "30", "--as", "crew-2", "--json"]));
+  expect(short.claim).toMatchObject({ by: member("crew-2").id, ttlSeconds: 30 });
+  expect(short).toEqual(core.listCards()[0] as Card);
+  const plain = await ok(["release", "1"]);
+  expect(plain.stdout).toContain("#1");
+  expect(core.getCard(1).claim).toBeNull();
+  expect(core.getCard(1).activity.at(-1)).toMatchObject({
+    type: "released",
+    actorId: member("simon").id,
+    data: { reason: null },
+  });
+  // Releasing an unclaimed card is a no-op.
+  await ok(["release", "1", "--as", "crew-2"]);
+  expect(core.getCard(1).activity.at(-1)?.type).toBe("released");
+  expect(core.getCard(1).activity.filter((e) => e.type === "released")).toHaveLength(2);
+
+  // The TTL is clamped, and heartbeat --json is the card.
+  const clamped = json<Card>(await ok(["claim", "1", "--ttl", "5", "--as", "crew-1", "--json"]));
+  expect(clamped.claim?.ttlSeconds).toBe(10);
+  const beatJson = json<Card>(await ok(["heartbeat", "1", "--as", "crew-1", "--json"]));
+  expect(beatJson).toEqual(core.listCards()[0] as Card);
+
+  // Usage errors exit 2; the daemon's refusals exit 1.
+  await failed(2, ["claim", "1", "--ttl", "abc"]);
+  await failed(2, ["claim", "1", "--ttl", ""]);
+  await failed(2, ["claim"]);
+  await failed(2, ["claim", "1", "extra"]);
+  await failed(2, ["heartbeat"]);
+  await failed(2, ["release"]);
+  await failed(2, ["release", "1", "extra"]);
+  core.createCard({ title: "Idea" }, member("simon").id);
+  const invalid = await failed(1, ["claim", "2", "--as", "crew-1"]);
+  expect(invalid).toContain("invalid");
+  expect(invalid).toContain("idea");
+  await failed(1, ["claim", "999"]);
+  await failed(1, ["heartbeat", "999"]);
+  await failed(1, ["release", "999"]);
+});
+
+test("ls marks a live claim * and a lapsed one ~; attention markers win; show prints the claim", async () => {
+  for (const title of ["Live", "Lapsed", "Waiting", "Free"]) {
+    const card = core.createCard({ title }, member("simon").id);
+    core.moveCard(card.id, "code", member("simon").id);
+  }
+  const agent = core.ensureMember("crew-1", "agent");
+  core.claimCard(1, {}, agent.id);
+  // Card 2's claim is made on a clock a minute behind the CLI's: lapsed, and unswept.
+  clockOffsetMs = -60_000;
+  core.claimCard(2, { ttlSeconds: 10 }, agent.id);
+  clockOffsetMs = 0;
+  core.claimCard(3, {}, agent.id);
+  core.requestAttention(3, { to: member("simon").id, note: "stuck" }, agent.id);
+  expect(core.getCard(2).claim?.expiresAt).toBeLessThan(Date.now());
+
+  const asOwner = lines(await ok(["ls"]));
+  expect(asOwner).toHaveLength(4);
+  expect(asOwner[0]?.[0]).toBe("*");
+  expect(asOwner[0]).toContain("#1");
+  expect(asOwner[1]?.[0]).toBe("~");
+  expect(asOwner[1]).toContain("#2");
+  expect(asOwner[2]?.[0]).toBe("!");
+  expect(asOwner[2]).toContain("#3");
+  expect(asOwner[3]?.[0]).toBe(" ");
+  expect(asOwner[3]).toContain("#4");
+  expect(asOwner[3]).toContain(TRACK.code);
+
+  const asAgent = lines(await ok(["ls", "--as", "crew-1"]));
+  expect(asAgent.map((l) => l[0])).toEqual(["*", "~", "?", " "]);
+  expect(json<Card[]>(await ok(["ls", "--json"]))).toEqual(core.listCards());
+
+  const lapsed = core.getCard(2).claim;
+  const shown = await ok(["show", "2"]);
+  const header = shown.stdout.split("\n\n")[0] as string;
+  expect(header).toContain("crew-1");
+  expect(header).toContain(localTime(lapsed?.claimedAt as number));
+  expect(header).toContain(localTime(lapsed?.expiresAt as number));
+  expect(header).toContain("lapsed");
+  const liveHeader = (await ok(["show", "1"])).stdout.split("\n\n")[0] as string;
+  expect(liveHeader).toContain("crew-1");
+  expect(liveHeader).not.toContain("lapsed");
+
+  // The sweep clears the lapsed one; ls drops its marker and show records the interruption.
+  expect(core.sweepClaims()).toEqual([2]);
+  const after = lines(await ok(["ls"]));
+  expect(after.map((l) => l[0])).toEqual(["*", " ", "!", " "]);
+  const shownAfter = await ok(["show", "2"]);
+  expect(shownAfter.stdout.split("\n\n")[0]).not.toContain("crew-1");
+  const interruptedLine = lines(shownAfter).find((l) => l.includes("interrupted"));
+  expect(interruptedLine).toContain("crew-1");
+  expect(interruptedLine).toContain(localTime(lapsed?.expiresAt as number));
+
+  // A release clears the marker too, and its line carries the reason.
+  await ok(["release", "1", "-m", "paused", "--as", "crew-1"]);
+  expect(lines(await ok(["ls"])).map((l) => l[0])).toEqual([" ", " ", "!", " "]);
+  const releasedLine = lines(await ok(["show", "1"])).find((l) => l.includes("released"));
+  expect(releasedLine).toContain("crew-1");
+  expect(releasedLine).toContain("paused");
+  // Resolving the request on the claimed card shows its claim marker again.
+  await ok(["resolve", "3"]);
+  expect(lines(await ok(["ls"])).map((l) => l[0])).toEqual([" ", " ", "*", " "]);
+  expect(json<CardDetail>(await ok(["show", "3", "--json"]))).toEqual(core.getCard(3));
 });

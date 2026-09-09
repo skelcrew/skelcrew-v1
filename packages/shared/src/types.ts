@@ -33,6 +33,19 @@ export interface OpenAttention extends Attention {
   cardId: number;
 }
 
+/**
+ * A lease on the card: who is working on it, since when, and until when unless renewed.
+ * A card has at most one. It is live while `expiresAt` is in the future; a lapsed claim
+ * stays visible until the next claim or sweep clears it, so a reader can tell "lapsed, not
+ * yet swept" from "live". `ttlSeconds` is what a heartbeat extends it by.
+ */
+export interface Claim {
+  by: number;
+  claimedAt: number;
+  expiresAt: number;
+  ttlSeconds: number;
+}
+
 export interface Card {
   id: number;
   title: string;
@@ -42,6 +55,8 @@ export interface Card {
   refs: CardRefs;
   /** Who the card is waiting on, or null. "Waiting" is this being non-null. */
   attention: Attention | null;
+  /** Who holds the card, or null. "Running" is this being live. */
+  claim: Claim | null;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
@@ -66,6 +81,12 @@ export const BRANCH_MAX_BYTES = 256;
 export const COMMITS_MAX_COUNT = 256;
 /** Largest PR URL in a card's refs, in UTF-8 bytes. A URL is a reference, never a payload. */
 export const PR_URL_MAX_BYTES = 256;
+/** A claim's lease when no TTL is given, in seconds. */
+export const CLAIM_TTL_DEFAULT_SECONDS = 120;
+/** The shortest lease a claim may ask for; a smaller TTL is raised to this. */
+export const CLAIM_TTL_MIN_SECONDS = 10;
+/** The longest lease a claim may ask for; a larger TTL is lowered to this. */
+export const CLAIM_TTL_MAX_SECONDS = 3600;
 
 export type ActivityEvent =
   | { type: "member_joined"; data: { name: string; kind: MemberKind } }
@@ -78,7 +99,13 @@ export type ActivityEvent =
   | { type: "card_archived"; data: Record<string, never> }
   /** The same fields as `Card.attention`, so an event can be matched to the open request. */
   | { type: "attention_requested"; data: Attention }
-  | { type: "attention_resolved"; data: AttentionResolution };
+  | { type: "attention_resolved"; data: AttentionResolution }
+  /** A new claim by the actor. Renewals and heartbeats record nothing. */
+  | { type: "claimed"; data: { ttlSeconds: number; expiresAt: number } }
+  /** The actor released the claim; `"moved"` and `"archived"` are the core's own reasons. */
+  | { type: "released"; data: { reason: string | null } }
+  /** The claim lapsed. Attributed to the former holder, `by`; the sweep is not a member. */
+  | { type: "run_interrupted"; data: { by: number; expiresAt: number } };
 
 /** How an open request went away. The resolving actor is the event's `actorId`. */
 export type AttentionResolution =

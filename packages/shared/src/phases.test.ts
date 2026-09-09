@@ -18,3 +18,8 @@ test("only code may be left by any member; the rest are the owner's", () => {
   const exits = Object.fromEntries(PHASES.map((p) => [p.id, p.exit]));
   expect(exits).toEqual({ idea: "owner", spec: "owner", code: "any", pr: "owner", done: "owner" });
 });
+
+test("only spec and code are claimable: the phases where a run happens", () => {
+  const claimable = Object.fromEntries(PHASES.map((p) => [p.id, p.claimable]));
+  expect(claimable).toEqual({ idea: false, spec: true, code: true, pr: false, done: false });
+});

@@ -177,6 +177,7 @@ test("a database created by 002's schema migrates forward and its cards read bac
       phase: "spec",
       refs: { branch: "feat/x" },
       attention: null,
+      claim: null,
       archivedAt: null,
       createdAt: 1,
       updatedAt: 2,
@@ -190,4 +191,84 @@ test("a database created by 002's schema migrates forward and its cards read bac
     core.close();
   }
   expect(userVersion(path)).toBe(SCHEMA_VERSION);
+});
+
+/** The 010 schema: 002's plus the attention column, at version 2. */
+const SCHEMA_010 = `${SCHEMA_002.replace("PRAGMA user_version = 1;", "")}
+  ALTER TABLE cards ADD COLUMN attention TEXT;
+  PRAGMA user_version = 2;
+`;
+
+test("a database created by 010's schema migrates forward and its cards read back with claim null", () => {
+  const raw = new Database(path, { create: true });
+  raw.exec(SCHEMA_010);
+  raw.exec("INSERT INTO members (name, kind, created_at) VALUES ('simon', 'human', 1)");
+  raw.exec(
+    `INSERT INTO cards (title, body, phase, refs, attention, created_at, updated_at) VALUES ('old', 'b', 'code', '{}', NULL, 1, 2)`,
+  );
+  raw.exec(
+    `INSERT INTO activity (card_id, actor_id, type, data, created_at) VALUES (1, 1, 'card_created', '{"title":"old"}', 1)`,
+  );
+  raw.close();
+  expect(userVersion(path)).toBe(2);
+
+  const core = openCore(path, { owner: "someone-else" });
+  try {
+    expect(core.listMembers().map((m) => m.name)).toEqual(["simon"]);
+    const [card] = core.listCards();
+    expect(card).toEqual({
+      id: 1,
+      title: "old",
+      body: "b",
+      phase: "code",
+      refs: {},
+      attention: null,
+      claim: null,
+      archivedAt: null,
+      createdAt: 1,
+      updatedAt: 2,
+    });
+    expect(core.getCard(1).claim).toBeNull();
+    expect(core.getCard(1).activity).toHaveLength(1);
+    expect(core.sweepClaims()).toEqual([]);
+    expect(core.claimCard(1, {}, 1).claim?.by).toBe(1);
+  } finally {
+    core.close();
+  }
+  expect(userVersion(path)).toBe(SCHEMA_VERSION);
+});
+
+test("claims survive close and reopen", () => {
+  const T0 = 1_700_000_000_000;
+  const first = openCore(path, { owner: "simon", now: () => T0 });
+  const owner = first.listMembers()[0];
+  if (!owner) throw new Error("no owner");
+  const agent = first.ensureMember("crew-1", "agent");
+  const a = first.createCard({ title: "a" }, owner.id);
+  const b = first.createCard({ title: "b" }, owner.id);
+  first.moveCard(a.id, "spec", owner.id);
+  first.moveCard(b.id, "code", owner.id);
+  first.claimCard(a.id, { ttlSeconds: 300 }, agent.id);
+  first.claimCard(b.id, {}, owner.id);
+  const snapshot = { cards: first.listCards(), activity: first.activitySince(0) };
+  expect(snapshot.cards.map((c) => c.claim?.by)).toEqual([agent.id, owner.id]);
+  first.close();
+
+  const second = openCore(path, { owner: "simon", now: () => T0 + 1000 });
+  try {
+    expect(second.listCards()).toEqual(snapshot.cards);
+    expect(second.getCard(a.id).claim).toEqual({
+      by: agent.id,
+      claimedAt: T0,
+      expiresAt: T0 + 300_000,
+      ttlSeconds: 300,
+    });
+    expect(second.activitySince(0)).toEqual(snapshot.activity);
+    // The lease is the same lease: the holder renews it and another agent cannot take it.
+    expect(second.heartbeat(a.id, agent.id).claim?.expiresAt).toBe(T0 + 1000 + 300_000);
+    const other = second.ensureMember("crew-2", "agent");
+    expect(() => second.claimCard(a.id, {}, other.id)).toThrow(CoreError);
+  } finally {
+    second.close();
+  }
 });

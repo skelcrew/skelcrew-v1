@@ -15,6 +15,10 @@ import {
   type Card,
   type CardDetail,
   type CardRefs,
+  CLAIM_TTL_DEFAULT_SECONDS,
+  CLAIM_TTL_MAX_SECONDS,
+  CLAIM_TTL_MIN_SECONDS,
+  type Claim,
   COMMENT_MAX_BYTES,
   COMMITS_MAX_COUNT,
   MEMBER_NAME_MAX_BYTES,
@@ -62,6 +66,23 @@ export interface Core {
   /** Open requests, oldest first, optionally only those addressed to `to`. */
   listAttention(options?: { to?: number }): OpenAttention[];
 
+  /**
+   * Takes the card as a lease, or renews the actor's own. Succeeds when the card is
+   * claimable (phase claimable, not archived, no live claim) or the actor already holds
+   * it; `conflict` when someone else does, naming them and the expiry. A lapsed claim
+   * counts as absent: claiming over it records `run_interrupted` for its holder first.
+   */
+  claimCard(id: number, options: { ttlSeconds?: number }, actorId: number): Card;
+  /** Extends the actor's live claim by its TTL, recording nothing. Otherwise `conflict`. */
+  heartbeat(id: number, actorId: number): Card;
+  /** Clears the claim; the holder or the owner may. Unclaimed is a no-op recording nothing. */
+  releaseCard(id: number, options: { reason?: string }, actorId: number): Card;
+  /**
+   * Expires every lapsed claim, recording `run_interrupted` attributed to its former
+   * holder. The daemon's periodic call, not a member action. Returns the affected ids.
+   */
+  sweepClaims(): number[];
+
   /** Every event with `seq` greater than the given one, in `seq` order. */
   activitySince(seq: number): Activity[];
   /** Delivers every event as it is recorded, in `seq` order. Returns the unsubscribe. */
@@ -84,6 +105,7 @@ interface CardRow {
   phase: Phase;
   refs: string;
   attention: string | null;
+  claim: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -113,6 +135,7 @@ function toCard(row: CardRow): Card {
     phase: row.phase,
     refs: JSON.parse(row.refs) as CardRefs,
     attention: row.attention === null ? null : (JSON.parse(row.attention) as Attention),
+    claim: row.claim === null ? null : (JSON.parse(row.claim) as Claim),
     archivedAt: row.archived_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -223,9 +246,14 @@ function validateRefs(refs: unknown): CardRefs {
   return patch;
 }
 
-export function openCore(path: string, options: { owner?: string } = {}): Core {
+/**
+ * `now` is the clock every timestamp and every expiry check reads. The daemon passes
+ * nothing; tests pass one they can move, so a lease lapses without anyone sleeping.
+ */
+export function openCore(path: string, options: { owner?: string; now?: () => number } = {}): Core {
   // Validated before the database is touched, so a bad name opens nothing.
   const ownerName = memberName(options.owner ?? userInfo().username);
+  const now = options.now ?? Date.now;
   const db: Database = openDb(path);
   const listeners = new Set<(event: Activity) => void>();
 
@@ -261,6 +289,18 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
   );
   const updateAttention = db.query<never, [string | null, number, number]>(
     "UPDATE cards SET attention = ?, updated_at = ? WHERE id = ?",
+  );
+  // Conditional on the card being claimable by this actor at the moment of the write:
+  // unclaimed, lapsed, or already theirs. The row count says whether the claim took.
+  const updateClaimIfFree = db.query<never, [string, number, number, number, number]>(
+    `UPDATE cards SET claim = ?, updated_at = ? WHERE id = ?
+       AND (claim IS NULL OR json_extract(claim, '$.expiresAt') <= ? OR json_extract(claim, '$.by') = ?)`,
+  );
+  const updateClaim = db.query<never, [string | null, number, number]>(
+    "UPDATE cards SET claim = ?, updated_at = ? WHERE id = ?",
+  );
+  const selectLapsedClaims = db.query<CardRow, [number]>(
+    "SELECT * FROM cards WHERE claim IS NOT NULL AND json_extract(claim, '$.expiresAt') <= ? ORDER BY id",
   );
   // Oldest first means raise order: the seq of the card's latest `attention_requested`,
   // which two raises in the same millisecond still tell apart.
@@ -308,8 +348,8 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
     return card;
   }
 
-  /** The note as stored: non-empty and within the comment cap, like a comment. */
-  function requireText(what: "comment" | "note", text: string): void {
+  /** The note or reason as stored: non-empty and within the comment cap, like a comment. */
+  function requireText(what: "comment" | "note" | "reason", text: string): void {
     if (typeof text !== "string" || text.trim().length === 0) {
       throw new CoreError("invalid", `${what} must not be empty`);
     }
@@ -330,6 +370,54 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
     return moves as Phase[];
   }
 
+  /** The lease length as stored: an integer, clamped to the bounds. */
+  function claimTtl(ttlSeconds: number | undefined): number {
+    if (ttlSeconds === undefined) return CLAIM_TTL_DEFAULT_SECONDS;
+    if (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds)) {
+      throw new CoreError("invalid", "ttlSeconds must be an integer");
+    }
+    return Math.min(CLAIM_TTL_MAX_SECONDS, Math.max(CLAIM_TTL_MIN_SECONDS, ttlSeconds));
+  }
+
+  /** A claim is live while its expiry is in the future; at or past it, the lease has lapsed. */
+  function liveClaim(card: Card, at: number): Claim | null {
+    return card.claim !== null && card.claim.expiresAt > at ? card.claim : null;
+  }
+
+  function claimConflict(card: Card, claim: Claim): CoreError {
+    const holder = selectMember.get(claim.by);
+    const who = holder ? holder.name : `member ${claim.by}`;
+    return new CoreError(
+      "conflict",
+      `card ${card.id} is claimed by ${who} until ${new Date(claim.expiresAt).toISOString()}`,
+    );
+  }
+
+  /**
+   * Clears a stored claim as part of a move or an archive. A live claim is released by
+   * the actor, whose action ended the work in this phase. A lapsed one was already over:
+   * it records the interruption the sweep would have, attributed to the former holder, so
+   * a run that died is never written up as a clean handoff.
+   */
+  function releaseOn(
+    card: Card,
+    reason: "moved" | "archived",
+    at: number,
+    actorId: number,
+    log: (cardId: number | null, actorId: number, event: ActivityEvent) => Activity,
+  ): void {
+    if (card.claim === null) return;
+    updateClaim.run(null, at, card.id);
+    if (card.claim.expiresAt > at) {
+      log(card.id, actorId, { type: "released", data: { reason } });
+    } else {
+      log(card.id, card.claim.by, {
+        type: "run_interrupted",
+        data: { by: card.claim.by, expiresAt: card.claim.expiresAt },
+      });
+    }
+  }
+
   /**
    * One mutation: `fn` runs inside a transaction and records events through `log`; the
    * events are emitted after the commit. `fn` may return a `CoreError` instead of throwing
@@ -342,7 +430,7 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
   ): T {
     const recorded: Activity[] = [];
     const log = (cardId: number | null, actorId: number, event: ActivityEvent): Activity => {
-      const createdAt = Date.now();
+      const createdAt = now();
       const row = insertActivity.get(
         cardId,
         actorId,
@@ -393,7 +481,7 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
 
   function seedOwner(): void {
     if (selectOwner.get()) return;
-    insertMember.get(ownerName, "human", Date.now());
+    insertMember.get(ownerName, "human", now());
   }
 
   seedOwner();
@@ -417,7 +505,7 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
             `there is one human member, ${owner.name}; ${trimmed} cannot join as a second`,
           );
         }
-        const createdAt = Date.now();
+        const createdAt = now();
         const row = insertMember.get(trimmed, kind, createdAt) as { id: number };
         const member: Member = { id: row.id, name: trimmed, kind, createdAt };
         log(null, member.id, { type: "member_joined", data: { name: trimmed, kind } });
@@ -435,8 +523,8 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
         if (byteLength(body) > BODY_MAX_BYTES) {
           throw new CoreError("invalid", `body exceeds ${BODY_MAX_BYTES} bytes`);
         }
-        const now = Date.now();
-        const row = insertCard.get(title, body, now, now) as { id: number };
+        const at = now();
+        const row = insertCard.get(title, body, at, at) as { id: number };
         log(row.id, actorId, { type: "card_created", data: { title } });
         return readCard(row.id);
       });
@@ -470,12 +558,19 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
           });
           return error;
         }
-        const now = Date.now();
-        updatePhase.run(phase, now, id);
+        const at = now();
+        // Someone else's live claim is their half-done work: an agent may not hand it off.
+        const live = liveClaim(card, at);
+        if (live !== null && live.by !== actorId && actor.kind !== "human") {
+          throw claimConflict(card, live);
+        }
+        updatePhase.run(phase, at, id);
         log(id, actorId, { type: "card_moved", data: { from: from.id, to: phase } });
-        // The move is the decision: an open request resolves in the same transaction.
+        // The move ends the work in this phase and is the decision: the claim is released
+        // and an open request resolves, all in the same transaction.
+        releaseOn(card, "moved", at, actorId, log);
         if (card.attention !== null) {
-          updateAttention.run(null, now, id);
+          updateAttention.run(null, at, id);
           log(id, actorId, { type: "attention_resolved", data: { how: "moved", phase } });
         }
         return readCard(id);
@@ -490,7 +585,7 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
         if (bytes > BODY_MAX_BYTES) {
           throw new CoreError("invalid", `body exceeds ${BODY_MAX_BYTES} bytes`);
         }
-        updateBody.run(body, Date.now(), id);
+        updateBody.run(body, now(), id);
         log(id, actorId, { type: "body_set", data: { bytes } });
         return readCard(id);
       });
@@ -510,7 +605,7 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
         getMember(actorId);
         const card = readMutableCard(id);
         const merged: CardRefs = { ...card.refs, ...validateRefs(refs) };
-        updateRefs.run(JSON.stringify(merged), Date.now(), id);
+        updateRefs.run(JSON.stringify(merged), now(), id);
         log(id, actorId, { type: "refs_set", data: { refs: merged } });
         return readCard(id);
       });
@@ -518,14 +613,21 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
 
     archiveCard(id, actorId) {
       return mutate((log) => {
-        getMember(actorId);
+        const actor = getMember(actorId);
         const card = readCard(id);
         if (card.archivedAt !== null) return card;
-        const now = Date.now();
-        updateArchived.run(now, now, id);
+        const at = now();
+        // Archiving ends the holder's run outright; like a move, an agent may not do that
+        // to someone else's live claim. The owner may.
+        const live = liveClaim(card, at);
+        if (live !== null && live.by !== actorId && actor.kind !== "human") {
+          throw claimConflict(card, live);
+        }
+        updateArchived.run(at, at, id);
         log(id, actorId, { type: "card_archived", data: {} });
+        releaseOn(card, "archived", at, actorId, log);
         if (card.attention !== null) {
-          updateAttention.run(null, now, id);
+          updateAttention.run(null, at, id);
           log(id, actorId, { type: "attention_resolved", data: { how: "archived" } });
         }
         return readCard(id);
@@ -539,15 +641,15 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
         const to = getMember(request.to).id;
         requireText("note", request.note);
         const moves = validateMoves(request.moves);
-        const now = Date.now();
+        const at = now();
         const attention: Attention = {
           to,
           note: request.note,
           moves,
           raisedBy: actorId,
-          raisedAt: now,
+          raisedAt: at,
         };
-        updateAttention.run(JSON.stringify(attention), now, id);
+        updateAttention.run(JSON.stringify(attention), at, id);
         // The event carries the record itself, so a consumer can match it to the card's
         // open request by value rather than by comparing two clock reads.
         log(id, actorId, { type: "attention_requested", data: attention });
@@ -573,9 +675,107 @@ export function openCore(path: string, options: { owner?: string } = {}): Core {
           requireText("comment", text);
           log(id, actorId, { type: "comment", data: { text } });
         }
-        updateAttention.run(null, Date.now(), id);
+        updateAttention.run(null, now(), id);
         log(id, actorId, { type: "attention_resolved", data: { how: "answered" } });
         return readCard(id);
+      });
+    },
+
+    claimCard(id, options, actorId) {
+      return mutate((log) => {
+        getMember(actorId);
+        const card = readMutableCard(id);
+        const def = phaseDef(card.phase) as PhaseDef;
+        if (!def.claimable) {
+          throw new CoreError("invalid", `card ${id} is in ${def.id}, which is not claimable`);
+        }
+        const ttlSeconds = claimTtl(options.ttlSeconds);
+        const at = now();
+        const live = liveClaim(card, at);
+        if (live !== null && live.by !== actorId) throw claimConflict(card, live);
+        // Renewing keeps the lease's start; a lapsed claim is over, so a new one begins.
+        const renewing = live !== null;
+        const claim: Claim = {
+          by: actorId,
+          claimedAt: renewing ? live.claimedAt : at,
+          expiresAt: at + ttlSeconds * 1000,
+          ttlSeconds,
+        };
+        const { changes } = updateClaimIfFree.run(JSON.stringify(claim), at, id, at, actorId);
+        if (changes !== 1) {
+          throw new CoreError("conflict", `card ${id} was claimed by someone else first`);
+        }
+        if (renewing) return readCard(id);
+        if (card.claim !== null) {
+          log(id, card.claim.by, {
+            type: "run_interrupted",
+            data: { by: card.claim.by, expiresAt: card.claim.expiresAt },
+          });
+        }
+        log(id, actorId, { type: "claimed", data: { ttlSeconds, expiresAt: claim.expiresAt } });
+        return readCard(id);
+      });
+    },
+
+    heartbeat(id, actorId) {
+      return mutate(() => {
+        getMember(actorId);
+        const card = readCard(id);
+        const at = now();
+        const live = liveClaim(card, at);
+        if (live === null) throw new CoreError("conflict", `card ${id} has no live claim`);
+        if (live.by !== actorId) throw claimConflict(card, live);
+        const claim: Claim = { ...live, expiresAt: at + live.ttlSeconds * 1000 };
+        updateClaim.run(JSON.stringify(claim), at, id);
+        return readCard(id);
+      });
+    },
+
+    releaseCard(id, options, actorId) {
+      return mutate((log) => {
+        const actor = getMember(actorId);
+        const card = readCard(id);
+        // A bad reason is a bad call whatever the card's state.
+        const reason = options.reason ?? null;
+        if (reason !== null) requireText("reason", reason);
+        if (card.claim === null) return card;
+        const at = now();
+        // A lapsed claim counts as absent: anyone may clear it, and what is recorded is the
+        // interruption of the holder's run, as the sweep would have.
+        if (liveClaim(card, at) === null) {
+          updateClaim.run(null, at, id);
+          log(id, card.claim.by, {
+            type: "run_interrupted",
+            data: { by: card.claim.by, expiresAt: card.claim.expiresAt },
+          });
+          return readCard(id);
+        }
+        // Fails closed: an agent cannot take a card off someone else. The owner may.
+        if (actor.kind !== "human" && card.claim.by !== actorId) {
+          throw new CoreError(
+            "forbidden",
+            `card ${id} is claimed by member ${card.claim.by}; ${actor.name} may not release it`,
+          );
+        }
+        updateClaim.run(null, at, id);
+        log(id, actorId, { type: "released", data: { reason } });
+        return readCard(id);
+      });
+    },
+
+    sweepClaims() {
+      return mutate((log) => {
+        const at = now();
+        const lapsed = selectLapsedClaims.all(at).map(toCard);
+        for (const card of lapsed) {
+          const claim = card.claim as Claim;
+          updateClaim.run(null, at, card.id);
+          log(card.id, claim.by, {
+            type: "run_interrupted",
+            data: { by: claim.by, expiresAt: claim.expiresAt },
+          });
+        }
+        return lapsed.map((card) => card.id);
       });
     },
 

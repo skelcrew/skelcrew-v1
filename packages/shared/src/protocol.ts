@@ -50,6 +50,16 @@ export interface Methods {
   /** Open requests, oldest first, optionally only those addressed to `to`. */
   listAttention: { params: { to?: number }; result: OpenAttention[] };
   /**
+   * Takes the card, or renews the member's own claim. `ttlSeconds` defaults to 120 and is
+   * clamped to 10 through 3600. `conflict` when someone else holds a live claim; `invalid`
+   * when the phase is not claimable or the card is archived.
+   */
+  claimCard: { params: { id: number; ttlSeconds?: number }; result: Card };
+  /** Extends the member's live claim by its TTL. `conflict` when there is none to extend. */
+  heartbeat: { params: { id: number }; result: Card };
+  /** Clears the claim. The holder or the owner may; `forbidden` for anyone else. */
+  releaseCard: { params: { id: number; reason?: string }; result: Card };
+  /**
    * Turns on the `activity` stream for the connection. With `since`, events with
    * `seq > since` are delivered first, then live ones, with no gap or duplicate across the
    * join. Subscribing twice is a no-op.
@@ -77,6 +87,9 @@ export const METHOD_NAMES: readonly MethodName[] = [
   "requestAttention",
   "resolveAttention",
   "listAttention",
+  "claimCard",
+  "heartbeat",
+  "releaseCard",
   "subscribe",
   "unsubscribe",
 ];
