@@ -325,7 +325,22 @@ Findings and decisions from the spec workflow itself, newest last:
   `.claude/skills/spec/SKILL.md`, `.claude/agents/reviewer.md` and
   `.claude/agents/implementer.md` — this repo's own playbooks, which 007 does not touch —
   and from there in the daemon's built-in playbooks when the runner learns to run review and
-  verification phases.
+  verification phases. The sharpest form of it, which cost more rounds than anything
+  else: a fix that lands on one path and not its twin reads as complete to every later
+  reviewer, because the run record writes it up as settled and the next round looks
+  elsewhere. Round 1 stopped a *failed* run from clobbering a question the agent raised but
+  left the *successful* finish doing exactly that; round 4 taught the Code playbook that a
+  revision run reuses the existing pull request but not that it reuses the existing spec
+  file; the fix for that then matched the committed spec by number *or* content, so an
+  approved revision left a stale spec in the PR. None of the three was found by the round
+  that made it, or by the rounds after; two were found by an external reviewer (Codex) after
+  four internal rounds had passed the code, and one by the round after that. A finding is
+  not closed when its reported case passes — it is closed when the cases next to it have
+  been looked at, and "fixed" in a run record has to mean that or it misleads the next
+  reader. Worth pairing with the other lesson 007 teaches by being 3,576 lines across 25
+  files: this should have been two or three specs, and the phases that touch the outside
+  world — subprocesses, permissions, irreversible actions — are where the combinatorial
+  cases live and where splitting pays.
 
 ## 001 — Project scaffold
 
