@@ -6,7 +6,7 @@
  * the core one to one, minus `actorId`.
  */
 import type { Phase } from "./phases";
-import type { Activity, Card, CardDetail, CardRefs, Member } from "./types";
+import type { Activity, Card, CardDetail, CardRefs, Member, OpenAttention } from "./types";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -40,6 +40,15 @@ export interface Methods {
   archiveCard: { params: { id: number }; result: Card };
   activitySince: { params: { seq: number }; result: Activity[] };
   listMembers: { params: Record<string, never>; result: Member[] };
+  /** Hands the card to member `to`. `moves` are phase ids suggested as resolutions. */
+  requestAttention: {
+    params: { id: number; to: number; note: string; moves?: Phase[] };
+    result: Card;
+  };
+  /** Answers the open request; `text`, if given, is posted as a comment first. */
+  resolveAttention: { params: { id: number; text?: string }; result: Card };
+  /** Open requests, oldest first, optionally only those addressed to `to`. */
+  listAttention: { params: { to?: number }; result: OpenAttention[] };
   /**
    * Turns on the `activity` stream for the connection. With `since`, events with
    * `seq > since` are delivered first, then live ones, with no gap or duplicate across the
@@ -65,6 +74,9 @@ export const METHOD_NAMES: readonly MethodName[] = [
   "archiveCard",
   "activitySince",
   "listMembers",
+  "requestAttention",
+  "resolveAttention",
+  "listAttention",
   "subscribe",
   "unsubscribe",
 ];

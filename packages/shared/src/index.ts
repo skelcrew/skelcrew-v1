@@ -35,6 +35,8 @@ export {
   type Activity,
   type ActivityEvent,
   type ActivityType,
+  type Attention,
+  type AttentionResolution,
   BODY_MAX_BYTES,
   BRANCH_MAX_BYTES,
   type Card,
@@ -45,6 +47,7 @@ export {
   MEMBER_NAME_MAX_BYTES,
   type Member,
   type MemberKind,
+  type OpenAttention,
   PR_URL_MAX_BYTES,
   TITLE_MAX_BYTES,
 } from "./types";

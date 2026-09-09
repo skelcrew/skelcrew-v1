@@ -6,7 +6,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { ParseArgsOptionsConfig } from "node:util";
-import type { Client } from "@skelcrew/shared";
+import { type Client, PHASES, type Phase } from "@skelcrew/shared";
 
 export class UsageError extends Error {
   constructor(message: string) {
@@ -24,8 +24,12 @@ export interface Args {
 
 export interface Context {
   client: Client;
+  /** Where the daemon was reached, for messages about losing it. */
+  socketPath: string;
   /** All of stdin, read once. */
   stdin(): Promise<string>;
+  /** One line to stdout, as it happens; for a command that streams rather than returns. */
+  out(line: string): void;
   /** One line to stderr, as it happens. */
   warn(line: string): void;
 }
@@ -51,6 +55,17 @@ export function parseId(raw: string | undefined): number {
   const digits = raw.startsWith("#") ? raw.slice(1) : raw;
   if (!/^\d+$/.test(digits)) throw new UsageError(`"${raw}" is not a card id`);
   return Number(digits);
+}
+
+/** A phase id as typed, case-insensitively. Anything else is a usage error listing the ids. */
+export function parsePhase(raw: string | undefined): Phase {
+  if (raw === undefined) throw new UsageError("missing <phase>");
+  const phase = PHASES.find((p) => p.id === raw.toLowerCase());
+  if (!phase) {
+    const ids = PHASES.map((p) => p.id).join(", ");
+    throw new UsageError(`unknown phase "${raw}"; expected one of ${ids}`);
+  }
+  return phase.id;
 }
 
 /** A file named by a flag. An unreadable one is a usage error naming the path and the reason. */

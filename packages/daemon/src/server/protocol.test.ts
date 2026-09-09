@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Activity, Card, Member } from "@skelcrew/shared";
+import type { Activity, Attention, Card, Member } from "@skelcrew/shared";
 import {
   BODY_MAX_BYTES,
   type Client,
@@ -439,6 +439,16 @@ describe("methods through the shared client", () => {
       ["activitySince", { seq: "0" }],
       ["listCards", { includeArchived: "yes" }],
       ["subscribe", { since: -1.5 }],
+      ["requestAttention", { id: 1, note: "x" }],
+      ["requestAttention", { id: 1, to: 1 }],
+      ["requestAttention", { id: 1, to: "simon", note: "x" }],
+      ["requestAttention", { id: 1, to: 1, note: "x", moves: "code" }],
+      ["requestAttention", { id: 1, to: 1, note: "x", moves: ["review"] }],
+      ["requestAttention", { id: 1, to: 1, note: "x", actorId: 2 }],
+      ["resolveAttention", { id: "1" }],
+      ["resolveAttention", { id: 1, text: 7 }],
+      ["listAttention", { to: "me" }],
+      ["listAttention", { who: 1 }],
     ];
     for (const [method, params] of cases) {
       await expectRpcError(client.call(method, params as never), -32602, "invalid_params", method);
@@ -549,5 +559,165 @@ describe("methods through the shared client", () => {
     const activity: Activity[] = core.getCard(card.id).activity;
     expect(detail.activity).toEqual(activity);
     await client.close();
+  });
+});
+
+describe("attention on the wire", () => {
+  test("the three methods are on the wire and every core method still has a wire method", () => {
+    const wireMethods: readonly string[] = METHOD_NAMES;
+    for (const name of ["requestAttention", "resolveAttention", "listAttention"]) {
+      expect(wireMethods).toContain(name);
+      expect(Object.keys(core)).toContain(name);
+    }
+  });
+
+  test("requestAttention, listAttention, and resolveAttention round-trip as the owner", async () => {
+    const client = await asOwner();
+    const card = await client.call("createCard", { title: "x" });
+    expect(card.attention).toBeNull();
+
+    const raised = await client.call("requestAttention", {
+      id: card.id,
+      to: owner.id,
+      note: "remind me",
+      moves: ["spec", "code"],
+    });
+    expect(raised.attention).toEqual({
+      to: owner.id,
+      note: "remind me",
+      moves: ["spec", "code"],
+      raisedBy: owner.id,
+      raisedAt: expect.any(Number),
+    });
+    expect(raised).toEqual(core.listCards()[0] as Card);
+
+    const open = await client.call("listAttention", {});
+    expect(open).toEqual([{ cardId: card.id, ...(raised.attention as Attention) }]);
+    expect(open).toEqual(core.listAttention());
+    expect(await client.call("listAttention", { to: owner.id })).toEqual(open);
+    expect(await client.call("listAttention", { to: owner.id + 1 })).toEqual([]);
+
+    const resolved = await client.call("resolveAttention", { id: card.id, text: "done" });
+    expect(resolved.attention).toBeNull();
+    expect(await client.call("listAttention", {})).toEqual([]);
+    const types = core.getCard(card.id).activity.map((e) => e.type);
+    expect(types).toEqual(["card_created", "attention_requested", "comment", "attention_resolved"]);
+    await client.close();
+  });
+
+  test("an agent raises to the owner, may not answer it, and sees the owner's answer", async () => {
+    const ownerClient = await asOwner();
+    const agentClient = await asAgent("crew-1");
+    const agent = core.listMembers().find((m) => m.name === "crew-1") as Member;
+    const card = await ownerClient.call("createCard", { title: "x" });
+
+    const raised = await agentClient.call("requestAttention", {
+      id: card.id,
+      to: owner.id,
+      note: "spec ready",
+      moves: ["code"],
+    });
+    expect(raised.attention).toMatchObject({ to: owner.id, raisedBy: agent.id, moves: ["code"] });
+    expect(
+      (await agentClient.call("listAttention", { to: owner.id })).map((r) => r.cardId),
+    ).toEqual([card.id]);
+
+    await expectRpcError(
+      agentClient.call("resolveAttention", { id: card.id }),
+      -32003,
+      "forbidden",
+      "crew-1",
+    );
+    expect(core.getCard(card.id).attention).toEqual(raised.attention);
+
+    const answered = await ownerClient.call("resolveAttention", { id: card.id });
+    expect(answered.attention).toBeNull();
+    await expectRpcError(
+      agentClient.call("resolveAttention", { id: card.id, text: "again" }),
+      -32002,
+      "invalid",
+    );
+
+    // Addressed to the agent, the agent may answer.
+    await ownerClient.call("requestAttention", { id: card.id, to: agent.id, note: "please" });
+    expect(
+      (await agentClient.call("resolveAttention", { id: card.id, text: "ok" })).attention,
+    ).toBeNull();
+    expect(core.getCard(card.id).activity.at(-2)).toMatchObject({
+      type: "comment",
+      actorId: agent.id,
+      data: { text: "ok" },
+    });
+    await ownerClient.close();
+    await agentClient.close();
+  });
+
+  test("not_found and invalid map for the attention methods and change nothing", async () => {
+    const client = await asAgent("crew-1");
+    const card = await client.call("createCard", { title: "x" });
+    const before = core.activitySince(0).length;
+    await expectRpcError(
+      client.call("requestAttention", { id: card.id, to: 999, note: "x" }),
+      -32001,
+      "not_found",
+      "999",
+    );
+    await expectRpcError(
+      client.call("requestAttention", { id: card.id, to: owner.id, note: "  " }),
+      -32002,
+      "invalid",
+    );
+    await expectRpcError(
+      client.call("requestAttention", { id: 999, to: owner.id, note: "x" }),
+      -32001,
+      "not_found",
+      "999",
+    );
+    expect(core.activitySince(0)).toHaveLength(before);
+    expect(core.getCard(card.id).attention).toBeNull();
+    await client.close();
+  });
+
+  test("a subscribed client receives attention_requested and attention_resolved in seq order", async () => {
+    const watcher = await asOwner();
+    const agentClient = await asAgent("crew-1");
+    const received: Activity[] = [];
+    await watcher.subscribe((event) => received.push(event));
+    const card = await watcher.call("createCard", { title: "x" });
+
+    await agentClient.call("requestAttention", {
+      id: card.id,
+      to: owner.id,
+      note: "spec ready",
+      moves: ["code"],
+    });
+    await watcher.call("moveCard", { id: card.id, phase: "code" });
+    await agentClient.call("requestAttention", { id: card.id, to: owner.id, note: "pr ready" });
+    await watcher.call("resolveAttention", { id: card.id, text: "merging" });
+
+    const types = received.map((e) => e.type);
+    expect(types).toEqual([
+      "card_created",
+      "attention_requested",
+      "card_moved",
+      "attention_resolved",
+      "attention_requested",
+      "comment",
+      "attention_resolved",
+    ]);
+    const seqs = received.map((e) => e.seq);
+    expect(seqs).toEqual(seqs.map((_, i) => (seqs[0] as number) + i));
+    const agent = core.listMembers().find((m) => m.name === "crew-1") as Member;
+    expect(received[1]?.data).toEqual({
+      to: owner.id,
+      note: "spec ready",
+      moves: ["code"],
+      raisedBy: agent.id,
+      raisedAt: expect.any(Number),
+    });
+    expect(received[3]?.data).toEqual({ how: "moved", phase: "code" });
+    expect(received[6]?.data).toEqual({ how: "answered" });
+    await agentClient.close();
+    await watcher.close();
   });
 });

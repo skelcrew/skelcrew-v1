@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { Activity, Card, Member, Phase } from "@skelcrew/shared";
+import type { Activity, Attention, Card, Member, Phase } from "@skelcrew/shared";
 import {
   BODY_MAX_BYTES,
   BRANCH_MAX_BYTES,
@@ -664,5 +664,304 @@ describe("activity", () => {
       data: { title: "x" },
       createdAt: expect.any(Number),
     });
+  });
+});
+
+describe("attention", () => {
+  function raise(cardId: number, note = "spec ready", moves: Phase[] = ["code"]) {
+    return core.requestAttention(cardId, { to: owner.id, note, moves }, agent.id);
+  }
+
+  test("requestAttention sets the request on the card and records attention_requested", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    expect(card.attention).toBeNull();
+    const before = Date.now();
+
+    const updated = raise(card.id);
+
+    expect(updated.attention).toEqual({
+      to: owner.id,
+      note: "spec ready",
+      moves: ["code"],
+      raisedBy: agent.id,
+      raisedAt: expect.any(Number),
+    });
+    expect(updated.attention?.raisedAt).toBeGreaterThanOrEqual(before);
+    expect(updated.updatedAt).toBeGreaterThanOrEqual(card.updatedAt);
+    expect(core.getCard(card.id).attention).toEqual(updated.attention);
+    expect(core.listCards()[0]?.attention).toEqual(updated.attention);
+
+    // The event carries the same fields as the card, from one clock read: a consumer that
+    // sees the event can tell whether it is still the card's open request by equality.
+    const requested = events(card.id, "attention_requested");
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toEqual({
+      seq: expect.any(Number),
+      cardId: card.id,
+      actorId: agent.id,
+      type: "attention_requested",
+      data: updated.attention as Attention,
+      createdAt: expect.any(Number),
+    });
+    expect(requested[0]?.data).toEqual({
+      to: owner.id,
+      note: "spec ready",
+      moves: ["code"],
+      raisedBy: agent.id,
+      raisedAt: updated.attention?.raisedAt as number,
+    });
+  });
+
+  test("moves defaults to empty; any member may raise to any member, including themselves", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const toAgent = core.requestAttention(card.id, { to: agent.id, note: "please" }, owner.id);
+    expect(toAgent.attention).toMatchObject({ to: agent.id, moves: [], raisedBy: owner.id });
+
+    const toSelf = core.requestAttention(card.id, { to: owner.id, note: "remind me" }, owner.id);
+    expect(toSelf.attention).toMatchObject({ to: owner.id, raisedBy: owner.id });
+    expect(events(card.id, "attention_requested")[0]?.data).toEqual({
+      to: agent.id,
+      note: "please",
+      moves: [],
+      raisedBy: owner.id,
+      raisedAt: toAgent.attention?.raisedAt as number,
+    });
+  });
+
+  test("raising while one is open replaces it and records a second event", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    raise(card.id, "first", ["code"]);
+    const second = raise(card.id, "second", ["idea", "code"]);
+
+    expect(second.attention).toMatchObject({ note: "second", moves: ["idea", "code"] });
+    const requested = events(card.id, "attention_requested");
+    expect(requested.map((e) => (e.type === "attention_requested" ? e.data.note : null))).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(events(card.id, "attention_resolved")).toEqual([]);
+    expect(core.listAttention()).toHaveLength(1);
+  });
+
+  test.each<[string, { to: number; note: string; moves?: Phase[] }, CoreError["code"]]>([
+    ["an empty note", { to: 1, note: "" }, "invalid"],
+    ["a whitespace-only note", { to: 1, note: " \n" }, "invalid"],
+    ["a note over the comment cap", { to: 1, note: "n".repeat(COMMENT_MAX_BYTES + 1) }, "invalid"],
+    ["an unknown addressee", { to: 999, note: "hi" }, "not_found"],
+    ["a non-integer addressee", { to: 1.5, note: "hi" }, "invalid"],
+    ["a move that is not a phase", { to: 1, note: "hi", moves: ["review" as Phase] }, "invalid"],
+    ["moves that is not an array", { to: 1, note: "hi", moves: "code" as never }, "invalid"],
+  ])("%s is refused and changes nothing", (_label, input, code) => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    // `to: 1` in the table stands for the owner, whose id is 1 on a fresh core.
+    expect(owner.id).toBe(1);
+    const before = core.getCard(card.id);
+    const activity = core.activitySince(0);
+
+    expectCoreError(() => core.requestAttention(card.id, input, agent.id), code);
+
+    expect(core.getCard(card.id)).toEqual(before);
+    expect(core.getCard(card.id).attention).toBeNull();
+    expect(core.activitySince(0)).toEqual(activity);
+    expect(core.listAttention()).toEqual([]);
+  });
+
+  test("a note of exactly the comment cap is accepted", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const note = "n".repeat(COMMENT_MAX_BYTES);
+    expect(raise(card.id, note).attention?.note).toBe(note);
+  });
+
+  test("an unknown raiser is not_found and an archived card cannot be waited on", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    expectCoreError(
+      () => core.requestAttention(card.id, { to: owner.id, note: "hi" }, 999),
+      "not_found",
+      "999",
+    );
+    core.archiveCard(card.id, owner.id);
+    expectCoreError(
+      () => core.requestAttention(card.id, { to: owner.id, note: "hi" }, agent.id),
+      "invalid",
+    );
+    expect(core.getCard(card.id).attention).toBeNull();
+    expect(events(card.id, "attention_requested")).toEqual([]);
+  });
+
+  test("a move to a different phase resolves it: card_moved then attention_resolved together", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    raise(card.id);
+    const seen: Activity[] = [];
+    core.subscribe((event) => seen.push(event));
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    const moved = core.moveCard(card.id, "code", owner.id);
+
+    expect(moved.phase).toBe("code");
+    expect(moved.attention).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["card_moved", "attention_resolved"]);
+    expect(since[1]).toMatchObject({
+      cardId: card.id,
+      actorId: owner.id,
+      data: { how: "moved", phase: "code" },
+    });
+    expect(seen).toEqual(since);
+    expect(core.listAttention()).toEqual([]);
+  });
+
+  test("a rejected move leaves the request open and records only move_rejected", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const raised = raise(card.id);
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    expectCoreError(() => core.moveCard(card.id, "code", agent.id), "forbidden");
+
+    expect(core.getCard(card.id).attention).toEqual(raised.attention);
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["move_rejected"]);
+    expect(core.listAttention().map((a) => a.cardId)).toEqual([card.id]);
+  });
+
+  test("a same-phase move leaves the request open and records nothing", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const raised = raise(card.id);
+    const before = core.getCard(card.id);
+
+    expect(core.moveCard(card.id, "idea", owner.id)).toEqual(raised);
+    expect(core.getCard(card.id)).toEqual(before);
+    expect(core.listAttention()).toHaveLength(1);
+  });
+
+  test("archiveCard resolves it with how: archived", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    raise(card.id);
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    const archived = core.archiveCard(card.id, owner.id);
+
+    expect(archived.attention).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["card_archived", "attention_resolved"]);
+    expect(since[1]).toMatchObject({ actorId: owner.id, data: { how: "archived" } });
+    expect(core.listAttention()).toEqual([]);
+    expect(core.getCard(card.id).attention).toBeNull();
+  });
+
+  test("a comment on its own resolves nothing", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const raised = raise(card.id);
+    core.comment(card.id, "yes", owner.id);
+    core.comment(card.id, "noted", agent.id);
+    expect(core.getCard(card.id).attention).toEqual(raised.attention);
+    expect(events(card.id, "attention_resolved")).toEqual([]);
+    expect(core.listAttention()).toHaveLength(1);
+  });
+
+  test("resolveAttention with text records comment then attention_resolved and clears it", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    raise(card.id);
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    const resolved = core.resolveAttention(card.id, "yes", owner.id);
+
+    expect(resolved.attention).toBeNull();
+    expect(resolved.phase).toBe("idea");
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["comment", "attention_resolved"]);
+    expect(since[0]).toMatchObject({ actorId: owner.id, data: { text: "yes" } });
+    expect(since[1]).toMatchObject({ actorId: owner.id, data: { how: "answered" } });
+    expect(core.getCard(card.id).attention).toBeNull();
+    expect(core.listAttention()).toEqual([]);
+  });
+
+  test("resolveAttention without text records only the resolution", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    raise(card.id);
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    core.resolveAttention(card.id, undefined, owner.id);
+
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["attention_resolved"]);
+    expect(core.getCard(card.id).attention).toBeNull();
+  });
+
+  test("the addressee may answer; another agent is forbidden and it stays open", () => {
+    const other = core.ensureMember("crew-9", "agent");
+    const card = core.createCard({ title: "x" }, owner.id);
+    const raised = core.requestAttention(card.id, { to: agent.id, note: "please" }, owner.id);
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    expectCoreError(() => core.resolveAttention(card.id, "me?", other.id), "forbidden", other.name);
+    expect(core.getCard(card.id).attention).toEqual(raised.attention);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+
+    const resolved = core.resolveAttention(card.id, "done", agent.id);
+    expect(resolved.attention).toBeNull();
+    expect(core.activitySince(seqBefore).map((e) => [e.type, e.actorId])).toEqual([
+      ["comment", agent.id],
+      ["attention_resolved", agent.id],
+    ]);
+  });
+
+  test("the owner may answer a request addressed to an agent", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    core.requestAttention(card.id, { to: agent.id, note: "please" }, owner.id);
+    expect(core.resolveAttention(card.id, undefined, owner.id).attention).toBeNull();
+  });
+
+  test("an agent may not answer a request addressed to the owner", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const raised = raise(card.id);
+    expectCoreError(() => core.resolveAttention(card.id, "self-approved", agent.id), "forbidden");
+    expect(core.getCard(card.id).attention).toEqual(raised.attention);
+    expect(events(card.id, "comment")).toEqual([]);
+  });
+
+  test("resolving with nothing open is invalid; empty text is invalid and leaves it open", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    expectCoreError(() => core.resolveAttention(card.id, "yes", owner.id), "invalid");
+    expectCoreError(() => core.resolveAttention(card.id, undefined, owner.id), "invalid");
+    expect(events(card.id)).toHaveLength(1);
+
+    const raised = raise(card.id);
+    expectCoreError(() => core.resolveAttention(card.id, "  ", owner.id), "invalid");
+    expectCoreError(
+      () => core.resolveAttention(card.id, "t".repeat(COMMENT_MAX_BYTES + 1), owner.id),
+      "invalid",
+    );
+    expect(core.getCard(card.id).attention).toEqual(raised.attention);
+    expect(events(card.id, "attention_resolved")).toEqual([]);
+    expectCoreError(() => core.resolveAttention(card.id, "yes", 999), "not_found", "999");
+    expectCoreError(() => core.resolveAttention(999, "yes", owner.id), "not_found", "999");
+  });
+
+  test("listAttention returns open requests oldest first with card ids, and filters by to", () => {
+    const a = core.createCard({ title: "a" }, owner.id);
+    const b = core.createCard({ title: "b" }, owner.id);
+    const c = core.createCard({ title: "c" }, owner.id);
+    expect(core.listAttention()).toEqual([]);
+
+    const onB = core.requestAttention(b.id, { to: owner.id, note: "b first" }, agent.id);
+    const onA = core.requestAttention(a.id, { to: agent.id, note: "a second" }, owner.id);
+    const onC = core.requestAttention(
+      c.id,
+      { to: owner.id, note: "c third", moves: ["pr"] },
+      agent.id,
+    );
+
+    expect(core.listAttention()).toEqual([
+      { cardId: b.id, ...(onB.attention as Attention) },
+      { cardId: a.id, ...(onA.attention as Attention) },
+      { cardId: c.id, ...(onC.attention as Attention) },
+    ]);
+    expect(core.listAttention({ to: owner.id }).map((r) => r.cardId)).toEqual([b.id, c.id]);
+    expect(core.listAttention({ to: agent.id }).map((r) => r.cardId)).toEqual([a.id]);
+    expect(core.listAttention({ to: 999 })).toEqual([]);
+
+    core.resolveAttention(b.id, "ok", owner.id);
+    expect(core.listAttention({ to: owner.id }).map((r) => r.cardId)).toEqual([c.id]);
+    core.moveCard(c.id, "spec", owner.id);
+    expect(core.listAttention({ to: owner.id })).toEqual([]);
+    expect(core.listAttention().map((r) => r.cardId)).toEqual([a.id]);
   });
 });

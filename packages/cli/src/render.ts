@@ -1,13 +1,17 @@
 /**
- * Plain text for a terminal: the row, the phase track, the card view, the activity line.
- * Nothing here talks to the daemon; every function takes what a command already fetched.
+ * Plain text for a terminal: the row, the phase track, the card view, the activity line,
+ * the queue. Nothing here talks to the daemon; every function takes what a command already
+ * fetched.
  */
 import {
   type Activity,
+  type Attention,
+  type AttentionResolution,
   type Card,
   type CardDetail,
   type CardRefs,
   type Member,
+  type OpenAttention,
   PHASES,
   type Phase,
 } from "@skelcrew/shared";
@@ -33,10 +37,21 @@ export function phaseTrack(phase: Phase): string {
   return PHASES.map((p) => (p.id === phase ? "●" : "○")).join("");
 }
 
+function memberName(id: number, members: Member[]): string {
+  return members.find((m) => m.id === id)?.name ?? `member ${id}`;
+}
+
 const PHASE_NAME_WIDTH = Math.max(...PHASES.map((p) => p.name.length));
 
-export function row(card: Card, idWidth: number): string {
+/** `!` waiting on the invoking member, `?` waiting on someone else, a space otherwise. */
+function marker(card: Card, me: number): string {
+  if (card.attention === null) return " ";
+  return card.attention.to === me ? "!" : "?";
+}
+
+export function row(card: Card, idWidth: number, me: number): string {
   const cells = [
+    marker(card, me),
     formatId(card.id).padStart(idWidth),
     phaseTrack(card.phase),
     phaseName(card.phase).padEnd(PHASE_NAME_WIDTH),
@@ -46,9 +61,9 @@ export function row(card: Card, idWidth: number): string {
   return cells.join("  ");
 }
 
-export function rows(cards: Card[]): string {
+export function rows(cards: Card[], me: number): string {
   const idWidth = Math.max(...cards.map((c) => formatId(c.id).length));
-  return cards.map((card) => row(card, idWidth)).join("\n");
+  return cards.map((card) => row(card, idWidth, me)).join("\n");
 }
 
 function refLines(refs: CardRefs): string[] {
@@ -69,7 +84,37 @@ export function describeRefs(refs: CardRefs): string {
   return parts.join(" ");
 }
 
-function summary(event: Activity): string {
+/** The commands that resolve a request: one `mv` per suggested phase, then `resolve`. */
+export function resolutionCommands(cardId: number, moves: Phase[]): string[] {
+  return [
+    ...moves.map((phase) => `skelcrew mv ${cardId} ${phase}`),
+    `skelcrew resolve ${cardId} -m "…"`,
+  ];
+}
+
+/** The open request in a card's header: who waits, who asked and when, the note, the moves. */
+function attentionLines(attention: Attention, members: Member[]): string[] {
+  const raised = `raised by ${memberName(attention.raisedBy, members)} at ${formatTime(attention.raisedAt)}`;
+  const out = [
+    `waiting: ${memberName(attention.to, members)} (${raised})`,
+    `note:    ${attention.note.split("\n").join("\n         ")}`,
+  ];
+  if (attention.moves.length > 0) out.push(`moves:   ${attention.moves.join(", ")}`);
+  return out;
+}
+
+function describeResolution(resolution: AttentionResolution): string {
+  switch (resolution.how) {
+    case "moved":
+      return `moved to ${phaseName(resolution.phase)}`;
+    case "archived":
+      return "archived";
+    case "answered":
+      return "answered";
+  }
+}
+
+function summary(event: Activity, members: Member[]): string {
   switch (event.type) {
     case "member_joined":
       return `joined as ${event.data.kind} "${event.data.name}"`;
@@ -87,12 +132,17 @@ function summary(event: Activity): string {
       return `set refs ${describeRefs(event.data.refs)}`;
     case "card_archived":
       return "archived";
+    case "attention_requested": {
+      const moves = event.data.moves.length > 0 ? ` (moves: ${event.data.moves.join(", ")})` : "";
+      return `asked ${memberName(event.data.to, members)} for attention: ${event.data.note}${moves}`;
+    }
+    case "attention_resolved":
+      return `resolved attention: ${describeResolution(event.data)}`;
   }
 }
 
 export function activityLine(event: Activity, members: Member[]): string {
-  const actor = members.find((m) => m.id === event.actorId)?.name ?? `member ${event.actorId}`;
-  return `${formatTime(event.createdAt)}  ${actor}  ${summary(event)}`;
+  return `${formatTime(event.createdAt)}  ${memberName(event.actorId, members)}  ${summary(event, members)}`;
 }
 
 /** Header, blank line, the body verbatim, blank line, the activity oldest first. */
@@ -100,6 +150,7 @@ export function cardView(card: CardDetail, members: Member[]): string {
   const header = [
     `${formatId(card.id)} ${card.title}`,
     `phase:   ${phaseName(card.phase)}${card.archivedAt === null ? "" : " (archived)"}`,
+    ...(card.attention === null ? [] : attentionLines(card.attention, members)),
     ...refLines(card.refs),
     `created: ${formatTime(card.createdAt)}`,
     `updated: ${formatTime(card.updatedAt)}`,
@@ -107,4 +158,23 @@ export function cardView(card: CardDetail, members: Member[]): string {
   const activity = card.activity.map((event) => activityLine(event, members));
   const body = card.body.endsWith("\n") || card.body.length === 0 ? card.body : `${card.body}\n`;
   return `${header.join("\n")}\n\n${body}\n${activity.join("\n")}`;
+}
+
+/**
+ * One block per open request, oldest first: the card and its phase, who asked whom and
+ * when, the note verbatim, then the commands that would resolve it.
+ */
+export function queueView(requests: OpenAttention[], cards: Card[], members: Member[]): string {
+  const blocks = requests.map((request) => {
+    const card = cards.find((c) => c.id === request.cardId);
+    const title = card === undefined ? "" : ` ${card.title}  [${phaseName(card.phase)}]`;
+    const who = `${memberName(request.raisedBy, members)} → ${memberName(request.to, members)}`;
+    return [
+      `${formatId(request.cardId)}${title}`,
+      `${who}, ${formatTime(request.raisedAt)}`,
+      request.note,
+      ...resolutionCommands(request.cardId, request.moves).map((command) => `  ${command}`),
+    ].join("\n");
+  });
+  return blocks.join("\n\n");
 }
