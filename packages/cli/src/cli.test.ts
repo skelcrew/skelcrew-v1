@@ -23,6 +23,8 @@ import {
   VERSION,
 } from "@skelcrew/shared";
 import { type Core, openCore } from "../../daemon/src/core/core";
+import { createGit } from "../../daemon/src/runner/git";
+import { type Runner, startRunner } from "../../daemon/src/runner/runner";
 import { startServer } from "../../daemon/src/server/server";
 
 const MAIN = fileURLToPath(new URL("./main.ts", import.meta.url));
@@ -34,6 +36,7 @@ let server: { stop(): void };
 const extraServers: Array<{ stop(): void }> = [];
 const extraDirs: string[] = [];
 const watchers: Array<{ kill(): void }> = [];
+const runners: Runner[] = [];
 /** Shifts the daemon's clock relative to the CLI's real one; zero unless a test moves it. */
 let clockOffsetMs = 0;
 
@@ -46,8 +49,9 @@ beforeEach(() => {
   server = startServer({ core, socketPath });
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const w of watchers.splice(0)) w.kill();
+  for (const r of runners.splice(0)) await r.stop();
   for (const s of extraServers.splice(0)) s.stop();
   server.stop();
   core.close();
@@ -1144,4 +1148,157 @@ test("ls marks a live claim * and a lapsed one ~; attention markers win; show pr
   await ok(["resolve", "3"]);
   expect(lines(await ok(["ls"])).map((l) => l[0])).toEqual([" ", " ", "*", " "]);
   expect(json<CardDetail>(await ok(["show", "3", "--json"]))).toEqual(core.getCard(3));
+});
+
+// --- the runner (006) ---
+
+test("queue shows the runner's request with the worktree path; show prints the branch and the runner's lines", async () => {
+  // A real runner against a temp repository, in this process, driving the same core.
+  const gitEnv: Record<string, string | undefined> = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_AUTHOR_NAME: "test",
+    GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "test",
+    GIT_COMMITTER_EMAIL: "test@example.invalid",
+  };
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["commit", "-q", "--allow-empty", "-m", "init"],
+  ]) {
+    const proc = Bun.spawn(["git", ...args], { cwd: repo, env: gitEnv, stdout: "ignore" });
+    expect(await proc.exited).toBe(0);
+  }
+  const data = join(dir, "data");
+  mkdirSync(data);
+  const warnings: string[] = [];
+  runners.push(
+    startRunner({
+      core,
+      dataDir: data,
+      repoRoot: repo,
+      git: createGit({ env: gitEnv }),
+      member: core.ensureMember("runner", "agent"),
+      warn: (line) => warnings.push(line),
+    }),
+  );
+
+  await ok(["add", "Add login page"]);
+  const requested = new Promise<void>((resolve) => {
+    const unsubscribe = core.subscribe((event) => {
+      if (event.type !== "attention_requested" || event.cardId !== 1) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+  await ok(["mv", "1", "spec"]);
+  await Promise.race([
+    requested,
+    Bun.sleep(2000).then(() => {
+      throw new Error("no attention request within 2 s");
+    }),
+  ]);
+  const path = join(data, "worktrees", "1");
+  expect(existsSync(join(path, ".git"))).toBe(true);
+
+  const queue = await ok(["queue"]);
+  expect(queue.stdout).toContain("#1 Add login page  [Spec]");
+  expect(queue.stdout).toContain("runner → simon");
+  expect(queue.stdout).toContain(`no playbook for spec yet; work in ${path}`);
+  expect(queue.stdout).toContain("skelcrew resolve 1");
+  expect(await ok([])).toEqual(queue);
+
+  const shown = await ok(["show", "1"]);
+  const header = shown.stdout.split("\n\n")[0] as string;
+  expect(header).toContain("branch:  skelcrew/1-add-login-page");
+  expect(header).toContain("waiting: simon");
+  expect(header).toContain("raised by runner");
+  const byRunner = lines(shown).filter((l) => l.includes("  runner  "));
+  expect(byRunner.map((l) => l.split("  runner  ")[1]?.split(" ")[0])).toEqual([
+    "claimed",
+    "set",
+    "commented:",
+    "asked",
+    "released",
+  ]);
+  expect(byRunner[1]).toContain("branch=skelcrew/1-add-login-page");
+  expect(byRunner[2]).toContain(
+    `worktree ready at ${path} on skelcrew/1-add-login-page (from main)`,
+  );
+  expect(byRunner[3]).toContain("asked simon for attention: no playbook for spec");
+  expect(byRunner[4]).toContain("no playbook");
+  expect(json<CardDetail>(await ok(["show", "1", "--json"]))).toEqual(core.getCard(1));
+  expect(warnings).toEqual([]);
+});
+
+test("from inside a runner worktree the CLI reaches the repo's daemon with no SKELCREW_DIR: the exit ramp works", async () => {
+  const gitEnv: Record<string, string | undefined> = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_AUTHOR_NAME: "test",
+    GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "test",
+    GIT_COMMITTER_EMAIL: "test@example.invalid",
+  };
+  // A real repository whose daemon lives at <repo>/.skelcrew/, as it does outside tests.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(repo);
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["commit", "-q", "--allow-empty", "-m", "init"],
+  ]) {
+    const proc = Bun.spawn(["git", ...args], { cwd: repo, env: gitEnv, stdout: "ignore" });
+    expect(await proc.exited).toBe(0);
+  }
+  const data = join(repo, ".skelcrew");
+  mkdirSync(data);
+  const repoCore = openCore(":memory:", { owner: "simon" });
+  const repoServer = startServer({ core: repoCore, socketPath: join(data, "skelcrew.sock") });
+  extraServers.push({
+    stop() {
+      repoServer.stop();
+      repoCore.close();
+    },
+  });
+  runners.push(
+    startRunner({
+      core: repoCore,
+      dataDir: data,
+      repoRoot: repo,
+      git: createGit({ env: gitEnv }),
+      member: repoCore.ensureMember("runner", "agent"),
+      warn: () => {},
+    }),
+  );
+  const requested = new Promise<void>((resolve) => {
+    const unsubscribe = repoCore.subscribe((event) => {
+      if (event.type !== "attention_requested") return;
+      unsubscribe();
+      resolve();
+    });
+  });
+  repoCore.createCard({ title: "Work by hand" }, 1);
+  repoCore.moveCard(1, "spec", 1);
+  await Promise.race([
+    requested,
+    Bun.sleep(2000).then(() => {
+      throw new Error("no attention request within 2 s");
+    }),
+  ]);
+  const worktree = join(data, "worktrees", "1");
+  expect(existsSync(join(worktree, ".git"))).toBe(true);
+
+  // cd into the worktree the queue names, then use the CLI as the exit ramp promises.
+  const listed = await ok(["ls"], { dataDir: null, cwd: worktree });
+  expect(listed.stdout).toContain("Work by hand");
+  const nested = join(worktree, "src");
+  mkdirSync(nested);
+  const moved = await ok(["mv", "1", "code"], { dataDir: null, cwd: nested });
+  expect(moved.stdout).toContain("#1");
+  expect(repoCore.getCard(1).phase).toBe("code");
+  expect(existsSync(join(worktree, ".skelcrew"))).toBe(false);
 });

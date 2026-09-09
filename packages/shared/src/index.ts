@@ -8,6 +8,8 @@ export {
   findRepoRoot,
   resolveDataDir,
   SOCKET_FILE,
+  WORKTREES_DIR_NAME,
+  worktreesDir,
 } from "./paths";
 export { PHASES, type Phase, type PhaseDef } from "./phases";
 export {
