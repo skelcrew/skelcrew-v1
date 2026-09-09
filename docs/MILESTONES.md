@@ -159,6 +159,40 @@ Findings and decisions from the spec workflow itself, newest last:
   as a handoff. TTL defaults to 120 s, bounded 10 to 3600. The CLI's `claim`,
   `heartbeat`, and `release` are what the runner (006) and a live-session agent both use;
   `SKELCREW_AS` identifies which.
+- **The runner is the agent member `runner` inside the daemon; worktrees live under
+  `<data dir>/worktrees/<id>`; branches are `skelcrew/<id>-<slug>` from the default
+  branch's local head; a run without a playbook ends in an attention request (006).** The
+  daemon joins the core as `runner` at startup (`SKELCREW_RUNNER=0` leaves it out) and
+  drives the core through the same interface the socket does. A card is ready when its
+  phase is claimable, it is unarchived, unclaimed, and has no open attention request; the
+  runner takes ready cards one at a time in id order, claiming with a 120 s lease renewed
+  every 30 s. Each run creates `skelcrew/<id>-<slug>` (the title lower-cased,
+  non-alphanumerics collapsed to `-`, at most 40 characters, `skelcrew/<id>` when nothing
+  is left) from the base branch — the local head of the branch `refs/remotes/origin/HEAD`
+  names, else `main`, else `master`, never a fetch and never the owner's checkout — and
+  adds a worktree at `<data dir>/worktrees/<id>` (inside the gitignored `.skelcrew/`, so
+  no target-repo tooling walks it); both are reused by later runs of the same card.
+  Without a playbook the run sets the `branch` ref, comments `worktree ready at <path> on
+  <branch> (from <base>)`, raises `no playbook for <phase> yet; work in <path>` to the
+  owner, and releases with reason `no playbook`; 007 replaces the request with the
+  playbook run and keeps everything before it. A failed step is a comment
+  `<step> failed: <error>`, the same text as an attention request, and a release with
+  reason `failed`; nothing retries. Leaving the claimable phases or archiving tears the
+  worktree down only when `git status --porcelain` is empty (`worktree removed`);
+  otherwise it stays with `worktree kept at <path>: uncommitted changes` and the paths.
+  Branches are never deleted. At startup the runner releases its own leftover claims
+  (`daemon restarted`; when the daemon was down longer than the claim's TTL the core
+  records `run_interrupted` instead, its rule for a lapsed claim) and reconciles
+  `worktrees/` before taking any card. A run re-checks its claim after every git call,
+  before posting anything: a claim lost to a move, an archive, a release, another member,
+  or a lapse abandons the run with one comment (`run abandoned: <reason>`) and nothing
+  else. The CLI and the daemon resolve a linked worktree — a `.git` file whose `gitdir`
+  points into `<main>/.git/worktrees/` — to its main repository, so from inside
+  `<repo>/.skelcrew/worktrees/<id>` every CLI verb reaches `<repo>/.skelcrew/` with no
+  `SKELCREW_DIR`; 007's spawned agent may still get it set, belt and braces. The rule
+  requires the gitdir's grandparent to be named `.git`, so a main repository initialised
+  with `--separate-git-dir` does not resolve and its runner worktrees fall back to their
+  own directory as the root.
 
 ## 001 — Project scaffold
 

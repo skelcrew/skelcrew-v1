@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -69,10 +70,22 @@ function collect(stream: ReadableStream<Uint8Array>) {
   };
 }
 
-function spawnDaemon(options: { cwd: string; dataDir?: string }): Daemon {
-  const env: Record<string, string | undefined> = { ...process.env };
+/** Hermetic git for the daemon's runner and the repo the tests build. */
+const GIT_ENV: Record<string, string> = {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_AUTHOR_NAME: "test",
+  GIT_AUTHOR_EMAIL: "test@example.invalid",
+  GIT_COMMITTER_NAME: "test",
+  GIT_COMMITTER_EMAIL: "test@example.invalid",
+};
+
+/** The runner is off unless a test turns it on: 003's tests are about the socket alone. */
+function spawnDaemon(options: { cwd: string; dataDir?: string; runner?: boolean }): Daemon {
+  const env: Record<string, string | undefined> = { ...process.env, ...GIT_ENV };
   delete env.SKELCREW_DIR;
   if (options.dataDir) env.SKELCREW_DIR = options.dataDir;
+  env.SKELCREW_RUNNER = options.runner ? "1" : "0";
   const proc = Bun.spawn([process.execPath, MAIN], {
     cwd: options.cwd,
     env,
@@ -246,3 +259,143 @@ test("the daemon sweeps a lapsed claim on its own: run_interrupted reaches a sub
   await ownerClient.close();
   expect(await stopped(daemon, "SIGTERM")).toBe(0);
 }, 45_000);
+
+// --- the runner (006) ---
+
+async function sh(cwd: string, ...args: string[]): Promise<string> {
+  const proc = Bun.spawn(["git", ...args], {
+    cwd,
+    env: { ...process.env, ...GIT_ENV },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+    new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`git ${args.join(" ")} exited ${code}: ${stderr}`);
+  return stdout.trim();
+}
+
+/** A repository with one commit on `main`, separate from the data directory. */
+async function tempRepo(): Promise<string> {
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  await sh(repo, "init", "-q", "-b", "main");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "init");
+  return repo;
+}
+
+test("with a temp repo as cwd the runner takes a card moved into spec: a worktree under <dir>/worktrees/1 and a request to the owner", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true });
+  expect(await daemon.firstLine()).toBe(
+    `skelcrew daemon ${VERSION} listening on ${join(data, "skelcrew.sock")}`,
+  );
+  const client = await connect(join(data, "skelcrew.sock"), { kind: "human" });
+  expect((await client.call("listMembers", {})).map((m) => [m.name, m.kind])).toContainEqual([
+    "runner",
+    "agent",
+  ]);
+
+  let sawRequest: (event: Activity) => void = () => {};
+  const requested = new Promise<Activity>((resolve) => {
+    sawRequest = resolve;
+  });
+  await client.subscribe((event) => {
+    if (event.type === "attention_requested") sawRequest(event);
+  });
+  const card = await client.call("createCard", { title: "Add login page" });
+  await client.call("moveCard", { id: card.id, phase: "spec" });
+  const event = await Promise.race([
+    requested,
+    Bun.sleep(5000).then(() => {
+      throw new Error("no attention_requested within 5 s");
+    }),
+  ]);
+  const path = join(data, "worktrees", "1");
+  expect(event.type === "attention_requested" && event.data.note).toContain(path);
+  expect(event.data).toMatchObject({ to: client.member.id });
+
+  const detail = await client.call("getCard", { id: card.id });
+  expect(detail.refs).toEqual({ branch: "skelcrew/1-add-login-page" });
+  expect(detail.claim).toBeNull();
+  expect(detail.attention?.note).toContain("no playbook for spec");
+  expect(existsSync(join(path, ".git"))).toBe(true);
+  expect(await sh(path, "rev-parse", "--abbrev-ref", "HEAD")).toBe("skelcrew/1-add-login-page");
+  expect(await sh(repo, "rev-parse", "skelcrew/1-add-login-page")).toBe(
+    await sh(repo, "rev-parse", "main"),
+  );
+  // The repo's own checkout is untouched.
+  expect(await sh(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+  expect(existsSync(join(repo, ".skelcrew"))).toBe(false);
+
+  await client.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
+});
+
+test("with SKELCREW_RUNNER=0 nothing happens to a card moved into spec", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: false });
+  await daemon.firstLine();
+  const client = await connect(join(data, "skelcrew.sock"), { kind: "human" });
+  expect((await client.call("listMembers", {})).map((m) => m.kind)).toEqual(["human"]);
+  const card = await client.call("createCard", { title: "Add login page" });
+  await client.call("moveCard", { id: card.id, phase: "spec" });
+  await Bun.sleep(500);
+  const detail = await client.call("getCard", { id: card.id });
+  expect(detail.activity.map((e) => e.type)).toEqual(["card_created", "card_moved"]);
+  expect(detail.claim).toBeNull();
+  expect(detail.attention).toBeNull();
+  expect(existsSync(join(data, "worktrees"))).toBe(false);
+  await client.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+});
+
+test("with the data directory inside the repo, a run leaves git status clean: .skelcrew/ ignores itself", async () => {
+  const repo = await tempRepo();
+  const daemon = spawnDaemon({ cwd: repo, runner: true });
+  const data = join(repo, ".skelcrew");
+  expect(await daemon.firstLine()).toBe(
+    `skelcrew daemon ${VERSION} listening on ${join(data, "skelcrew.sock")}`,
+  );
+  expect(readFileSync(join(data, ".gitignore"), "utf8")).toBe("*\n");
+  const client = await connect(join(data, "skelcrew.sock"), { kind: "human" });
+  let sawRequest: () => void = () => {};
+  const requested = new Promise<void>((resolve) => {
+    sawRequest = resolve;
+  });
+  await client.subscribe((event) => {
+    if (event.type === "attention_requested") sawRequest();
+  });
+  const card = await client.call("createCard", { title: "Inside the repo" });
+  await client.call("moveCard", { id: card.id, phase: "spec" });
+  await Promise.race([
+    requested,
+    Bun.sleep(5000).then(() => {
+      throw new Error("no attention_requested within 5 s");
+    }),
+  ]);
+  const path = join(data, "worktrees", "1");
+  expect(existsSync(join(path, ".git"))).toBe(true);
+  // The owner's checkout sees none of it: not the socket, the database, or the worktree.
+  expect(await sh(repo, "status", "--porcelain")).toBe("");
+  expect(await sh(repo, "status", "--porcelain", "--ignored")).toContain(".skelcrew/");
+  await client.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+});
+
+test("with SKELCREW_DIR set but no repository around the cwd, the daemon serves without a runner and says so", async () => {
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir, runner: true });
+  await daemon.firstLine();
+  const client = await connect(join(dir, "skelcrew.sock"), { kind: "human" });
+  expect((await client.call("listMembers", {})).map((m) => m.kind)).toEqual(["human"]);
+  await client.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toContain("runner");
+  expect(await daemon.stderr()).toContain("not inside a git repository");
+});

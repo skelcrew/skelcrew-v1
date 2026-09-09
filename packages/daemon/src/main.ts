@@ -1,5 +1,7 @@
-import { VERSION } from "@skelcrew/shared";
+import { findRepoRoot, VERSION } from "@skelcrew/shared";
 import { openCore } from "./core/core";
+import { createGit } from "./runner/git";
+import { RUNNER_MEMBER_NAME, type Runner, startRunner } from "./runner/runner";
 import { daemonAnswers, dataPaths, prepareDataDir, resolveDataDir } from "./server/paths";
 import { startServer } from "./server/server";
 import { sweepTick } from "./sweep";
@@ -29,12 +31,32 @@ const sweeper = setInterval(
 );
 console.log(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
 
-function shutdown(): void {
+// The execution half: off with SKELCREW_RUNNER=0, and off when there is no repository to
+// add worktrees to (a data directory given by SKELCREW_DIR outside any checkout).
+let runner: Runner | undefined;
+if (process.env.SKELCREW_RUNNER !== "0") {
+  const repoRoot = findRepoRoot(process.cwd());
+  if (repoRoot === undefined) {
+    console.error("skelcrew daemon: runner disabled: not inside a git repository");
+  } else {
+    runner = startRunner({
+      core,
+      dataDir: dir,
+      repoRoot,
+      git: createGit(),
+      member: core.ensureMember(RUNNER_MEMBER_NAME, "agent"),
+      warn: (line) => console.error(line),
+    });
+  }
+}
+
+async function shutdown(): Promise<void> {
   clearInterval(sweeper);
+  await runner?.stop();
   server.stop();
   core.close();
   process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
