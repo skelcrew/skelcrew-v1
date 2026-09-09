@@ -42,6 +42,8 @@ export interface Git {
   worktreePrune(repoRoot: string): Promise<void>;
   /** Every path `git status --porcelain` reports in the worktree, untracked files included. */
   status(worktreePath: string): Promise<string[]>;
+  /** The shas `git rev-list <range>` lists, newest first, at most `max` of them. */
+  revList(repoRoot: string, range: string, max: number): Promise<string[]>;
 }
 
 const ORIGIN_HEAD = "refs/remotes/origin/HEAD";
@@ -185,6 +187,11 @@ export function createGit(options: { env?: Record<string, string | undefined> } 
       return parseStatus(
         await run(worktreePath, ["status", "--porcelain", "-z", "--untracked-files=all"]),
       );
+    },
+
+    async revList(repoRoot, range, max) {
+      const out = await run(repoRoot, ["rev-list", `--max-count=${max}`, range]);
+      return out.split("\n").filter((sha) => sha.length > 0);
     },
   };
 }

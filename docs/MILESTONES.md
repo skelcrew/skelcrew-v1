@@ -7,7 +7,8 @@ rewrite the entry, not the number. A number identifies an entry and never change
 the build order does: entries are listed below in intended build order, so a later-numbered
 entry can precede an earlier one when it was carved out of it.
 
-Status: 001, 002, and 003 landed (PRs #1, #2, #3, all 2026-09-08); 004 is in progress. A
+Status: 001 through 004, 010, 009, and 006 landed (PRs #1 through #7, 2026-09-08 and
+2026-09-09); 007 is in progress. A
 prototype spike (2026-09-07, preserved on the `prototype` branch) built the previous
 architecture — separate board server, web UI, MCP endpoint, daemon — end to end and ran a
 real spec stage and develop stage against a toy repo. The project has since been renamed
@@ -193,6 +194,133 @@ Findings and decisions from the spec workflow itself, newest last:
   requires the gitdir's grandparent to be named `.git`, so a main repository initialised
   with `--separate-git-dir` does not resolve and its runner worktrees fall back to their
   own directory as the root.
+- **The runner spawns one coding agent per run through the Agent SDK, behind a driver
+  seam; the card shows excerpts and the transcript is a file; approvals are attention
+  requests answered with words (007).** `SKELCREW_AGENT` picks the driver — unset or
+  `claude` is `@anthropic-ai/claude-agent-sdk` (pinned, the daemon's only direct external
+  dependency, confined to `runner/claude.ts`; its declared peers — `@anthropic-ai/sdk`,
+  `@modelcontextprotocol/sdk`, `zod`, and their trees — are named in `bun.lock` because
+  Bun records resolutions, but the root `bunfig.toml`'s `peer = false` keeps them off disk,
+  and the SDK loads without them), `none` keeps 006's no-playbook handoff, and anything
+  else stops the daemon. The agent runs in the card's worktree with the phase's playbook
+  (`packages/daemon/playbooks/{spec,code}.md`, read at startup, appended to the harness's
+  own system prompt, never written into the target repo) and the card — `Card <id>:
+  <title>`, `Branch: <branch> (from <base>)`, a blank line, the body — as its first user
+  message. Its environment is the daemon's plus `SKELCREW_AS=runner`, `SKELCREW_DIR=<data
+  dir>`, and `<data dir>/bin` first on `PATH`, where a shim `skelcrew` (written once at
+  startup, `exec '<the daemon's own bun, process.execPath>' '<this checkout's
+  packages/cli/src/main.ts>' "$@"`, so a daemon under launchd with a minimal `PATH` still
+  works) makes every playbook command land on this daemon attributed to `runner`. The
+  allowlist is `Read`, `Glob`, `Grep`, `Edit`, `Write`, `MultiEdit`, `Agent`, `TodoWrite`,
+  `Bash(skelcrew show *)`, `Bash(skelcrew comment *)`, `Bash(skelcrew body *)`,
+  `Bash(skelcrew refs *)`, `Bash(skelcrew attention *)`, `Bash(git status *)`,
+  `Bash(git log *)`, `Bash(git diff *)`, `Bash(git show *)`, `Bash(git merge-base *)`,
+  `Bash(git rev-parse *)`, `Bash(git branch *)`, `Bash(git add *)`, `Bash(git commit *)`,
+  `Bash(git push -u origin HEAD)`, `Bash(git push)`, `Bash(gh pr create *)`,
+  `Bash(gh pr view *)`, `Bash(gh pr diff *)`, `Bash(gh pr comment *)`,
+  `Bash(gh repo view*)`, plus `Bash(<first token> *)` for
+  the first line of every fenced shell block (no language tag, or `sh`/`bash`/`shell`/
+  `zsh`/`console`, a leading `$ ` stripped) in the repo root's `AGENTS.md` and `CLAUDE.md`
+  — `bun run check` becomes `Bash(bun *)` here. The scan skips a token the fixed list
+  narrows on purpose (`skelcrew`, `git`, `gh`), so a target repo whose instructions show
+  `git status` in a fence cannot widen git back to `Bash(git *)`. Anything else is an
+  attention request to the owner, `allow <tool> <one-line input>? (skelcrew resolve <id>
+  -m allow | skelcrew resolve <id> -m deny)`, with the claim heartbeating while the run
+  waits: `-m allow` (or `yes`, `ok`) allows, `deny`, `no`, any other text, or no text
+  denies with the text (or `denied`) as the reason the agent sees, and resolving by a move
+  aborts the run.
+  Permission requests queue — one is open on the card at a time, the next is raised when
+  it resolves — and none is raised over a question the agent itself put on the card with
+  `skelcrew attention`, which the owner answers first; a failed run leaves such a question
+  in place and posts only its comment and release, replacing nothing but the run's own
+  request. Excerpts: each
+  assistant text turn is a comment, cut at 2 KiB with a `… [truncated: N bytes; the full
+  text is in the run log]` marker; tool calls are one comment per thirty seconds and at
+  the end of the run (`ran 4 tools: Read ×2, Bash \`bun test\`, Edit`); every driver
+  event is a JSON line in `<data dir>/runs/<id>-<started>.jsonl`, whose path is in the
+  run's first comment (006's `worktree ready …` line, extended with `; run log at <path>`).
+  A comment by any member other than `runner` while the run is live reaches the agent as
+  a user message; the answer to an approval is not also forwarded. A run ends at the
+  driver's first result, at the time limit (60 minutes, `SKELCREW_RUN_MINUTES`), when the
+  daemon stops (`run aborted: daemon stopping`, a failed run like the time limit, so
+  shutdown never waits out a run and the card is waiting on the owner after a restart), or
+  when the claim is lost — every core event on the card re-checks the claim and aborts
+  the agent, and the 006 rule holds: a lost claim posts `run abandoned: <reason>` and
+  nothing else. An agent that ignores its abort signal is left behind after a five-second
+  grace and the run proceeds without it. **The agent may never move, release, or archive
+  its own card**: the phase ends in an artefact contract the runner verifies before any
+  handoff, and `skelcrew mv <id> pr` by the claim holder would skip that gate — so the CLI
+  is allowed verb by verb (`mv`, `release`, `claim`, `archive`, `resolve` ask the owner),
+  and a `card_moved`, `released`, or `card_archived` by `runner` itself during a run is a
+  failed run (`run failed: the agent moved its own card (to pr)` and the like, a comment
+  and a request, no handoff), never an abandonment. An explicit release by anyone else
+  (`skelcrew release`, the owner's 009 exit ramp) stops the run with `run stopped:
+  released by <name>` as a comment and a request, so the card waits instead of being
+  re-dispatched a moment later; only a lapse (`run_interrupted`) returns the card to its
+  queue, as 009 intends. Then the contract: Spec needs a `body_set` by `runner` during the run and a
+  non-empty body, giving `spec ready` with moves `["code"]` and release `finished`, else
+  `run finished without a spec`; Code needs commits past the base (`git rev-list
+  <base>..<branch>`, newest first, capped at 256, written to `commits` on success), a
+  clean worktree, and a `prUrl` the run itself recorded — a `refs_set` by `runner` between
+  the run's first and last events carrying one. The value may be the one already on the
+  card, since a card sent back from PR is pushed to the same branch and keeps the same
+  pull request, so requiring a *new* URL would strand every revision; what has to be new
+  is the recording. That is what catches a run that did nothing: on a revision the commits
+  of the run before are still on the branch and the URL is still on the card, so the
+  commits alone would hand the card on as ready for review again. (The `refs_set` event
+  records the merged refs, not the keys the call set, so a run that writes some other ref
+  while a `prUrl` is on the card also satisfies it; separating the two needs the core to
+  record which keys were set, which 007 did not ask for.) Then `ready for review: <url>`
+  with moves `["pr"]`, else `run finished with <every unmet condition>`.
+  An error result, a driver failure, or the time limit is `run failed: …` / `run aborted:
+  …`. Every failure is a comment, the same text as an attention request with no moves,
+  and a release with reason `failed`; a failed run never moves the card and a dirty
+  worktree is left in place. Two things the spec assumed that the code did not bear out:
+  `packages/daemon/package.json` also carries the `@skelcrew/shared` workspace link, so
+  "exactly one dependency" reads as one external dependency; and the SDK's default
+  executable is the Claude Code it bundles per platform (`pathToClaudeCodeExecutable`
+  overrides), still under the owner's login, not a `claude` on `PATH`. Two entries of the
+  spec's allowlist were narrowed, both because a `Bash(x *)` rule matches every command that
+  begins with `x` (that is wildcard matching, `x` then anything; `Bash(x:*)` is the legacy
+  prefix form). `Bash(gh pr *)` became the verbs the playbooks use (`create`, `view`,
+  `diff`, `comment`): the wildcard pre-allowed `gh pr merge` and `gh pr close`, and
+  merging is the owner's alone. `Bash(git *)` became the verbs above: it pre-allowed
+  `git push origin HEAD:main`, which lands the work on the default branch without the
+  merge gate, and `git -c <anything> log`, which runs arbitrary commands through git's own
+  options (Claude Code's rule validator warns of `-c` and `--exec-path` for exactly this).
+  Push is allowed only as the exact `git push -u origin HEAD` the playbook runs and the
+  bare `git push`; any other refspec or a force push asks. What this closes is what the
+  agent may do *unprompted*: every one of these is still available by asking the owner,
+  which is the intended path, and nothing here sandboxes the agent — a bare `git push`
+  under a repo-level `push.default = matching` could still push more than the card's
+  branch.
+- **Carried from 007: the runner's identity is not scoped to its card.** The agent gets
+  `SKELCREW_AS=runner` and the whole CLI surface that member has, so a run on card 1 can
+  comment on or rewrite card 7 and it lands attributed to `runner`; only the playbook's
+  text keeps a run on its own card. 007 has no primitive for this and did not ask for one.
+  The milestone that gives a run its own identity — a claim-bound credential the shim
+  passes, with the daemon refusing writes to any other card — closes it; until then a
+  stray write is visible on the wrong card's activity rather than prevented.
+- **Carried from 007: the workflow itself, four review rounds deep.** 007 took four review
+  cycles where `/develop` budgets three, and the budget never fired — nothing in the loop
+  surfaces it, so it held only because the owner was steering each round by hand. A gate that
+  depends on someone remembering to read it is not a gate, which is the same lesson the
+  runner's artefact contracts encode; the playbooks the daemon ships should count their own
+  rounds and stop. Two of the four rounds were spent on defects that were in the spec, not the
+  implementation: `Bash(gh pr *)` and `Bash(git *)` were specified, implemented faithfully,
+  and each dissolved the attention gate the same spec exists to build — a spec that grants an
+  agent permissions is specifying a security boundary and has to be reviewed as one, against
+  the matching semantics of whatever enforces it, before implementation starts. A third round
+  went to a rule the spec had right all along: Code needs a `prUrl` *recorded during the run*,
+  which round 2 tightened into "a different URL" (stranding every revision) and round 3 then
+  loosened past the spec's own words (letting a do-nothing revision hand the card on as ready
+  for review). A finding that proposes changing a rule the spec states should have to argue
+  against the spec's wording, and a fix should relax exactly what the finding names — the
+  neighbouring condition dropped "while in there" is what opened the round-4 hole. These belong in
+  `.claude/skills/spec/SKILL.md`, `.claude/agents/reviewer.md` and
+  `.claude/agents/implementer.md` — this repo's own playbooks, which 007 does not touch —
+  and from there in the daemon's built-in playbooks when the runner learns to run review and
+  verification phases.
 
 ## 001 — Project scaffold
 

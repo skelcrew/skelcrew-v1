@@ -39,7 +39,14 @@ These are correctness requirements, not preferences. A change that violates one 
 - **Skelcrew never calls a model.** No LLM API keys, clients, or SDKs anywhere. All
   intelligence enters through members: the human over the CLI, agents over the same CLI as
   agent members, and the coding agents the runner spawns as subprocesses. Model auth is strictly between the user
-  and their harness — skelcrew holds no credentials.
+  and their harness — skelcrew holds no credentials. The Claude Agent SDK the runner drives
+  those subprocesses through is a harness driver, not a model client: it spawns Claude Code
+  under the owner's own login, gets no key from skelcrew, and is confined to one file
+  (`packages/daemon/src/runner/claude.ts`) behind a driver interface the rest of the daemon
+  never sees through. Its declared peer packages — among them `@anthropic-ai/sdk`, the
+  model client — appear in `bun.lock` because Bun records every resolution, but the root
+  `bunfig.toml` (`peer = false`) keeps them out of `node_modules`, so they are never
+  installed and no skelcrew code can import them.
 - **Cards drive the runner, not the other way round.** Work exists because a card entered a
   claimable phase; nothing runs that a card didn't ask for, and a run's only outputs are
   updates to its card and artefacts in the target repo.

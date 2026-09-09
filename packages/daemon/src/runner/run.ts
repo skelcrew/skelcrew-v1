@@ -1,0 +1,574 @@
+/**
+ * One run: a coding agent in the card's worktree with the phase's playbook and the card,
+ * streamed back to the card as excerpts — every assistant turn a comment, tool calls
+ * batched, the full stream in a log under the data directory — and answered from the
+ * card: comments reach the agent as user messages, a tool outside the allowlist becomes an
+ * attention request whose answer is the decision. The run ends when the session ends,
+ * when the time limit fires, when the daemon stops, or when the claim is lost; then the
+ * phase's artefact contract decides whether the card is handed off or the run failed.
+ * Nothing is posted after an await without the claim still being this run's.
+ */
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  type Activity,
+  type Attention,
+  type Card,
+  COMMENT_MAX_BYTES,
+  COMMITS_MAX_COUNT,
+  type Member,
+  type Phase,
+} from "@skelcrew/shared";
+import type { Core } from "../core/core";
+import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
+import type { Git } from "./git";
+
+/** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
+export const RUN_LIMIT_MINUTES_DEFAULT = 60;
+/** After the run tells the agent to stop, how long it waits for it before going on without it. */
+export const ABORT_GRACE_MS_DEFAULT = 5000;
+/** A text turn longer than this is posted cut, with a marker. */
+export const TEXT_EXCERPT_BYTES = 2 * 1024;
+/** Tool calls are posted as one summary per window. */
+export const TOOL_SUMMARY_MS = 30_000;
+/** One-line renderings of a tool's input are cut here. */
+const INPUT_LINE_MAX = 200;
+const COMMAND_IN_SUMMARY_MAX = 60;
+const ALLOW_WORDS = new Set(["allow", "yes", "ok"]);
+export const RUNS_DIR_NAME = "runs";
+
+/** The run's claim went away: the card is someone else's now, and nothing more is posted. */
+export class RunAbandoned extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "RunAbandoned";
+  }
+}
+
+export interface RunInput {
+  core: Core;
+  git: Git;
+  member: Member;
+  ownerId: number;
+  warn: (line: string) => void;
+  card: Card;
+  /** The card's worktree, branch, and the base branch it forked from. */
+  path: string;
+  branch: string;
+  base: { name: string; sha: string };
+  repoRoot: string;
+  driver: AgentDriver;
+  playbook: string;
+  env: Record<string, string>;
+  allowedTools: string[];
+  logPath: string;
+  limitMs: number;
+  /** How long the agent gets to end after being told to, before the run goes on without it. */
+  graceMs: number;
+  /** The window tool calls are batched into one comment over. */
+  summaryMs: number;
+  /** Fires when the daemon is stopping: the run is aborted and fails as such. */
+  stop: AbortSignal;
+  /** Throws `RunAbandoned` when the claim is no longer this run's, live. */
+  stillHeld(): void;
+  /** Why the claim is no longer this run's, or undefined while it is. */
+  lost(): string | undefined;
+}
+
+export function runsDir(dataDir: string): string {
+  return join(dataDir, RUNS_DIR_NAME);
+}
+
+/** `SKELCREW_RUN_MINUTES`, or the default; anything that is not a positive number is an error. */
+export function runLimitFromEnv(env: Record<string, string | undefined>): number {
+  const value = env.SKELCREW_RUN_MINUTES;
+  if (value === undefined || value === "") return RUN_LIMIT_MINUTES_DEFAULT * 60_000;
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    throw new Error(`SKELCREW_RUN_MINUTES must be a positive number of minutes, not "${value}"`);
+  }
+  return minutes * 60_000;
+}
+
+/** `<data dir>/runs/<id>-<started>.jsonl`, the timestamp compact UTC so the name is a path anywhere. */
+export function runLogPath(dataDir: string, cardId: number, startedAt: number): string {
+  const stamp = new Date(startedAt)
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+  return join(runsDir(dataDir), `${cardId}-${stamp}.jsonl`);
+}
+
+/** The first user message: the card, and where its work goes. */
+export function cardPrompt(
+  card: Pick<Card, "id" | "title" | "body">,
+  branch: string,
+  base: string,
+): string {
+  return `Card ${card.id}: ${card.title}\nBranch: ${branch} (from ${base})\n\n${card.body}`;
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The longest prefix of `text` within `budget` bytes, cut on a character boundary. */
+function cutBytes(text: string, budget: number): string {
+  let bytes = 0;
+  let cut = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char, "utf8");
+    if (bytes + size > budget) break;
+    bytes += size;
+    cut += char.length;
+  }
+  return text.slice(0, cut);
+}
+
+/** A text turn as the card shows it: whole under 2 KiB, else cut with a marker. */
+export function excerpt(text: string): string {
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes <= TEXT_EXCERPT_BYTES) return text;
+  return `${cutBytes(text, TEXT_EXCERPT_BYTES)}\n… [truncated: ${bytes} bytes; the full text is in the run log]`;
+}
+
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s*\n\s*/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** What the owner is asked about: the command for Bash, the path for file tools, else the input. */
+function describeInput(tool: string, input: Record<string, unknown>): string {
+  const command = input.command;
+  if (tool === "Bash" && typeof command === "string") return oneLine(command, INPUT_LINE_MAX);
+  const path = input.file_path ?? input.path;
+  if (typeof path === "string") return oneLine(path, INPUT_LINE_MAX);
+  return oneLine(JSON.stringify(input), INPUT_LINE_MAX);
+}
+
+/** `resolve -m <text>`: allow on the recognised words; anything else denies with the text as the reason. */
+export function decide(text: string | undefined): ToolDecision {
+  const word = text?.trim().toLowerCase() ?? "";
+  if (ALLOW_WORDS.has(word)) return { behavior: "allow" };
+  return { behavior: "deny", message: text === undefined || text.trim() === "" ? "denied" : text };
+}
+
+/** "ran 4 tools: Read ×2, Bash `bun test`, Edit": Bash calls named, the rest counted. */
+export function summarizeTools(
+  calls: Array<{ name: string; input: Record<string, unknown> }>,
+): string {
+  const parts = new Map<string, { label: string; count: number }>();
+  calls.forEach((call, i) => {
+    if (call.name === "Bash" && typeof call.input.command === "string") {
+      const command = oneLine(call.input.command, COMMAND_IN_SUMMARY_MAX).replaceAll("`", "'");
+      parts.set(`Bash:${i}`, { label: `Bash \`${command}\``, count: 1 });
+      return;
+    }
+    const part = parts.get(call.name);
+    if (part === undefined) parts.set(call.name, { label: call.name, count: 1 });
+    else part.count += 1;
+  });
+  const listed = [...parts.values()].map((p) => (p.count > 1 ? `${p.label} ×${p.count}` : p.label));
+  return `ran ${calls.length} tool${calls.length === 1 ? "" : "s"}: ${listed.join(", ")}`;
+}
+
+/** The user messages the driver reads: pushed as comments arrive, closed when the run ends. */
+function inbox(): AsyncIterable<string> & { push(text: string): void; close(): void } {
+  const items: string[] = [];
+  let closed = false;
+  let wake: (() => void) | undefined;
+  return {
+    push(text) {
+      if (closed) return;
+      items.push(text);
+      wake?.();
+    },
+    close() {
+      closed = true;
+      wake?.();
+    },
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        const next = items.shift();
+        if (next !== undefined) {
+          yield next;
+          continue;
+        }
+        if (closed) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        wake = undefined;
+      }
+    },
+  };
+}
+
+function appendLog(path: string, event: AgentEvent): void {
+  appendFileSync(path, `${JSON.stringify(event)}\n`);
+}
+
+type Comment = Activity & { type: "comment" };
+type Ask = { note: string; resolve(decision: ToolDecision): void };
+
+export async function runPlaybook(input: RunInput): Promise<void> {
+  const { core, git, member, ownerId, warn, card, path, branch, base, driver, logPath } = input;
+  const id = card.id;
+  const atStart = core.getCard(id);
+  const startSeq = atStart.activity.at(-1)?.seq ?? 0;
+  mkdirSync(join(logPath, ".."), { recursive: true });
+  writeFileSync(logPath, "");
+
+  const abort = new AbortController();
+  let lostReason: string | undefined;
+  let timedOut = false;
+  let stopping = false;
+  /** The agent moved, released, or archived its own card: the run is over, and failed. */
+  let selfAction: string | undefined;
+  /** A member released the card explicitly (not a move, not a lapse): the run stops and waits. */
+  let releasedBy: string | undefined;
+  let movedAway = false;
+  const messages = inbox();
+  messages.push(cardPrompt(card, branch, base.name));
+
+  /** The claim, re-checked on every event that could have taken it: lost means abort. */
+  const check = (): void => {
+    if (lostReason !== undefined) return;
+    lostReason = input.lost();
+    if (lostReason !== undefined) abort.abort();
+  };
+
+  /** A comment that lands whether or not the claim survived; a card that refuses it is warned about. */
+  const say = (text: string): void => {
+    try {
+      core.comment(id, text, member.id);
+    } catch (error) {
+      warn(`skelcrew runner: card ${id}: could not comment: ${message(error)}`);
+    }
+  };
+
+  /** A comment on the card, only while the claim is still this run's; otherwise dropped. */
+  const post = (text: string): void => {
+    if (input.lost() !== undefined) return;
+    say(text);
+  };
+
+  // --- tool calls, batched ---
+  const pendingTools: Array<{ name: string; input: Record<string, unknown> }> = [];
+  let summaryTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushTools = (evenWithoutTheClaim = false): void => {
+    if (summaryTimer !== undefined) clearTimeout(summaryTimer);
+    summaryTimer = undefined;
+    if (pendingTools.length === 0) return;
+    const summary = summarizeTools(pendingTools.splice(0));
+    if (evenWithoutTheClaim) say(summary);
+    else post(summary);
+  };
+  const noteTool = (call: { name: string; input: Record<string, unknown> }): void => {
+    pendingTools.push(call);
+    summaryTimer ??= setTimeout(flushTools, input.summaryMs);
+  };
+
+  // --- comments, forwarded ---
+  /**
+   * Comments seen in the current dispatch, forwarded on the next microtask — unless one is
+   * the `resolve -m` answer to the run's own permission request, which is taken as the
+   * decision instead. The core delivers a mutation's events back to back, so the comment
+   * a `resolveAttention` records is still held when its `attention_resolved` arrives.
+   */
+  const held: Comment[] = [];
+  const flushHeld = (): void => {
+    for (const comment of held.splice(0)) messages.push(comment.data.text);
+  };
+  const takeAnswer = (resolved: Activity): string | undefined => {
+    const at = held.findIndex((c) => c.seq === resolved.seq - 1 && c.actorId === resolved.actorId);
+    if (at < 0) return undefined;
+    const [answer] = held.splice(at, 1);
+    return answer?.data.text;
+  };
+
+  // --- approvals through attention, one at a time ---
+  const deny = (reason: string): ToolDecision => ({ behavior: "deny", message: reason });
+  const asks: Ask[] = [];
+  /** The run's own open request, identified by what the core recorded for it. */
+  let current: (Ask & { raised: Attention }) | undefined;
+  /**
+   * Raises the next queued request — never over the run's own open one, and never over a
+   * question the agent itself raised on the card (`skelcrew attention`), which the owner
+   * must answer first.
+   */
+  const raiseNext = (): void => {
+    if (abort.signal.aborted) {
+      for (const ask of asks.splice(0)) ask.resolve(deny("run aborted"));
+      return;
+    }
+    while (current === undefined && asks.length > 0) {
+      if (core.getCard(id).attention !== null) return;
+      const ask = asks.shift() as Ask;
+      try {
+        const raised = core.requestAttention(id, { to: ownerId, note: ask.note }, member.id)
+          .attention as Attention;
+        current = { ...ask, raised };
+      } catch (error) {
+        ask.resolve(deny(`could not ask: ${message(error)}`));
+      }
+    }
+  };
+  const isOwn = (open: Attention | null): boolean =>
+    open !== null &&
+    current !== undefined &&
+    open.raisedAt === current.raised.raisedAt &&
+    open.note === current.raised.note &&
+    open.raisedBy === member.id;
+  const canUseTool = (tool: string, toolInput: Record<string, unknown>): Promise<ToolDecision> => {
+    check();
+    if (abort.signal.aborted) return Promise.resolve(deny("run aborted"));
+    const note = `allow ${tool} ${describeInput(tool, toolInput)}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)`;
+    return new Promise<ToolDecision>((resolve) => {
+      asks.push({ note, resolve });
+      raiseNext();
+    });
+  };
+
+  const onEvent = (event: Activity): void => {
+    if (event.cardId !== id) return;
+    switch (event.type) {
+      case "comment":
+        if (event.actorId === member.id) return;
+        held.push(event);
+        if (held.length === 1) queueMicrotask(flushHeld);
+        return;
+      case "attention_requested":
+        // The agent's own question replaced the run's open request: ask again after it.
+        if (current !== undefined && !isOwn(event.data)) {
+          asks.unshift(current);
+          current = undefined;
+        }
+        return;
+      case "attention_resolved": {
+        const open = current;
+        current = undefined;
+        if (open !== undefined) {
+          if (event.data.how === "answered") open.resolve(decide(takeAnswer(event)));
+          else {
+            // Resolved by a move or an archive: the claim went with it.
+            check();
+            open.resolve(deny("run aborted"));
+          }
+        }
+        raiseNext();
+        return;
+      }
+      // The agent may never move, release, or archive its own card: the runner verifies the
+      // artefact before any handoff, and a card the agent moved on has skipped that gate.
+      case "card_moved":
+        movedAway = true;
+        if (event.actorId === member.id) selfAction ??= `moved its own card (to ${event.data.to})`;
+        check();
+        return;
+      case "card_archived":
+        movedAway = true;
+        if (event.actorId === member.id) selfAction ??= "archived its own card";
+        check();
+        return;
+      case "released":
+        if (event.actorId === member.id) {
+          selfAction ??= `released its own card (${event.data.reason ?? "no reason"})`;
+        } else if (!movedAway) {
+          // An explicit release by someone else: the owner's exit ramp, not a lapse.
+          releasedBy = core.getMember(event.actorId).name;
+        }
+        check();
+        return;
+      case "run_interrupted":
+        check();
+        return;
+      default:
+        return;
+    }
+  };
+  const unsubscribe = core.subscribe(onEvent);
+  const limit = setTimeout(() => {
+    timedOut = true;
+    abort.abort();
+  }, input.limitMs);
+  const onStop = (): void => {
+    stopping = true;
+    abort.abort();
+  };
+  if (input.stop.aborted) onStop();
+  else input.stop.addEventListener("abort", onStop, { once: true });
+  // The agent is told to stop; whoever is still waiting on the owner is answered no.
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const graceExpired = new Promise<"grace">((resolve) => {
+    const onAbort = (): void => {
+      current?.resolve(deny("run aborted"));
+      for (const ask of asks.splice(0)) ask.resolve(deny("run aborted"));
+      graceTimer = setTimeout(() => resolve("grace"), input.graceMs);
+    };
+    // The daemon can have stopped before the run reached this point — a listener on a
+    // signal that already fired never runs, and the loop would then wait on a driver
+    // that ignores its own abort with nothing to end it.
+    if (abort.signal.aborted) onAbort();
+    else abort.signal.addEventListener("abort", onAbort, { once: true });
+  });
+
+  let result: Extract<AgentEvent, { type: "result" }> | undefined;
+  let driverError: string | undefined;
+  try {
+    const events = driver
+      .run({
+        cwd: path,
+        env: input.env,
+        systemPrompt: input.playbook,
+        allowedTools: input.allowedTools,
+        canUseTool,
+        input: messages,
+        signal: abort.signal,
+      })
+      [Symbol.asyncIterator]();
+    for (;;) {
+      const step = await Promise.race([events.next(), graceExpired]);
+      if (step === "grace") {
+        warn(`skelcrew runner: card ${id}: the agent did not stop within ${input.graceMs} ms`);
+        break;
+      }
+      if (step.done) break;
+      const event = step.value;
+      appendLog(logPath, event);
+      if (abort.signal.aborted) break;
+      input.stillHeld();
+      switch (event.type) {
+        case "text":
+          post(excerpt(event.text));
+          break;
+        case "tool_use":
+          noteTool({ name: event.name, input: event.input });
+          break;
+        case "tool_result":
+          break;
+        case "result":
+          result = event;
+          break;
+      }
+      if (result !== undefined) break;
+    }
+    // Not awaited: a driver that ignores its signal must not hold the run either.
+    events.return?.(undefined)?.catch(() => {});
+  } catch (error) {
+    if (error instanceof RunAbandoned) throw error;
+    if (!abort.signal.aborted) driverError = message(error);
+  } finally {
+    clearTimeout(limit);
+    if (summaryTimer !== undefined) clearTimeout(summaryTimer);
+    summaryTimer = undefined;
+    input.stop.removeEventListener("abort", onStop);
+    unsubscribe();
+    messages.close();
+    abort.abort();
+    if (graceTimer !== undefined) clearTimeout(graceTimer);
+  }
+
+  /** The card is waiting on the owner with `note`, whether or not the claim survived. */
+  const stopWith = (note: string): void => {
+    try {
+      core.comment(id, note, member.id);
+      core.requestAttention(id, { to: ownerId, note }, member.id);
+    } catch (error) {
+      warn(`skelcrew runner: card ${id}: ${note}; and could not say so: ${message(error)}`);
+    }
+  };
+  // The claim is gone in both of these, taken by the agent's own hand or the owner's;
+  // neither is an abandonment, because the card must not become ready again silently. The
+  // tool calls of the window that was still open land with them: what the agent did is
+  // visible on the card, or it happened invisibly.
+  if (selfAction !== undefined) {
+    flushTools(true);
+    stopWith(`run failed: the agent ${selfAction}`);
+    return;
+  }
+  if (releasedBy !== undefined) {
+    flushTools(true);
+    stopWith(`run stopped: released by ${releasedBy}`);
+    return;
+  }
+
+  // The session is over. Nothing below is posted unless the claim is still this run's.
+  input.stillHeld();
+  flushTools();
+
+  const fail = (text: string): void => {
+    const note = cutBytes(text, COMMENT_MAX_BYTES / 4);
+    core.comment(id, note, member.id);
+    // A question the agent raised on the card during the run outranks a generic failure:
+    // it is what the owner has to answer, so it stays; only the run's own request is replaced.
+    const open = core.getCard(id).attention;
+    if (open === null || isOwn(open)) {
+      core.requestAttention(id, { to: ownerId, note }, member.id);
+    }
+    core.releaseCard(id, { reason: "failed" }, member.id);
+  };
+  const finish = (note: string, moves: Phase[]): void => {
+    core.requestAttention(id, { to: ownerId, note, moves }, member.id);
+    core.releaseCard(id, { reason: "finished" }, member.id);
+  };
+
+  if (stopping) {
+    fail("run aborted: daemon stopping");
+    return;
+  }
+  if (timedOut) {
+    fail(`run aborted: time limit of ${describeLimit(input.limitMs)} reached`);
+    return;
+  }
+  if (driverError !== undefined) {
+    fail(`run failed: ${driverError}`);
+    return;
+  }
+  if (result === undefined) {
+    fail("run failed: the agent ended without a result");
+    return;
+  }
+  if (!result.ok) {
+    fail(`run failed: ${result.error ?? "the agent reported an error"}`);
+    return;
+  }
+
+  const detail = core.getCard(id);
+  const since = detail.activity.filter((e) => e.seq > startSeq && e.actorId === member.id);
+  if (card.phase === "spec") {
+    const wrote = since.some((e) => e.type === "body_set");
+    if (wrote && detail.body.trim().length > 0) finish("spec ready", ["code"]);
+    else fail("run finished without a spec");
+    return;
+  }
+
+  // Code: commits past the base, a clean worktree, and a `prUrl` this run recorded. The
+  // value may be the one already on the card — a card sent back from PR is pushed to the
+  // same branch and GitHub keeps the same pull request — so what has to be new is the
+  // recording, not the URL. Without that, a run that did nothing passes on the commits and
+  // the URL an earlier run earned, and the card is handed on as ready for review again.
+  const recorded = since.some((e) => e.type === "refs_set" && e.data.refs.prUrl !== undefined);
+  const commits = await git.revList(input.repoRoot, `${base.name}..${branch}`, COMMITS_MAX_COUNT);
+  input.stillHeld();
+  const changed = await git.status(path);
+  input.stillHeld();
+  const prUrl = core.getCard(id).refs.prUrl;
+  const unmet: string[] = [];
+  if (commits.length === 0) unmet.push(`no commits on ${branch} past ${base.name}`);
+  if (changed.length > 0) unmet.push(`uncommitted changes in the worktree at ${path}`);
+  if (prUrl === undefined || !recorded) unmet.push("no prUrl ref set during the run");
+  if (unmet.length > 0) {
+    fail(`run finished with ${unmet.join("; ")}`);
+    return;
+  }
+  core.setRefs(id, { commits }, member.id);
+  finish(`ready for review: ${prUrl}`, ["pr"]);
+}
+
+function describeLimit(ms: number): string {
+  const minutes = ms / 60_000;
+  if (Number.isInteger(minutes)) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const seconds = ms / 1000;
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}

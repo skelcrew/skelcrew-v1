@@ -165,3 +165,23 @@ test("parseWorktreeList reads paths, heads, branches, detached entries, and prun
   ]);
   expect(parseWorktreeList("")).toEqual([]);
 });
+
+test("revList lists a range's shas newest first, capped, and empty for no commits", async () => {
+  await sh(repo, "init", "-q", "-b", "main");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "base");
+  await sh(repo, "branch", "feature");
+  expect(await git.revList(repo, "main..feature", 10)).toEqual([]);
+  await sh(repo, "checkout", "-q", "feature");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "one");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "two");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "three");
+  const head = await sh(repo, "rev-parse", "HEAD");
+  const previous = await sh(repo, "rev-parse", "HEAD~1");
+  expect(await git.revList(repo, "main..feature", 10)).toEqual([
+    head,
+    previous,
+    await sh(repo, "rev-parse", "HEAD~2"),
+  ]);
+  expect(await git.revList(repo, "main..feature", 2)).toEqual([head, previous]);
+  await expect(git.revList(repo, "main..nope", 10)).rejects.toThrow(GitError);
+});

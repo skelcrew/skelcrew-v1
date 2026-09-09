@@ -1,9 +1,10 @@
 /**
- * The execution half, without a coding agent in it yet. A client of the core like the
- * socket is: it watches the activity stream for cards becoming ready, claims one at a time
- * as the `runner` member, prepares a branch and a worktree, and — having no playbook to
- * run — hands the card to the owner. Every step lands on the card; nothing here reaches
- * into the database or the target repository except through `git`.
+ * The execution half. A client of the core like the socket is: it watches the activity
+ * stream for cards becoming ready, claims one at a time as the `runner` member, prepares
+ * a branch and a worktree, and runs the phase's playbook in it through a driver (`run.ts`)
+ * — or, with no driver, hands the card to the owner as 006 did. Every step lands on the
+ * card; nothing here reaches into the database or the target repository except through
+ * `git` and the agent.
  */
 import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +18,19 @@ import {
   worktreesDir,
 } from "@skelcrew/shared";
 import type { Core } from "../core/core";
+import type { AgentDriver } from "./agent";
+import { allowlistFor } from "./allowlist";
 import type { Git, WorktreeEntry } from "./git";
+import type { Playbooks } from "./playbooks";
+import {
+  ABORT_GRACE_MS_DEFAULT,
+  RUN_LIMIT_MINUTES_DEFAULT,
+  RunAbandoned,
+  runLogPath,
+  runPlaybook,
+  TOOL_SUMMARY_MS,
+} from "./run";
+import { agentEnvironment, writeShim } from "./shim";
 import { branchName } from "./slug";
 
 export const RUNNER_MEMBER_NAME = "runner";
@@ -38,10 +51,27 @@ export interface RunnerOptions {
   warn?: (line: string) => void;
   /** The clock readiness reads a claim's expiry against; the core's, so the two agree. */
   now?: () => number;
+  /** What runs the playbook in the worktree. Without one, a run ends in the no-playbook handoff. */
+  driver?: AgentDriver;
+  /** The phase playbooks the driver is given; required with a driver. */
+  playbooks?: Playbooks;
+  /** The environment the agent inherits, before the runner's own variables. Defaults to the process's. */
+  env?: Record<string, string | undefined>;
+  /** A run's time limit. Defaults to 60 minutes. */
+  runLimitMs?: number;
+  /** How often a run's claim is renewed. Defaults to 30 s. */
+  heartbeatMs?: number;
+  /** How long an aborted agent gets to end before the run goes on without it. Defaults to 5 s. */
+  abortGraceMs?: number;
+  /** The window a run batches tool calls into one comment over. Defaults to 30 s. */
+  summaryMs?: number;
 }
 
 export interface Runner {
-  /** Takes no further card; resolves once the job in flight has finished. */
+  /**
+   * Takes no further card and aborts a live run (it fails as `daemon stopping`); resolves
+   * once the job in flight has finished.
+   */
   stop(): Promise<void>;
 }
 
@@ -63,14 +93,6 @@ function isReady(card: Card, at: number): boolean {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** The run's claim went away while it was inside git: the card is someone else's now. */
-class RunAbandoned extends Error {
-  constructor(reason: string) {
-    super(reason);
-    this.name = "RunAbandoned";
-  }
 }
 
 /** A worktree entry the runner can act on: registered, and its directory still a checkout. */
@@ -106,11 +128,23 @@ function within(text: string): string {
 }
 
 export function startRunner(options: RunnerOptions): Runner {
-  const { core, dataDir, repoRoot, git, member } = options;
+  const { core, dataDir, repoRoot, git, member, driver, playbooks } = options;
   const warn = options.warn ?? ((line: string) => console.error(line));
   const now = options.now ?? Date.now;
+  const heartbeatMs = options.heartbeatMs ?? RUN_HEARTBEAT_MS;
+  const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
+  const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS_DEFAULT;
+  const summaryMs = options.summaryMs ?? TOOL_SUMMARY_MS;
+  const baseEnv = options.env ?? process.env;
+  /** Fired by `stop()`: a live run is aborted rather than waited out. */
+  const stopping = new AbortController();
+  if (driver !== undefined && playbooks === undefined) {
+    throw new Error("a runner with a driver needs its playbooks");
+  }
   const dir = worktreesDir(dataDir);
   mkdirSync(dir, { recursive: true });
+  // The agent's `skelcrew`: written once, before any run could need it.
+  if (driver !== undefined) writeShim(dataDir);
 
   const jobs: Job[] = [];
   let stopped = false;
@@ -166,7 +200,7 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   }
 
-  // --- a run, with no playbook ---
+  // --- a run ---
 
   async function scan(): Promise<void> {
     const ids = core
@@ -195,7 +229,7 @@ export function startRunner(options: RunnerOptions): Runner {
       } catch (error) {
         warn(`skelcrew runner: heartbeat on card ${id} failed: ${message(error)}`);
       }
-    }, RUN_HEARTBEAT_MS);
+    }, heartbeatMs);
     const path = worktreePath(id);
     const branch = branchName(id, card.title);
     /**
@@ -242,13 +276,50 @@ export function startRunner(options: RunnerOptions): Runner {
       stillHeld();
       step = "update card";
       core.setRefs(id, { branch }, member.id);
-      core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
-      core.requestAttention(
+      const playbook =
+        playbooks !== undefined && (card.phase === "spec" || card.phase === "code")
+          ? playbooks[card.phase]
+          : undefined;
+      if (driver === undefined || playbook === undefined) {
+        core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
+        core.requestAttention(
+          id,
+          { to: ownerId(), note: `no playbook for ${card.phase} yet; work in ${path}` },
+          member.id,
+        );
+        core.releaseCard(id, { reason: "no playbook" }, member.id);
+        return;
+      }
+      const logPath = runLogPath(dataDir, id, now());
+      core.comment(
         id,
-        { to: ownerId(), note: `no playbook for ${card.phase} yet; work in ${path}` },
+        `worktree ready at ${path} on ${branch} (from ${base.name}); run log at ${logPath}`,
         member.id,
       );
-      core.releaseCard(id, { reason: "no playbook" }, member.id);
+      step = "run playbook";
+      await runPlaybook({
+        core,
+        git,
+        member,
+        ownerId: ownerId(),
+        warn,
+        card,
+        path,
+        branch,
+        base,
+        repoRoot,
+        driver,
+        playbook,
+        env: agentEnvironment(baseEnv, dataDir),
+        allowedTools: allowlistFor(repoRoot),
+        logPath,
+        limitMs: runLimitMs,
+        graceMs: abortGraceMs,
+        summaryMs,
+        stop: stopping.signal,
+        stillHeld,
+        lost,
+      });
     } catch (error) {
       if (error instanceof RunAbandoned) {
         abandon(error.message);
@@ -434,6 +505,7 @@ export function startRunner(options: RunnerOptions): Runner {
       stopped = true;
       unsubscribe();
       jobs.length = 0;
+      stopping.abort();
       await pumping;
     },
   };
