@@ -24,9 +24,9 @@ import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
   ABORT_GRACE_MS_DEFAULT,
+  createRunLog,
   RUN_LIMIT_MINUTES_DEFAULT,
   RunAbandoned,
-  runLogPath,
   runPlaybook,
   TOOL_SUMMARY_MS,
 } from "./run";
@@ -290,7 +290,8 @@ export function startRunner(options: RunnerOptions): Runner {
         core.releaseCard(id, { reason: "no playbook" }, member.id);
         return;
       }
-      const logPath = runLogPath(dataDir, id, now());
+      step = "open run log";
+      const logPath = createRunLog(dataDir, id, now());
       core.comment(
         id,
         `worktree ready at ${path} on ${branch} (from ${base.name}); run log at ${logPath}`,

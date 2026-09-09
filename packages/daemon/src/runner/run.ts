@@ -61,6 +61,7 @@ export interface RunInput {
   playbook: string;
   env: Record<string, string>;
   allowedTools: string[];
+  /** This run's log, already created by `createRunLog`; events are appended, never truncated. */
   logPath: string;
   limitMs: number;
   /** How long the agent gets to end after being told to, before the run goes on without it. */
@@ -90,13 +91,37 @@ export function runLimitFromEnv(env: Record<string, string | undefined>): number
   return minutes * 60_000;
 }
 
-/** `<data dir>/runs/<id>-<started>.jsonl`, the timestamp compact UTC so the name is a path anywhere. */
-export function runLogPath(dataDir: string, cardId: number, startedAt: number): string {
+/**
+ * `<data dir>/runs/<id>-<started>.jsonl`, the timestamp compact UTC so the name is a path
+ * anywhere. The stamp is second-resolution, so two runs of one card can want the same name;
+ * `nth` above 1 is the `-<nth>` that tells them apart, and `createRunLog` is what picks it.
+ */
+export function runLogPath(dataDir: string, cardId: number, startedAt: number, nth = 1): string {
   const stamp = new Date(startedAt)
     .toISOString()
     .replace(/[-:]/g, "")
     .replace(/\.\d{3}Z$/, "Z");
-  return join(runsDir(dataDir), `${cardId}-${stamp}.jsonl`);
+  const suffix = nth > 1 ? `-${nth}` : "";
+  return join(runsDir(dataDir), `${cardId}-${stamp}${suffix}.jsonl`);
+}
+
+/**
+ * Creates this run's log and returns the path, which is then this run's alone: the file is
+ * opened exclusively, so an existing log — an earlier run of the same card, started in the
+ * same second, whose path is on the card — is never truncated; the next free `-<nth>` is
+ * taken instead.
+ */
+export function createRunLog(dataDir: string, cardId: number, startedAt: number): string {
+  mkdirSync(runsDir(dataDir), { recursive: true });
+  for (let nth = 1; ; nth += 1) {
+    const path = runLogPath(dataDir, cardId, startedAt, nth);
+    try {
+      writeFileSync(path, "", { flag: "wx" });
+      return path;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
 }
 
 /** The first user message: the card, and where its work goes. */
@@ -216,8 +241,6 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   const id = card.id;
   const atStart = core.getCard(id);
   const startSeq = atStart.activity.at(-1)?.seq ?? 0;
-  mkdirSync(join(logPath, ".."), { recursive: true });
-  writeFileSync(logPath, "");
 
   const abort = new AbortController();
   let lostReason: string | undefined;

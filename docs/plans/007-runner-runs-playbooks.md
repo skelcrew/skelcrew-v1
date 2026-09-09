@@ -338,3 +338,64 @@ first (three failing tests); the second is documentation, so it has no red phase
   a collision worth stopping for. "Do not edit it" is untouched: reusing means leaving the
   committed file alone. No test asserts this prose (the playbook tests assert non-emptiness
   and `skelcrew attention`), so nothing needed updating; `bun run check` is green.
+
+### Round 2
+
+Two more findings on the branch, both real against the code, both taken. The first is
+documentation and has no red phase — said plainly rather than dressed up as one; the second
+is red first (one failing test).
+
+- **Finding 1 — a stale spec survived an approved revision, and the regression was `ce6da7a`'s
+  own wording.** Round 1 of this external review taught `code.md` Stage 1 step 6 to reuse a
+  spec an earlier run of the same card had already committed, so a revision run would not
+  deadlock on its own file. The wording it chose — "a file whose number the card names, **or**
+  whose content is this card's spec, is done — leave it alone and go on" — made a match on the
+  *number alone* sufficient. That is exactly the revision path `AGENTS.md` supports: a Code
+  card goes back to Spec, the owner approves a revised body, the card returns to Code, and the
+  next run finds `docs/specs/<NNN>-<name>.md` by number, calls it done, and leaves the old text
+  committed. The PR then ships the previous specification while the card carries the approved
+  one, silently. The fix that caused it is worth recording as such, not smoothed over: the
+  deadlock was real and the reuse rule is right, but "or" made the number a sufficient
+  condition where it is only an identifier.
+  Step 6 now names the file by number (or, when the card names none, by content), then **reads
+  it and compares it with the card's body before treating it as done**: identical means done,
+  leave it alone; different means the card was revised after that run, so the card's body is
+  written over the file verbatim — same number, same name — and committed as the first commit,
+  the way a fresh one would be. `Do not edit it` stays and is now unambiguous about what it
+  forbids ("the committed file says what the card says, and a spec that is wrong is raised
+  (Stage 6), never reworded to suit the code") and about what it does not ("bringing the file
+  back into line with the card is not the editing this step forbids — the file follows the
+  card, never the card the file"). What `ce6da7a` fixed is preserved: a number the card names
+  is still this card's spec and never a collision, so no deadlock and no duplicate number; only
+  a number belonging to a *different* spec, or a number that cannot be told, still stops the
+  run with `skelcrew attention`. No test asserts this prose (the playbook assertions are
+  non-emptiness and `skelcrew attention`), so nothing needed updating.
+- **Finding 2 — two runs of one card in the same second destroyed the first run's log.**
+  `runLogPath` dropped the milliseconds (`.replace(/\.\d{3}Z$/, "Z")`), so the stamp had
+  one-second resolution, and `runPlaybook` opened the file with `writeFileSync(logPath, "")` —
+  a truncation. A run that failed fast and was re-claimed within the second wrote over the
+  transcript the first run's `run log at <path>` comment still points at, which is a silent
+  loss of the record `AGENTS.md`'s "everything observable" says must be there.
+  **Mechanism chosen: exclusive create with a `-<nth>` on collision, not finer resolution.**
+  A new `createRunLog(dataDir, cardId, startedAt)` makes `runs/`, then tries
+  `<id>-<stamp>.jsonl` with `writeFileSync(path, "", { flag: "wx" })` and, on `EEXIST`, the
+  next free `<id>-<stamp>-2.jsonl`, `-3`, …, returning the path it actually created.
+  `runner.ts` calls it where it used to build a name, so the path it announces on the card is
+  the one it opened; `runPlaybook` no longer creates or truncates anything and only appends.
+  Milliseconds were rejected as the mechanism: they narrow the window without closing it and
+  leave the truncation in place, and they cost readability in the name for nothing the
+  exclusive create does not already give. `runLogPath` stays exported as the name builder with
+  an `nth` parameter (default 1, so every existing name is unchanged) and a doc comment saying
+  the stamp is second-resolution and `createRunLog` is what picks the suffix.
+  **Red evidence**: a new test runs one Spec card twice on a frozen clock (`now: () => frozen`,
+  the runner's injected clock, so both runs start at one instant) — the agent raises a question
+  on the first run and finishes, the owner answers, the phase runs again — and reads the log
+  paths off the card's own comments. Before the fix:
+  `expect(received).not.toBe(expected) / Expected: not ".../data/runs/1-20200101T000000Z.jsonl"`
+  — both runs announced the same path. After it the two paths differ and each file still holds
+  its own run's events. Callers and existing assertions were kept, not loosened: `run.test.ts`'s
+  `run log at <dataDir>/runs/1-` assertion holds unchanged, and its `runLogPath(cardId)` helper
+  still insists the path is in the card's *first* comment; the new `runLogPaths` helper reads
+  all of them alongside it.
+
+`bun run check`: green, 350 tests.

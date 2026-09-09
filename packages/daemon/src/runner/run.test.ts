@@ -177,18 +177,32 @@ function afterLastMove(cardId: number): Activity[] {
   return activity.slice(activity.findLastIndex((e) => e.type === "card_moved") + 1);
 }
 
+const RUN_LOG_IN_COMMENT = /run log at (\S+\.jsonl)/;
+
 function runLogPath(cardId: number): string {
   const first = comments(cardId)[0] as string;
-  const match = /run log at (\S+\.jsonl)/.exec(first);
+  const match = RUN_LOG_IN_COMMENT.exec(first);
   if (match === null) throw new Error(`no run log path in first comment: ${first}`);
   return match[1] as string;
 }
 
-function runLog(cardId: number): AgentEvent[] {
-  return readFileSync(runLogPath(cardId), "utf8")
+/** Every run log path the card's comments announce: one per run, in the order they ran. */
+function runLogPaths(cardId: number): string[] {
+  return comments(cardId).flatMap((text) => {
+    const match = RUN_LOG_IN_COMMENT.exec(text);
+    return match === null ? [] : [match[1] as string];
+  });
+}
+
+function eventsIn(path: string): AgentEvent[] {
+  return readFileSync(path, "utf8")
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as AgentEvent);
+}
+
+function runLog(cardId: number): AgentEvent[] {
+  return eventsIn(runLogPath(cardId));
 }
 
 /** Files a card as the owner, moves it into `phase`, and waits for the run to end with `reason`. */
@@ -1269,4 +1283,43 @@ test("answering the question runs the phase again, and that run hands the card o
   const card = core.getCard(1);
   expect(card.body).toBe("# Spec\n\nGoal, take 2.");
   expect(card.attention).toMatchObject({ to: owner.id, note: "spec ready", moves: ["code"] });
+});
+
+// --- external review (Codex), round 2 ---
+
+test("two runs of one card in the same second get separate logs, and the first run's stays readable", async () => {
+  await initRepo();
+  // A clock the runner reads as one instant: both runs start within the same second.
+  const frozen = Date.parse("2020-01-01T00:00:00.500Z");
+  let runs = 0;
+  const { driver } = scripted(function* () {
+    runs += 1;
+    yield { type: "text", text: `run ${runs}` };
+    core.setBody(1, `# Spec\n\nGoal, take ${runs}.`, runnerMember.id);
+    if (runs === 1) askOwner(1, "which base branch?");
+    yield { type: "result", ok: true };
+  });
+  start({ driver, now: () => frozen });
+  core.createCard({ title: "Twice in one second" }, owner.id);
+  const blocked = untilEvent(released(1, "blocked"));
+  core.moveCard(1, "spec", owner.id);
+  await blocked;
+  const finished = untilEvent(released(1, "finished"));
+  core.resolveAttention(1, "main", owner.id);
+  await finished;
+
+  expect(runs).toBe(2);
+  const paths = runLogPaths(1);
+  expect(paths).toHaveLength(2);
+  expect(paths[0]).not.toBe(paths[1]);
+  // The path the first run put on the card still holds the first run's transcript.
+  expect(eventsIn(paths[0] as string)).toEqual([
+    { type: "text", text: "run 1" },
+    { type: "result", ok: true },
+  ]);
+  expect(eventsIn(paths[1] as string)).toEqual([
+    { type: "text", text: "run 2" },
+    { type: "result", ok: true },
+  ]);
+  expect(warnings).toEqual([]);
 });

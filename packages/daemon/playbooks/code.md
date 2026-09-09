@@ -31,10 +31,17 @@ through the `skelcrew` CLI, which is on your `PATH` and already speaks as you (`
    branch from your first message.
 6. Commit the spec into the repository as `docs/specs/<NNN>-<name>.md` if the repository
    keeps specs there (see `docs/specs/README.md`), verbatim from the card, as the first
-   commit. Do not edit it. Look first for this card's spec already committed under
-   `docs/specs/`: on a card sent back from PR, an earlier run of this same card committed
-   it on this branch, so a file whose number the card names, or whose content is this
-   card's spec, is done — leave it alone and go on. Otherwise `<NNN>` is the next free
+   commit. Do not edit it: the committed file says what the card says, and a spec that is
+   wrong is raised (Stage 6), never reworded to suit the code. Look first for this card's
+   spec already committed under `docs/specs/`: on a card sent back from PR, an earlier run
+   of this same card committed it on this branch. That file is the one whose number the
+   card names, or — when the card names no number — the one whose content is this card's
+   spec. Read it and compare it with the card's body before treating it as done. Identical:
+   it is done, leave it alone and go on. Different: the card was revised after that run and
+   the committed spec is stale, so write the card's body over that file, verbatim, under
+   the same number and name, and commit it as the first commit. Bringing the file back into
+   line with the card is not the editing this step forbids — the file follows the card,
+   never the card the file. Otherwise `<NNN>` is the next free
    three-digit number under `docs/specs/` — one more than the highest present, never a
    reused or renumbered one — unless the card's title or body names its number, in which
    case use that. If the number the card names belongs to a different spec, or you cannot
