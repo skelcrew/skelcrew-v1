@@ -30,23 +30,26 @@ through the `skelcrew` CLI, which is on your `PATH` and already speaks as you (`
    Record the base's sha for diffing: `git merge-base HEAD <base branch>`, with the base
    branch from your first message.
 6. Commit the spec into the repository as `docs/specs/<NNN>-<name>.md` if the repository
-   keeps specs there (see `docs/specs/README.md`), verbatim from the card, as the first
-   commit. Do not edit it: the committed file says what the card says, and a spec that is
-   wrong is raised (Stage 6), never reworded to suit the code. Look first for this card's
-   spec already committed under `docs/specs/`: on a card sent back from PR, an earlier run
-   of this same card committed it on this branch. That file is the one whose number the
-   card names, or — when the card names no number — the one whose content is this card's
-   spec. Read it and compare it with the card's body before treating it as done. Identical:
-   it is done, leave it alone and go on. Different: the card was revised after that run and
-   the committed spec is stale, so write the card's body over that file, verbatim, under
-   the same number and name, and commit it as the first commit. Bringing the file back into
-   line with the card is not the editing this step forbids — the file follows the card,
-   never the card the file. Otherwise `<NNN>` is the next free
-   three-digit number under `docs/specs/` — one more than the highest present, never a
-   reused or renumbered one — unless the card's title or body names its number, in which
-   case use that. If the number the card names belongs to a different spec, or you cannot
-   tell which number it should have, do not guess: ask with `skelcrew attention <id> "<the
-   question>"` and stop.
+   keeps specs there (see `docs/specs/README.md`), verbatim from the card. Do not edit it:
+   the committed file says what the card says, and a spec that is wrong is raised
+   (Stage 6), never reworded to suit the code.
+   - **Which file.** The newest `spec committed: <path>` comment in `skelcrew show <id>`
+     names this card's spec, whatever number it carries — an earlier run of this card wrote
+     it on this branch. Failing that: the file whose content is the card's body, or the file
+     at the number the card's title or body names, if either exists; otherwise a new file at
+     that number, or at the next free three-digit number — one more than the highest
+     present, never a reused or renumbered one. If the file at the number the card names is
+     plainly a different specification, or you cannot tell which file is this card's, do not
+     guess: ask with `skelcrew attention <id> "<the question>"` and stop.
+   - **What to write.** Compare that file with the card's body. Identical: it is done, leave
+     it alone. Different, or not there yet: write the card's body over that same path,
+     verbatim, and commit it as the first commit — bringing the file back into line with the
+     card is not the editing this step forbids; the file follows the card, never the card
+     the file.
+   - **Record the path on every run:** `skelcrew comment <id> "spec committed: <path>"`. It
+     is what the next run reads; without it a card that names no number and whose spec was
+     revised matches neither by number nor by content, and the run commits a duplicate
+     beside the stale one.
 
 Post a short comment (`skelcrew comment <id> "<text>"`) with your plan: the change in a
 few steps, the files you expect to touch, and anything you decided that the spec left open.

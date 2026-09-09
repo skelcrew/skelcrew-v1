@@ -303,6 +303,17 @@ Findings and decisions from the spec workflow itself, newest last:
   which is the intended path, and nothing here sandboxes the agent — a bare `git push`
   under a repo-level `push.default = matching` could still push more than the card's
   branch.
+- **Carried from 007, for 008: the Code playbook already budgets its cycles, and the spec
+  did not ask it to.** `packages/daemon/playbooks/code.md` tells the agent "at most three
+  review cycles" (Stage 3) and the same three rounds in total across review and verification
+  (Stage 4), while 007's *Out of scope* defers "cycle budgets" to 008. Both are worth having
+  and they are not the same thing: the playbook's is a bound inside one session, enforced by
+  the agent reading its own instructions; 008's is the runner's, counted across runs and
+  ending in an attention request the agent cannot skip. 007's spec is left alone — it is the
+  only record of what was intended, and an approved spec is not edited to match what was
+  built — so 008 should say which of the two it is specifying and whether the in-session
+  bound survives once the runner counts rounds itself. (This is the same shape as the
+  finding above: a limit that holds only because someone reads it is not a limit.)
 - **Carried from 007: the runner's identity is not scoped to its card.** The agent gets
   `SKELCREW_AS=runner` and the whole CLI surface that member has, so a run on card 1 can
   comment on or rewrite card 7 and it lands attributed to `runner`; only the playbook's
@@ -341,8 +352,17 @@ Findings and decisions from the spec workflow itself, newest last:
   four internal rounds had passed the code, and one by the round after that. A finding is
   not closed when its reported case passes — it is closed when the cases next to it have
   been looked at, and "fixed" in a run record has to mean that or it misleads the next
-  reader. Worth pairing with the other lesson 007 teaches by being 3,576 lines across 25
-  files: this should have been two or three specs, and the phases that touch the outside
+  reader. And the root cause under all of it, which the sixth round finally named: **a rule
+  enforced by convention at each call site rather than by construction in one place will be
+  half-implemented, and every round will find the next site that lacks it.** "Do not replace
+  a question the agent raised" was written out at two of the five places that raise an
+  attention request; four rounds each closed one more site and left the rest, because the
+  reviewer's eye goes to the path the finding names. The fix that ends the series is not a
+  more careful reviewer but one function every raise goes through — and the question to ask
+  of any finding is therefore not "where else does this happen?" but "what would make it
+  impossible to write the next site wrong?"
+  Worth pairing with the other lesson 007 teaches by being 3,576 lines across 25 files:
+  this should have been two or three specs, and the phases that touch the outside
   world — subprocesses, permissions, irreversible actions — are where the combinatorial
   cases live and where splitting pays.
 
