@@ -230,8 +230,8 @@ function inbox(): AsyncIterable<string> & { push(text: string): void; close(): v
   };
 }
 
-function appendLog(path: string, event: AgentEvent): void {
-  appendFileSync(path, `${JSON.stringify(event)}\n`);
+function appendLog(path: string, entry: unknown): void {
+  appendFileSync(path, `${JSON.stringify(entry)}\n`);
 }
 
 type Comment = Activity & { type: "comment" };
@@ -455,6 +455,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         allowedTools: input.allowedTools,
         canUseTool,
         input: messages,
+        log: (entry) => appendLog(logPath, entry),
         signal: abort.signal,
       })
       [Symbol.asyncIterator]();
@@ -466,7 +467,6 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       }
       if (step.done) break;
       const event = step.value;
-      appendLog(logPath, event);
       if (abort.signal.aborted) break;
       input.stillHeld();
       switch (event.type) {

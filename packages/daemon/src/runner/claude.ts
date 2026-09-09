@@ -35,17 +35,20 @@ function resultText(content: unknown): string {
     .join("\n");
 }
 
-/** The run's events for one SDK message; most system messages carry nothing the card shows. */
+/**
+ * What the card shows of one SDK message: most system messages, plain user messages, and
+ * thinking carry nothing it displays, and produce no event. The transcript is written
+ * separately, in `drive`, so nothing is lost by displaying nothing.
+ */
 export function toEvents(message: SDKMessage): AgentEvent[] {
-  const raw = message;
   switch (message.type) {
     case "assistant": {
       const events: AgentEvent[] = [];
       for (const block of blocks(message.message)) {
         if (block.type === "text" && "text" in block && block.text.length > 0) {
-          events.push({ type: "text", text: block.text, raw });
+          events.push({ type: "text", text: block.text });
         } else if (block.type === "tool_use" && "name" in block) {
-          events.push({ type: "tool_use", name: block.name, input: block.input ?? {}, raw });
+          events.push({ type: "tool_use", name: block.name, input: block.input ?? {} });
         }
       }
       return events;
@@ -58,7 +61,6 @@ export function toEvents(message: SDKMessage): AgentEvent[] {
             type: "tool_result",
             text: resultText(block.content),
             isError: block.is_error === true,
-            raw,
           });
         }
       }
@@ -68,15 +70,34 @@ export function toEvents(message: SDKMessage): AgentEvent[] {
       if (message.subtype === "success") {
         return [
           message.is_error
-            ? { type: "result", ok: false, error: message.result, raw }
-            : { type: "result", ok: true, raw },
+            ? { type: "result", ok: false, error: message.result }
+            : { type: "result", ok: true },
         ];
       }
       const detail = message.errors.length > 0 ? `: ${message.errors.join("; ")}` : "";
-      return [{ type: "result", ok: false, error: `${message.subtype}${detail}`, raw }];
+      return [{ type: "result", ok: false, error: `${message.subtype}${detail}` }];
     }
     default:
       return [];
+  }
+}
+
+/**
+ * The driver's stream: the transcript and the card's events out of one pass over the
+ * harness's messages. One result ends the session — with streaming input it would
+ * otherwise idle for more input, and the playbook's session is one task.
+ */
+export async function* drive(
+  messages: AsyncIterable<SDKMessage>,
+  log: (entry: unknown) => void,
+): AsyncGenerator<AgentEvent> {
+  for await (const message of messages) {
+    // The record first and whole: a system message, a plain user message, and a turn that
+    // only thought project to no event at all, and a turn with several blocks projects to
+    // several — neither is the transcript's business.
+    log(message);
+    for (const event of toEvents(message)) yield event;
+    if (message.type === "result") return;
   }
 }
 
@@ -116,11 +137,7 @@ export const claudeDriver: AgentDriver = {
     };
     options.signal.addEventListener("abort", onAbort, { once: true });
     try {
-      for await (const message of session) {
-        for (const event of toEvents(message)) yield event;
-        // One result is the session's end: with streaming input it would otherwise idle.
-        if (message.type === "result") return;
-      }
+      yield* drive(session, options.log);
     } finally {
       options.signal.removeEventListener("abort", onAbort);
       session.close();

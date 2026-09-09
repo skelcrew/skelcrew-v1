@@ -241,9 +241,13 @@ Findings and decisions from the spec workflow itself, newest last:
   afresh. Excerpts: each
   assistant text turn is a comment, cut at 2 KiB with a `… [truncated: N bytes; the full
   text is in the run log]` marker; tool calls are one comment per thirty seconds and at
-  the end of the run (`ran 4 tools: Read ×2, Bash \`bun test\`, Edit`); every driver
-  event is a JSON line in `<data dir>/runs/<id>-<started>.jsonl`, whose path is in the
-  run's first comment (006's `worktree ready …` line, extended with `; run log at <path>`).
+  the end of the run (`ran 4 tools: Read ×2, Bash \`bun test\`, Edit`); every message the
+  driver receives is a JSON line — once, in arrival order — in `<data dir>/runs/<id>-<started>.jsonl`,
+  whose path is in the run's first comment (006's `worktree ready …` line, extended with
+  `; run log at <path>`). The transcript is the driver's and the events are the card's
+  display, which is a projection of it: a message that displays nothing (a system message,
+  a plain user message, a turn that only thought) is in the record all the same, and a turn
+  with several blocks is there once, not once per block.
   A comment by any member other than `runner` while the run is live reaches the agent as
   a user message; the answer to an approval is not also forwarded. A run ends at the
   driver's first result, at the time limit (60 minutes, `SKELCREW_RUN_MINUTES`), when the

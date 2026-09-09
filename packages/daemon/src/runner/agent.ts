@@ -5,13 +5,14 @@
  * interface with a script; `claude.ts` is the one real driver.
  */
 
+/** What the card shows of a run. The transcript is `AgentRunOptions.log`, not this. */
 export type AgentEvent =
   /** One assistant text turn. */
-  | { type: "text"; text: string; raw?: unknown }
-  | { type: "tool_use"; name: string; input: Record<string, unknown>; raw?: unknown }
-  | { type: "tool_result"; text: string; isError?: boolean; raw?: unknown }
+  | { type: "text"; text: string }
+  | { type: "tool_use"; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; text: string; isError?: boolean }
   /** The session's end. `ok` is false for an error result; `error` says why. */
-  | { type: "result"; ok: boolean; error?: string; raw?: unknown };
+  | { type: "result"; ok: boolean; error?: string };
 
 export type ToolDecision = { behavior: "allow" } | { behavior: "deny"; message: string };
 
@@ -30,6 +31,12 @@ export interface AgentRunOptions {
    * nowhere else, so a driver never has two copies of it to reconcile.
    */
   input: AsyncIterable<string>;
+  /**
+   * The run's transcript. The driver writes every message it receives here, once, as it
+   * arrives; the run owns the file it goes to. The events above are what the card shows,
+   * which is a projection of this and not the same thing.
+   */
+  log(entry: unknown): void;
   /** Fires when the run is over — time limit, claim lost, session ended — and the agent must stop. */
   signal: AbortSignal;
 }

@@ -103,7 +103,12 @@ function scripted(
     driver: {
       async *run(options) {
         runs.push(options);
-        yield* script(options);
+        // The transcript is the driver's, as it is for the real one: what this fake
+        // receives is exactly the events it yields, so each is written once.
+        for await (const event of script(options)) {
+          options.log(event);
+          yield event;
+        }
       },
     },
   };

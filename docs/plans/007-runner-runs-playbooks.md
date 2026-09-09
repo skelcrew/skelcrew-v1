@@ -53,8 +53,11 @@ Files: `packages/daemon/package.json`, `bun.lock`; `packages/daemon/playbooks/{s
   forwarded). A resolve without text denies with `denied`.
 - **Tool summaries flush every 30 s and at the end of the run**, so a short run still posts
   its one summary. `Bash` calls are listed with their command; other tools are counted.
-- **`AgentEvent` stays the four kinds the spec names**, each with an optional `raw` the SDK
-  driver fills with the SDK message, so the transcript holds the full stream.
+- **`AgentEvent` stays the four kinds the spec names**, and the transcript is not made of
+  them: the driver writes every message it receives to `AgentRunOptions.log`, once, as it
+  arrives, while the events are what the card displays. This first read "each with an
+  optional `raw` the SDK driver fills with the SDK message, so the transcript holds the full
+  stream", which was false — external round 3 says why and what replaced it.
 - **Contract failures name every unmet condition**, joined with `; `, in the order commits,
   clean worktree, `prUrl`.
 - **The fenced-block scan takes blocks with no language tag or a shell one** (`sh`, `bash`,
