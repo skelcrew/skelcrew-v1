@@ -10,6 +10,7 @@ import {
   type Card,
   type CardDetail,
   type CardRefs,
+  type Claim,
   type Member,
   type OpenAttention,
   PHASES,
@@ -43,15 +44,20 @@ function memberName(id: number, members: Member[]): string {
 
 const PHASE_NAME_WIDTH = Math.max(...PHASES.map((p) => p.name.length));
 
-/** `!` waiting on the invoking member, `?` waiting on someone else, a space otherwise. */
-function marker(card: Card, me: number): string {
-  if (card.attention === null) return " ";
-  return card.attention.to === me ? "!" : "?";
+/**
+ * `!` waiting on the invoking member, `?` waiting on someone else; otherwise `*` held by
+ * a live claim, `~` by one that lapsed and has not been swept; a space when none apply.
+ * Waiting outranks running: what needs a person is what the column is for.
+ */
+function marker(card: Card, me: number, now: number): string {
+  if (card.attention !== null) return card.attention.to === me ? "!" : "?";
+  if (card.claim === null) return " ";
+  return card.claim.expiresAt > now ? "*" : "~";
 }
 
-export function row(card: Card, idWidth: number, me: number): string {
+export function row(card: Card, idWidth: number, me: number, now = Date.now()): string {
   const cells = [
-    marker(card, me),
+    marker(card, me, now),
     formatId(card.id).padStart(idWidth),
     phaseTrack(card.phase),
     phaseName(card.phase).padEnd(PHASE_NAME_WIDTH),
@@ -63,7 +69,8 @@ export function row(card: Card, idWidth: number, me: number): string {
 
 export function rows(cards: Card[], me: number): string {
   const idWidth = Math.max(...cards.map((c) => formatId(c.id).length));
-  return cards.map((card) => row(card, idWidth, me)).join("\n");
+  const now = Date.now();
+  return cards.map((card) => row(card, idWidth, me, now)).join("\n");
 }
 
 function refLines(refs: CardRefs): string[] {
@@ -103,6 +110,13 @@ function attentionLines(attention: Attention, members: Member[]): string[] {
   return out;
 }
 
+/** The claim in a card's header: the holder, since when, until when, and whether it lapsed. */
+function claimLine(claim: Claim, members: Member[], now: number): string {
+  const lapsed = claim.expiresAt > now ? "" : ", lapsed";
+  const span = `since ${formatTime(claim.claimedAt)}, expires ${formatTime(claim.expiresAt)}${lapsed}`;
+  return `claim:   ${memberName(claim.by, members)} (${span})`;
+}
+
 function describeResolution(resolution: AttentionResolution): string {
   switch (resolution.how) {
     case "moved":
@@ -138,6 +152,12 @@ function summary(event: Activity, members: Member[]): string {
     }
     case "attention_resolved":
       return `resolved attention: ${describeResolution(event.data)}`;
+    case "claimed":
+      return `claimed for ${event.data.ttlSeconds}s, until ${formatTime(event.data.expiresAt)}`;
+    case "released":
+      return `released the claim${event.data.reason === null ? "" : `: ${event.data.reason}`}`;
+    case "run_interrupted":
+      return `run interrupted: the claim lapsed at ${formatTime(event.data.expiresAt)}`;
   }
 }
 
@@ -146,10 +166,11 @@ export function activityLine(event: Activity, members: Member[]): string {
 }
 
 /** Header, blank line, the body verbatim, blank line, the activity oldest first. */
-export function cardView(card: CardDetail, members: Member[]): string {
+export function cardView(card: CardDetail, members: Member[], now = Date.now()): string {
   const header = [
     `${formatId(card.id)} ${card.title}`,
     `phase:   ${phaseName(card.phase)}${card.archivedAt === null ? "" : " (archived)"}`,
+    ...(card.claim === null ? [] : [claimLine(card.claim, members, now)]),
     ...(card.attention === null ? [] : attentionLines(card.attention, members)),
     ...refLines(card.refs),
     `created: ${formatTime(card.createdAt)}`,

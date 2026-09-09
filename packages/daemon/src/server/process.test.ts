@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connect, VERSION } from "@skelcrew/shared";
+import { type Activity, connect, VERSION } from "@skelcrew/shared";
 
 const MAIN = fileURLToPath(new URL("../main.ts", import.meta.url));
 
@@ -194,3 +194,55 @@ test("outside a git repository with no override it exits 1 and creates nothing",
   expect(await daemon.stdout()).toBe("");
   expect(readdirSync(dir)).toEqual([]);
 });
+
+test("the daemon sweeps a lapsed claim on its own: run_interrupted reaches a subscriber and the claim clears", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir });
+  await daemon.firstLine();
+  const ownerClient = await connect(socketPath, { kind: "human" });
+  const worker = await connect(socketPath, { kind: "agent", name: "crew-1" });
+  const card = await ownerClient.call("createCard", { title: "swept" });
+  await ownerClient.call("moveCard", { id: card.id, phase: "spec" });
+
+  let sawInterrupted: (event: Activity) => void = () => {};
+  const interrupted = new Promise<Activity>((resolve) => {
+    sawInterrupted = resolve;
+  });
+  await ownerClient.subscribe((event) => {
+    if (event.type === "run_interrupted") sawInterrupted(event);
+  });
+
+  const claimed = await worker.call("claimCard", { id: card.id, ttlSeconds: 10 });
+  const expiresAt = claimed.claim?.expiresAt as number;
+  expect(claimed.claim?.ttlSeconds).toBe(10);
+  // The worker goes away without releasing: nobody heartbeats, and no client acts.
+  await worker.close();
+
+  // Bounded: the lapse plus the 20 s the spec allows the sweep, never longer.
+  const budget = expiresAt - Date.now() + 20_000;
+  const event = await Promise.race([
+    interrupted,
+    Bun.sleep(budget).then(() => {
+      throw new Error(`no run_interrupted within ${budget} ms`);
+    }),
+  ]);
+  expect(Date.now()).toBeGreaterThanOrEqual(expiresAt);
+  expect(event).toMatchObject({
+    type: "run_interrupted",
+    cardId: card.id,
+    actorId: worker.member.id,
+    data: { by: worker.member.id, expiresAt },
+  });
+
+  const detail = await ownerClient.call("getCard", { id: card.id });
+  expect(detail.claim).toBeNull();
+  expect(detail.phase).toBe("spec");
+  expect(detail.activity.map((e) => e.type)).toEqual([
+    "card_created",
+    "card_moved",
+    "claimed",
+    "run_interrupted",
+  ]);
+  await ownerClient.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+}, 45_000);

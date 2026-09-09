@@ -43,6 +43,11 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE cards ADD COLUMN attention TEXT;
   `,
+  // 009: the claim, as JSON `{ by, claimedAt, expiresAt, ttlSeconds }` or NULL. One holder
+  // per card is the point, so it is a column of the card, like attention.
+  `
+  ALTER TABLE cards ADD COLUMN claim TEXT;
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

@@ -141,6 +141,24 @@ Findings and decisions from the spec workflow itself, newest last:
   PATH; `SKELCREW_NOTIFY=<command>` replaces that with a command receiving the title and text
   as arguments, which is how tests record pings without notifying anyone. 009's "queued" and
   "running" are the other two statuses of the same derived kind.
+- **"Running" is a live `Card.claim`; heartbeats are not logged; the sweep runs every five
+  seconds (009).** A card is running exactly when its `claim` — `{ by, claimedAt, expiresAt,
+  ttlSeconds }`, one per card, a JSON column like `attention` — has `expiresAt` in the
+  future, and queued when its phase is claimable (`PHASES[].claimable`: `spec` and `code`),
+  it is unarchived, and it has no live claim. `claimCard` is atomic and records `claimed`;
+  `heartbeat` extends `expiresAt` by the claim's TTL, a renewal through `claimCard` takes
+  the TTL it is given (default 120 s), and neither records anything, so a running card's
+  only trace of liveness is its `expiresAt`. A move to another phase or an archive releases
+  a live claim (`released { reason: "moved" | "archived" }`), and an agent can neither move
+  nor archive a card someone else holds live. The daemon calls `sweepClaims()` every five
+  seconds; each lapsed claim becomes `run_interrupted { by, expiresAt }` attributed to the
+  former holder and the card stays in its phase, which is what "returns to its queue"
+  means. Between a lapse and its sweep the claim is still visible with a past `expiresAt`
+  (`~` in `ls`), and whatever clears it first — a claim over it, a move, an archive —
+  records that same interruption rather than a release, so a dead run is never written up
+  as a handoff. TTL defaults to 120 s, bounded 10 to 3600. The CLI's `claim`,
+  `heartbeat`, and `release` are what the runner (006) and a live-session agent both use;
+  `SKELCREW_AS` identifies which.
 
 ## 001 — Project scaffold
 

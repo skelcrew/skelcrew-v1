@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Activity, Attention, Card, Member } from "@skelcrew/shared";
+import type { Activity, Attention, Card, Claim, Member } from "@skelcrew/shared";
 import {
   BODY_MAX_BYTES,
   type Client,
@@ -135,11 +135,13 @@ async function expectRpcError(
 describe("method parity with the core", () => {
   test("every core method has a same-named wire method, or a named stand-in", () => {
     // `hello` is how a member joins (the core's `ensureMember`); `listMembers` covers
-    // `getMember`; `close` is the process's, not a member's.
+    // `getMember`; `close` is the process's, not a member's; `sweepClaims` is the daemon's
+    // timer, not a member action, so it has no wire method.
     const standIns: Record<string, MethodName | null> = {
       ensureMember: "hello",
       getMember: "listMembers",
       close: null,
+      sweepClaims: null,
     };
     const wireMethods: readonly string[] = METHOD_NAMES;
     const coreMethods = Object.keys(core);
@@ -449,6 +451,15 @@ describe("methods through the shared client", () => {
       ["resolveAttention", { id: 1, text: 7 }],
       ["listAttention", { to: "me" }],
       ["listAttention", { who: 1 }],
+      ["claimCard", {}],
+      ["claimCard", { id: "1" }],
+      ["claimCard", { id: 1, ttlSeconds: "60" }],
+      ["claimCard", { id: 1, ttlSeconds: 1.5 }],
+      ["claimCard", { id: 1, actorId: 2 }],
+      ["heartbeat", {}],
+      ["heartbeat", { id: 1, ttlSeconds: 60 }],
+      ["releaseCard", { id: 1, reason: 7 }],
+      ["releaseCard", { reason: "x" }],
     ];
     for (const [method, params] of cases) {
       await expectRpcError(client.call(method, params as never), -32602, "invalid_params", method);
@@ -719,5 +730,163 @@ describe("attention on the wire", () => {
     expect(received[6]?.data).toEqual({ how: "answered" });
     await agentClient.close();
     await watcher.close();
+  });
+});
+
+describe("claims on the wire", () => {
+  test("the three methods are on the wire and sweepClaims is not", () => {
+    const wireMethods: readonly string[] = METHOD_NAMES;
+    for (const name of ["claimCard", "heartbeat", "releaseCard"]) {
+      expect(wireMethods).toContain(name);
+      expect(Object.keys(core)).toContain(name);
+    }
+    expect(wireMethods).not.toContain("sweepClaims");
+    expect(Object.keys(core)).toContain("sweepClaims");
+  });
+
+  test("claimCard, heartbeat, and releaseCard round-trip as the owner", async () => {
+    const client = await asOwner();
+    const card = await client.call("createCard", { title: "x" });
+    expect(card.claim).toBeNull();
+    await client.call("moveCard", { id: card.id, phase: "spec" });
+    const before = Date.now();
+
+    const claimed = await client.call("claimCard", { id: card.id });
+    expect(claimed.claim).toEqual({
+      by: owner.id,
+      claimedAt: expect.any(Number),
+      expiresAt: expect.any(Number),
+      ttlSeconds: 120,
+    });
+    const claim = claimed.claim as Claim;
+    expect(claim.claimedAt).toBeGreaterThanOrEqual(before);
+    expect(claim.expiresAt).toBe(claim.claimedAt + 120_000);
+    expect(claimed).toEqual(core.listCards()[0] as Card);
+
+    const beat = await client.call("heartbeat", { id: card.id });
+    expect(beat.claim).toMatchObject({ by: owner.id, claimedAt: claim.claimedAt, ttlSeconds: 120 });
+    expect(beat.claim?.expiresAt).toBeGreaterThanOrEqual(claim.expiresAt);
+
+    const shorter = await client.call("claimCard", { id: card.id, ttlSeconds: 5 });
+    expect(shorter.claim).toMatchObject({ claimedAt: claim.claimedAt, ttlSeconds: 10 });
+
+    const released = await client.call("releaseCard", { id: card.id, reason: "done" });
+    expect(released.claim).toBeNull();
+    expect(await client.call("releaseCard", { id: card.id })).toEqual(released);
+    const types = core.getCard(card.id).activity.map((e) => e.type);
+    expect(types).toEqual(["card_created", "card_moved", "claimed", "released"]);
+    expect(core.getCard(card.id).activity.at(-1)?.data).toEqual({ reason: "done" });
+    await client.close();
+  });
+
+  test("an agent claims, another agent gets conflict, the owner releases; forbidden and invalid map", async () => {
+    const ownerClient = await asOwner();
+    const first = await asAgent("crew-1");
+    const second = await asAgent("crew-2");
+    const crew1 = core.listMembers().find((m) => m.name === "crew-1") as Member;
+    const card = await ownerClient.call("createCard", { title: "x" });
+
+    await expectRpcError(first.call("claimCard", { id: card.id }), -32002, "invalid", "idea");
+    await ownerClient.call("moveCard", { id: card.id, phase: "code" });
+
+    const claimed = await first.call("claimCard", { id: card.id, ttlSeconds: 60 });
+    expect(claimed.claim).toMatchObject({ by: crew1.id, ttlSeconds: 60 });
+    await expectRpcError(second.call("claimCard", { id: card.id }), -32009, "conflict", "crew-1");
+    await expectRpcError(second.call("heartbeat", { id: card.id }), -32009, "conflict", "crew-1");
+    await expectRpcError(
+      second.call("releaseCard", { id: card.id, reason: "mine" }),
+      -32003,
+      "forbidden",
+      "crew-2",
+    );
+    await expectRpcError(
+      second.call("moveCard", { id: card.id, phase: "pr" }),
+      -32009,
+      "conflict",
+      "crew-1",
+    );
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+
+    expect((await first.call("heartbeat", { id: card.id })).claim?.by).toBe(crew1.id);
+    await expectRpcError(
+      first.call("releaseCard", { id: card.id, reason: "  " }),
+      -32002,
+      "invalid",
+    );
+    const released = await ownerClient.call("releaseCard", { id: card.id });
+    expect(released.claim).toBeNull();
+    await expectRpcError(first.call("heartbeat", { id: card.id }), -32009, "conflict");
+    await expectRpcError(first.call("claimCard", { id: 999 }), -32001, "not_found", "999");
+
+    // Now free: the second agent takes it and moves it, which releases it.
+    expect((await second.call("claimCard", { id: card.id })).claim?.by).not.toBe(crew1.id);
+    const moved = await second.call("moveCard", { id: card.id, phase: "pr" });
+    expect(moved.claim).toBeNull();
+    expect(core.getCard(card.id).activity.map((e) => e.type)).toEqual([
+      "card_created",
+      "card_moved",
+      "claimed",
+      "released",
+      "claimed",
+      "card_moved",
+      "released",
+    ]);
+    await ownerClient.close();
+    await first.close();
+    await second.close();
+  });
+
+  test("a subscribed client receives claimed, released, and run_interrupted in seq order", async () => {
+    const T0 = 1_700_000_000_000;
+    let clock = T0;
+    // A server over a core on a movable clock, so the lapse is exercised without waiting.
+    const timed = openCore(":memory:", { owner: "simon", now: () => clock });
+    const timedPath = join(dir, "t.sock");
+    const timedServer = startServer({ core: timed, socketPath: timedPath });
+    try {
+      const watcher = await connect(timedPath, { kind: "human" });
+      const agentClient = await connect(timedPath, { kind: "agent", name: "crew-1" });
+      const agent = timed.listMembers().find((m) => m.name === "crew-1") as Member;
+      const received: Activity[] = [];
+      await watcher.subscribe((event) => received.push(event));
+      const card = await watcher.call("createCard", { title: "x" });
+      await watcher.call("moveCard", { id: card.id, phase: "spec" });
+
+      await agentClient.call("claimCard", { id: card.id, ttlSeconds: 10 });
+      await agentClient.call("heartbeat", { id: card.id });
+      await agentClient.call("releaseCard", { id: card.id, reason: "pausing" });
+      await agentClient.call("claimCard", { id: card.id, ttlSeconds: 10 });
+      clock += 10_000;
+      expect(timed.sweepClaims()).toEqual([card.id]);
+      // The sweep's event went out to the subscriber like any other; give the socket a turn.
+      await watcher.call("listCards", {});
+
+      const types = received.map((e) => e.type);
+      expect(types).toEqual([
+        "card_created",
+        "card_moved",
+        "claimed",
+        "released",
+        "claimed",
+        "run_interrupted",
+      ]);
+      const seqs = received.map((e) => e.seq);
+      expect(seqs).toEqual(seqs.map((_, i) => (seqs[0] as number) + i));
+      expect(received[2]).toMatchObject({
+        actorId: agent.id,
+        data: { ttlSeconds: 10, expiresAt: T0 + 10_000 },
+      });
+      expect(received[3]).toMatchObject({ actorId: agent.id, data: { reason: "pausing" } });
+      expect(received[5]).toMatchObject({
+        actorId: agent.id,
+        data: { by: agent.id, expiresAt: T0 + 10_000 },
+      });
+      expect((await watcher.call("getCard", { id: card.id })).claim).toBeNull();
+      await agentClient.close();
+      await watcher.close();
+    } finally {
+      timedServer.stop();
+      timed.close();
+    }
   });
 });

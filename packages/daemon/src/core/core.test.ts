@@ -3,6 +3,9 @@ import type { Activity, Attention, Card, Member, Phase } from "@skelcrew/shared"
 import {
   BODY_MAX_BYTES,
   BRANCH_MAX_BYTES,
+  CLAIM_TTL_DEFAULT_SECONDS,
+  CLAIM_TTL_MAX_SECONDS,
+  CLAIM_TTL_MIN_SECONDS,
   COMMENT_MAX_BYTES,
   COMMITS_MAX_COUNT,
   MEMBER_NAME_MAX_BYTES,
@@ -963,5 +966,611 @@ describe("attention", () => {
     core.moveCard(c.id, "spec", owner.id);
     expect(core.listAttention({ to: owner.id })).toEqual([]);
     expect(core.listAttention().map((r) => r.cardId)).toEqual([a.id]);
+  });
+});
+
+describe("claims", () => {
+  const T0 = 1_700_000_000_000;
+  let clock: number;
+  let other: Member;
+
+  // A core on an injected clock, so expiry is exercised by moving `clock`, never by sleeping.
+  beforeEach(() => {
+    core.close();
+    clock = T0;
+    core = openCore(":memory:", { owner: "simon", now: () => clock });
+    owner = core.listMembers()[0] as Member;
+    agent = core.ensureMember("crew-1", "agent");
+    other = core.ensureMember("crew-2", "agent");
+  });
+
+  function lastSeq(): number {
+    return core.activitySince(0).at(-1)?.seq ?? 0;
+  }
+
+  test("claimCard takes a card in spec for 120 s and records one claimed event", () => {
+    const card = cardIn("spec");
+    expect(card.claim).toBeNull();
+    const seqBefore = lastSeq();
+
+    const claimed = core.claimCard(card.id, {}, agent.id);
+
+    expect(claimed.claim).toEqual({
+      by: agent.id,
+      claimedAt: T0,
+      expiresAt: T0 + 120_000,
+      ttlSeconds: 120,
+    });
+    expect(claimed.phase).toBe("spec");
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.listCards()[0]?.claim).toEqual(claimed.claim);
+    const since = core.activitySince(seqBefore);
+    expect(since).toHaveLength(1);
+    expect(since[0]).toMatchObject({
+      type: "claimed",
+      cardId: card.id,
+      actorId: agent.id,
+      data: { ttlSeconds: 120, expiresAt: T0 + 120_000 },
+    });
+  });
+
+  test("claiming again as the holder renews with the given TTL and records nothing", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    clock += 60_000;
+    const seqBefore = lastSeq();
+
+    const renewed = core.claimCard(card.id, {}, agent.id);
+    expect(renewed.claim).toEqual({
+      by: agent.id,
+      claimedAt: T0,
+      expiresAt: T0 + 60_000 + 120_000,
+      ttlSeconds: 120,
+    });
+    expect(core.activitySince(seqBefore)).toEqual([]);
+
+    const longer = core.claimCard(card.id, { ttlSeconds: 600 }, agent.id);
+    expect(longer.claim).toEqual({
+      by: agent.id,
+      claimedAt: T0,
+      expiresAt: T0 + 60_000 + 600_000,
+      ttlSeconds: 600,
+    });
+    expect(core.activitySince(seqBefore)).toEqual([]);
+    expect(core.getCard(card.id).claim).toEqual(longer.claim);
+  });
+
+  test("a claim on a live claim by anyone else is a conflict naming the holder and the expiry", () => {
+    const card = cardIn("spec");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    expectCoreError(
+      () => core.claimCard(card.id, {}, other.id),
+      "conflict",
+      agent.name,
+      new Date(T0 + 120_000).toISOString(),
+    );
+    expectCoreError(() => core.claimCard(card.id, {}, owner.id), "conflict", agent.name);
+
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+  });
+
+  test("ttlSeconds defaults to 120 and is clamped to 10 through 3600", () => {
+    expect(CLAIM_TTL_DEFAULT_SECONDS).toBe(120);
+    expect(CLAIM_TTL_MIN_SECONDS).toBe(10);
+    expect(CLAIM_TTL_MAX_SECONDS).toBe(3600);
+    const a = cardIn("spec");
+    const b = cardIn("spec");
+    const c = cardIn("spec");
+
+    expect(core.claimCard(a.id, { ttlSeconds: 5 }, agent.id).claim).toMatchObject({
+      ttlSeconds: 10,
+      expiresAt: T0 + 10_000,
+    });
+    expect(events(a.id, "claimed")[0]?.data).toEqual({ ttlSeconds: 10, expiresAt: T0 + 10_000 });
+    expect(core.claimCard(b.id, { ttlSeconds: 9999 }, agent.id).claim).toMatchObject({
+      ttlSeconds: 3600,
+      expiresAt: T0 + 3_600_000,
+    });
+    expect(events(b.id, "claimed")[0]?.data).toEqual({
+      ttlSeconds: 3600,
+      expiresAt: T0 + 3_600_000,
+    });
+    expect(core.claimCard(c.id, { ttlSeconds: 45 }, agent.id).claim).toMatchObject({
+      ttlSeconds: 45,
+      expiresAt: T0 + 45_000,
+    });
+  });
+
+  test("a ttlSeconds that is not an integer is invalid and claims nothing", () => {
+    const card = cardIn("spec");
+    for (const ttlSeconds of [1.5, Number.NaN, "60", null]) {
+      expectCoreError(
+        () => core.claimCard(card.id, { ttlSeconds: ttlSeconds as never }, agent.id),
+        "invalid",
+      );
+    }
+    expect(core.getCard(card.id).claim).toBeNull();
+    expect(events(card.id, "claimed")).toEqual([]);
+  });
+
+  test.each<Phase>(["idea", "pr", "done"])("a card in %s is not claimable", (phase) => {
+    const card = cardIn(phase);
+    expectCoreError(() => core.claimCard(card.id, {}, agent.id), "invalid", phase);
+    expectCoreError(() => core.claimCard(card.id, {}, owner.id), "invalid", phase);
+    expect(core.getCard(card.id).claim).toBeNull();
+    expect(events(card.id, "claimed")).toEqual([]);
+  });
+
+  test("an archived card is not claimable; an unknown actor or card is not_found", () => {
+    const card = cardIn("spec");
+    core.archiveCard(card.id, owner.id);
+    const seqBefore = lastSeq();
+    expectCoreError(() => core.claimCard(card.id, {}, agent.id), "invalid", "archived");
+    expectCoreError(() => core.claimCard(card.id, {}, 999), "not_found", "999");
+    expectCoreError(() => core.claimCard(999, {}, agent.id), "not_found", "999");
+    expect(core.getCard(card.id).claim).toBeNull();
+    expect(core.activitySince(seqBefore)).toEqual([]);
+  });
+
+  test("once the clock reaches expiresAt another agent claims over it: run_interrupted, then claimed", () => {
+    const card = cardIn("spec");
+    const first = core.claimCard(card.id, {}, agent.id);
+    clock = T0 + 120_000;
+    const seqBefore = lastSeq();
+    const seen: Activity[] = [];
+    core.subscribe((event) => seen.push(event));
+
+    const second = core.claimCard(card.id, { ttlSeconds: 30 }, other.id);
+
+    expect(second.claim).toEqual({
+      by: other.id,
+      claimedAt: clock,
+      expiresAt: clock + 30_000,
+      ttlSeconds: 30,
+    });
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["run_interrupted", "claimed"]);
+    expect(since[0]).toMatchObject({
+      cardId: card.id,
+      actorId: agent.id,
+      data: { by: agent.id, expiresAt: first.claim?.expiresAt as number },
+    });
+    expect(since[1]).toMatchObject({
+      cardId: card.id,
+      actorId: other.id,
+      data: { ttlSeconds: 30, expiresAt: clock + 30_000 },
+    });
+    expect(seen).toEqual(since);
+
+    expectCoreError(() => core.heartbeat(card.id, agent.id), "conflict", other.name);
+    expect(core.getCard(card.id).claim).toEqual(second.claim);
+  });
+
+  test("the holder re-claiming its own lapsed claim is an interruption and a new claim, not a renewal", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    clock = T0 + 200_000;
+    const seqBefore = lastSeq();
+
+    const again = core.claimCard(card.id, {}, agent.id);
+
+    expect(again.claim).toEqual({
+      by: agent.id,
+      claimedAt: clock,
+      expiresAt: clock + 120_000,
+      ttlSeconds: 120,
+    });
+    expect(core.activitySince(seqBefore).map((e) => [e.type, e.actorId])).toEqual([
+      ["run_interrupted", agent.id],
+      ["claimed", agent.id],
+    ]);
+  });
+
+  test("heartbeat by the holder extends by the original TTL and records nothing", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 60 }, agent.id);
+    clock += 45_000;
+    const seqBefore = lastSeq();
+
+    const beat = core.heartbeat(card.id, agent.id);
+
+    expect(beat.claim).toEqual({
+      by: agent.id,
+      claimedAt: T0,
+      expiresAt: T0 + 45_000 + 60_000,
+      ttlSeconds: 60,
+    });
+    expect(core.activitySince(seqBefore)).toEqual([]);
+    expect(core.getCard(card.id).claim).toEqual(beat.claim);
+
+    clock += 45_000;
+    expect(core.heartbeat(card.id, agent.id).claim?.expiresAt).toBe(T0 + 90_000 + 60_000);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+  });
+
+  test("heartbeat by a non-holder, or with no live claim, is a conflict and changes nothing", () => {
+    const card = cardIn("code");
+    expectCoreError(() => core.heartbeat(card.id, agent.id), "conflict");
+
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+    expectCoreError(() => core.heartbeat(card.id, other.id), "conflict", agent.name);
+    expectCoreError(() => core.heartbeat(card.id, owner.id), "conflict", agent.name);
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+
+    clock = T0 + 120_000;
+    expectCoreError(() => core.heartbeat(card.id, agent.id), "conflict");
+    // Lapsed and unswept: still visible as stored, with its past expiry.
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+
+    expectCoreError(() => core.heartbeat(card.id, 999), "not_found", "999");
+    expectCoreError(() => core.heartbeat(999, agent.id), "not_found", "999");
+    expect(core.activitySince(seqBefore)).toEqual([]);
+  });
+
+  test("releaseCard by the holder clears the claim and records released with the reason", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    const released = core.releaseCard(card.id, { reason: "done" }, agent.id);
+
+    expect(released.claim).toBeNull();
+    expect(released.phase).toBe("code");
+    const since = core.activitySince(seqBefore);
+    expect(since).toHaveLength(1);
+    expect(since[0]).toMatchObject({
+      type: "released",
+      cardId: card.id,
+      actorId: agent.id,
+      data: { reason: "done" },
+    });
+    expect(core.getCard(card.id).claim).toBeNull();
+    // Released, the card is claimable by anyone again.
+    expect(core.claimCard(card.id, {}, other.id).claim?.by).toBe(other.id);
+  });
+
+  test("the owner may release anyone's claim; without a reason the event carries null", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    expect(core.releaseCard(card.id, {}, owner.id).claim).toBeNull();
+
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["released"]);
+    expect(since[0]).toMatchObject({ actorId: owner.id, data: { reason: null } });
+  });
+
+  test("another agent may not release; the claim stands", () => {
+    const card = cardIn("code");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    expectCoreError(
+      () => core.releaseCard(card.id, { reason: "mine now" }, other.id),
+      "forbidden",
+      other.name,
+    );
+
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+  });
+
+  test("releasing a lapsed claim records the interruption for the former holder, whoever asks", () => {
+    const first = cardIn("code");
+    const second = cardIn("code");
+    core.claimCard(first.id, { ttlSeconds: 30 }, agent.id);
+    core.claimCard(second.id, { ttlSeconds: 30 }, agent.id);
+    clock = T0 + 30_000;
+    const seqBefore = lastSeq();
+
+    // A lapsed claim counts as absent: no forbidden for a non-holder agent.
+    const byOther = core.releaseCard(first.id, { reason: "taking over" }, other.id);
+    expect(byOther.claim).toBeNull();
+    const byOwner = core.releaseCard(second.id, {}, owner.id);
+    expect(byOwner.claim).toBeNull();
+
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => [e.type, e.cardId, e.actorId])).toEqual([
+      ["run_interrupted", first.id, agent.id],
+      ["run_interrupted", second.id, agent.id],
+    ]);
+    expect(since[0]?.data).toEqual({ by: agent.id, expiresAt: T0 + 30_000 });
+    expect(since[1]?.data).toEqual({ by: agent.id, expiresAt: T0 + 30_000 });
+    expect(events(first.id, "released")).toEqual([]);
+    expect(core.sweepClaims()).toEqual([]);
+    // Cleared, the card is claimable straight away.
+    expect(core.claimCard(first.id, {}, other.id).claim?.by).toBe(other.id);
+  });
+
+  test("releasing an unclaimed card records nothing, whoever asks", () => {
+    const card = cardIn("code");
+    const idea = cardIn("idea");
+    const before = { card: core.getCard(card.id), idea: core.getCard(idea.id) };
+
+    expect(core.releaseCard(card.id, { reason: "nothing" }, agent.id)).toEqual(card);
+    expect(core.releaseCard(card.id, {}, other.id)).toEqual(card);
+    expect(core.releaseCard(idea.id, {}, owner.id)).toEqual(idea);
+    expect(core.getCard(card.id)).toEqual(before.card);
+    expect(core.getCard(idea.id)).toEqual(before.idea);
+    expectCoreError(() => core.releaseCard(card.id, {}, 999), "not_found", "999");
+    expectCoreError(() => core.releaseCard(999, {}, agent.id), "not_found", "999");
+  });
+
+  test("an empty or oversized reason is invalid, whether or not the card is claimed", () => {
+    const card = cardIn("code");
+    const unclaimed = core.getCard(card.id);
+    expectCoreError(() => core.releaseCard(card.id, { reason: "" }, agent.id), "invalid");
+    expectCoreError(() => core.releaseCard(card.id, { reason: " \n" }, owner.id), "invalid");
+    expect(core.getCard(card.id)).toEqual(unclaimed);
+
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    expectCoreError(() => core.releaseCard(card.id, { reason: " \n" }, agent.id), "invalid");
+    expectCoreError(
+      () => core.releaseCard(card.id, { reason: "r".repeat(COMMENT_MAX_BYTES + 1) }, agent.id),
+      "invalid",
+    );
+
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+  });
+
+  test("a move out of the phase by the holder records card_moved then released { reason: moved }", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+    const seen: Activity[] = [];
+    core.subscribe((event) => seen.push(event));
+
+    const moved = core.moveCard(card.id, "pr", agent.id);
+
+    expect(moved.phase).toBe("pr");
+    expect(moved.claim).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["card_moved", "released"]);
+    expect(since[1]).toMatchObject({
+      cardId: card.id,
+      actorId: agent.id,
+      data: { reason: "moved" },
+    });
+    expect(seen).toEqual(since);
+    expect(core.getCard(card.id).claim).toBeNull();
+  });
+
+  test("a non-holder agent may not move a card with a live claim; the owner may, and it releases", () => {
+    const card = cardIn("code");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    expectCoreError(() => core.moveCard(card.id, "pr", other.id), "conflict", agent.name);
+
+    expect(core.getCard(card.id).phase).toBe("code");
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+
+    const moved = core.moveCard(card.id, "pr", owner.id);
+    expect(moved.claim).toBeNull();
+    expect(core.activitySince(seqBefore).map((e) => [e.type, e.actorId])).toEqual([
+      ["card_moved", owner.id],
+      ["released", owner.id],
+    ]);
+  });
+
+  test("a lapsed claim does not block another agent's move; the move records the interruption, not a release", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    clock = T0 + 120_000;
+    const seqBefore = lastSeq();
+
+    const moved = core.moveCard(card.id, "pr", other.id);
+
+    expect(moved.claim).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => [e.type, e.actorId])).toEqual([
+      ["card_moved", other.id],
+      ["run_interrupted", agent.id],
+    ]);
+    expect(since[1]?.data).toEqual({ by: agent.id, expiresAt: T0 + 120_000 });
+    expect(events(card.id, "released")).toEqual([]);
+  });
+
+  test("archiving over a lapsed claim records the interruption, not a release", () => {
+    const card = cardIn("spec");
+    core.claimCard(card.id, { ttlSeconds: 30 }, agent.id);
+    clock = T0 + 30_000;
+    const seqBefore = lastSeq();
+
+    const archived = core.archiveCard(card.id, other.id);
+
+    expect(archived.claim).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => [e.type, e.actorId])).toEqual([
+      ["card_archived", other.id],
+      ["run_interrupted", agent.id],
+    ]);
+    expect(since[1]?.data).toEqual({ by: agent.id, expiresAt: T0 + 30_000 });
+    expect(core.sweepClaims()).toEqual([]);
+  });
+
+  test("a non-holder agent may not archive a card with a live claim; the owner may, and it releases", () => {
+    const card = cardIn("code");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const before = core.getCard(card.id);
+    const seqBefore = lastSeq();
+
+    expectCoreError(() => core.archiveCard(card.id, other.id), "conflict", agent.name);
+
+    expect(core.getCard(card.id)).toEqual(before);
+    expect(core.getCard(card.id).archivedAt).toBeNull();
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.listCards().map((c) => c.id)).toEqual([card.id]);
+    expect(core.activitySince(seqBefore)).toEqual([]);
+
+    // The holder may archive its own claimed card.
+    const own = cardIn("code");
+    core.claimCard(own.id, {}, agent.id);
+    expect(core.archiveCard(own.id, agent.id).claim).toBeNull();
+
+    expect(
+      events(own.id)
+        .slice(-2)
+        .map((e) => [e.type, e.actorId]),
+    ).toEqual([
+      ["card_archived", agent.id],
+      ["released", agent.id],
+    ]);
+
+    const archived = core.archiveCard(card.id, owner.id);
+    expect(archived.archivedAt).not.toBeNull();
+    expect(archived.claim).toBeNull();
+    expect(
+      events(card.id)
+        .slice(-2)
+        .map((e) => [e.type, e.actorId]),
+    ).toEqual([
+      ["card_archived", owner.id],
+      ["released", owner.id],
+    ]);
+  });
+
+  test("a same-phase move leaves the claim alone", () => {
+    const card = cardIn("code");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const before = core.getCard(card.id);
+
+    expect(core.moveCard(card.id, "code", owner.id)).toEqual(claimed);
+    expect(core.moveCard(card.id, "code", other.id)).toEqual(claimed);
+    expect(core.getCard(card.id)).toEqual(before);
+  });
+
+  test("a rejected gate move leaves the claim alone and records only move_rejected", () => {
+    const card = cardIn("spec");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    expectCoreError(() => core.moveCard(card.id, "code", agent.id), "forbidden");
+
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["move_rejected"]);
+  });
+
+  test("a move releases the claim and resolves the open request in one transaction", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    core.requestAttention(card.id, { to: owner.id, note: "pr ready" }, agent.id);
+    const seqBefore = lastSeq();
+
+    const moved = core.moveCard(card.id, "pr", owner.id);
+
+    expect(moved.claim).toBeNull();
+    expect(moved.attention).toBeNull();
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual([
+      "card_moved",
+      "released",
+      "attention_resolved",
+    ]);
+  });
+
+  test("archiveCard releases with reason archived", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, {}, agent.id);
+    const seqBefore = lastSeq();
+
+    const archived = core.archiveCard(card.id, owner.id);
+
+    expect(archived.claim).toBeNull();
+    expect(archived.archivedAt).not.toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => e.type)).toEqual(["card_archived", "released"]);
+    expect(since[1]).toMatchObject({ actorId: owner.id, data: { reason: "archived" } });
+    expect(core.getCard(card.id).claim).toBeNull();
+  });
+
+  test("sweepClaims interrupts every lapsed claim, leaves the live one, and returns the ids", () => {
+    const a = cardIn("spec");
+    const b = cardIn("code");
+    const c = cardIn("code");
+    core.claimCard(a.id, { ttlSeconds: 10 }, agent.id);
+    core.claimCard(b.id, { ttlSeconds: 30 }, other.id);
+    clock = T0 + 20_000;
+    const live = core.claimCard(c.id, {}, agent.id);
+    clock = T0 + 30_000;
+
+    // Before the sweep, the lapsed claims are visible as stored, with their past expiries.
+    expect(core.getCard(a.id).claim).toEqual({
+      by: agent.id,
+      claimedAt: T0,
+      expiresAt: T0 + 10_000,
+      ttlSeconds: 10,
+    });
+    expect(core.getCard(b.id).claim).toMatchObject({ by: other.id, expiresAt: T0 + 30_000 });
+    expect(core.listCards().map((card) => card.claim?.expiresAt)).toEqual([
+      T0 + 10_000,
+      T0 + 30_000,
+      T0 + 140_000,
+    ]);
+    const seqBefore = lastSeq();
+    const seen: Activity[] = [];
+    core.subscribe((event) => seen.push(event));
+
+    expect(core.sweepClaims()).toEqual([a.id, b.id]);
+
+    const since = core.activitySince(seqBefore);
+    expect(since).toHaveLength(2);
+    expect(since[0]).toMatchObject({
+      type: "run_interrupted",
+      cardId: a.id,
+      actorId: agent.id,
+      data: { by: agent.id, expiresAt: T0 + 10_000 },
+    });
+    expect(since[1]).toMatchObject({
+      type: "run_interrupted",
+      cardId: b.id,
+      actorId: other.id,
+      data: { by: other.id, expiresAt: T0 + 30_000 },
+    });
+    expect(seen).toEqual(since);
+    expect(core.getCard(a.id).claim).toBeNull();
+    expect(core.getCard(b.id).claim).toBeNull();
+    expect(core.getCard(c.id).claim).toEqual(live.claim);
+    // The cards stay where they are: back in the queue is a status, not a move.
+    expect(core.getCard(a.id).phase).toBe("spec");
+    expect(core.getCard(b.id).phase).toBe("code");
+    expect(core.getCard(a.id).attention).toBeNull();
+
+    // A second sweep finds nothing.
+    const seqAfter = lastSeq();
+    expect(core.sweepClaims()).toEqual([]);
+    expect(core.activitySince(seqAfter)).toEqual([]);
+
+    // The live one lapses later and is swept then.
+    clock = T0 + 140_000;
+    expect(core.sweepClaims()).toEqual([c.id]);
+    expect(core.activitySince(seqAfter).map((e) => [e.type, e.actorId])).toEqual([
+      ["run_interrupted", agent.id],
+    ]);
+    expect(core.listCards().every((card) => card.claim === null)).toBe(true);
+  });
+
+  test("sweepClaims with no claims at all returns nothing and records nothing", () => {
+    cardIn("spec");
+    const before = core.activitySince(0);
+    expect(core.sweepClaims()).toEqual([]);
+    expect(core.activitySince(0)).toEqual(before);
+  });
+
+  test("a claim survives an unrelated mutation and a comment", () => {
+    const card = cardIn("code");
+    const claimed = core.claimCard(card.id, {}, agent.id);
+    core.comment(card.id, "working", agent.id);
+    core.setRefs(card.id, { branch: "feat/x" }, agent.id);
+    core.setBody(card.id, "# spec", owner.id);
+    expect(core.getCard(card.id).claim).toEqual(claimed.claim);
   });
 });

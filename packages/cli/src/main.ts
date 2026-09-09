@@ -17,12 +17,15 @@ import { add } from "./commands/add";
 import { archive } from "./commands/archive";
 import { attention } from "./commands/attention";
 import { body } from "./commands/body";
+import { claim } from "./commands/claim";
 import { type Args, type Command, UsageError } from "./commands/command";
 import { comment } from "./commands/comment";
+import { heartbeat } from "./commands/heartbeat";
 import { ls } from "./commands/ls";
 import { mv } from "./commands/mv";
 import { queue } from "./commands/queue";
 import { refs } from "./commands/refs";
+import { release } from "./commands/release";
 import { resolve } from "./commands/resolve";
 import { show } from "./commands/show";
 import { watch } from "./commands/watch";
@@ -39,6 +42,9 @@ const COMMANDS: Record<string, Command> = {
   archive,
   attention,
   resolve,
+  claim,
+  heartbeat,
+  release,
   watch,
 };
 

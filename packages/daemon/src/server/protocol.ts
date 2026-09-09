@@ -256,6 +256,32 @@ const HANDLERS: { [M in BoundMethod]: Handler<M> } = {
     const p = validate("listAttention", params, { to: { check: integer, optional: true } });
     return ctx.core.listAttention(p.to === undefined ? {} : { to: p.to as number });
   },
+  claimCard(ctx, params, member) {
+    const p = validate("claimCard", params, {
+      id: { check: integer },
+      ttlSeconds: { check: integer, optional: true },
+    });
+    return ctx.core.claimCard(
+      p.id as number,
+      p.ttlSeconds === undefined ? {} : { ttlSeconds: p.ttlSeconds as number },
+      member.id,
+    );
+  },
+  heartbeat(ctx, params, member) {
+    const p = validate("heartbeat", params, { id: { check: integer } });
+    return ctx.core.heartbeat(p.id as number, member.id);
+  },
+  releaseCard(ctx, params, member) {
+    const p = validate("releaseCard", params, {
+      id: { check: integer },
+      reason: { check: string, optional: true },
+    });
+    return ctx.core.releaseCard(
+      p.id as number,
+      p.reason === undefined ? {} : { reason: p.reason as string },
+      member.id,
+    );
+  },
   subscribe(ctx, params) {
     const p = validate("subscribe", params, { since: { check: integer, optional: true } });
     ctx.stream.subscribe(p.since as number | undefined);
