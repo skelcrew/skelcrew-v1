@@ -248,5 +248,9 @@ in `docs/MILESTONES.md`; its code is reference material, not a base to build on.
 
 - `docs/specs/` — one spec per unit of work, numbered, durable
 - `docs/plans/` — run records written by `/develop`, one per spec
-- `docs/MILESTONES.md` — planned sequence
+- `docs/MILESTONES.md` — the planned sequence, and nothing else: each entry carries the
+  findings that shape it and points at the evidence
+- `docs/research/` — what other harnesses do, one file per subject; evidence, never a plan
+- `docs/prototype-findings.md` — the 2026-09-07 spike's record, in its own vocabulary
+- `docs/workflow-findings.md` — what building here teaches about `/spec` and `/develop`
 - `packages/` — Bun workspaces (created by the scaffold spec)
