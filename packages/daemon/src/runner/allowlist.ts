@@ -235,7 +235,10 @@ function narrowedCommands(): Set<string> {
  */
 export function scanInstructions(text: string): string[] {
   const out: string[] = [];
-  const lines = text.split("\n");
+  // CRLF is a repository's business, not the scan's: a `\r` left on a fence line would close
+  // no block, so every block would read as unterminated and the repository would grant
+  // nothing — fail-closed, but silently, and for no reason the owner could see.
+  const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   for (let i = 0; i < lines.length; i += 1) {
     const open = FENCE_OPEN.exec(lines[i] as string);
     if (open === null) continue;

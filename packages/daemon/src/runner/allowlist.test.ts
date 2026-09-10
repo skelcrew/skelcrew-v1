@@ -284,6 +284,17 @@ test("both instruction files contribute, once each", async () => {
   expect(await scanned()).toEqual(["Bash(bun run check *)", "Bash(cargo test *)"]);
 });
 
+/**
+ * A repository with CRLF endings is a repository like any other: the fence closes, and the
+ * command it documents runs unprompted. Reading the `\r` as part of the fence line made every
+ * block look unterminated, so the agent asked for the repository's own check command every
+ * time, with nothing on the card saying why.
+ */
+test("an instruction file with CRLF line endings is scanned the same", async () => {
+  await commit("AGENTS.md", "# Repo\r\n\r\nRun this:\r\n\r\n```\r\nbun run check\r\n```\r\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+});
+
 test("a fenced block in another language contributes nothing", async () => {
   await commit("AGENTS.md", "```ts\nbun.spawn(['rm', '-rf', '/'])\n```\n\n```json\n{}\n```\n");
   expect(await scanned()).toEqual([]);
