@@ -340,6 +340,28 @@ they know that skelcrew's entries did not yet say:
   rather than the reader ("not found — run `snapshot -i` to see what is available") and orca
   hands back the literal next command, which is what makes 013's denials and 009's lost claims
   recoverable instead of merely reported.
+- **A question the agent raises needs a fixed shape, not just a verb (010/013).** `spec.md` says
+  to raise an undecidable decision with `skelcrew attention <id> "<the question, with the
+  options>"` and leaves the rest to the agent, so the quality of what the owner reads varies run
+  to run. gstack gives every skill one house format — context, the question, an explicit
+  `RECOMMENDATION: choose X because …`, then lettered options — and it is the recommendation
+  that does the work: it turns a question into a decision the owner can confirm at a glance
+  instead of a prompt they have to reconstruct the reasoning behind. 010 already requires an
+  attention request to carry its resolving choices; this says what the *body* should look like,
+  and 013 is where the same shape has to cover a permission the agent is asking for. Worth
+  specifying once, in the shared opening, rather than per playbook.
+- **The playbooks are all procedure and almost no judgment (the playbook extraction).** Both
+  files are read this, run that, post here — correct, and thin where it matters. The one line of
+  judgment in either of them is the most valuable sentence in both ("a truthful partial run is a
+  good outcome; a fabricated complete one is the worst thing you can produce"), and there is
+  room for more of that kind. gstack keeps this separate and shared: an `ETHOS.md` of principles
+  — how to weigh completeness, search before building rather than inventing, what to do when
+  first principles contradict the convention — injected into every skill ahead of its own steps.
+  Splitting skelcrew's playbooks the same way gives three layers rather than two: the repository
+  contributes its constraints through `AGENTS.md`, skelcrew contributes how the crew works and
+  what good work looks like here, and the phase file contributes only its own steps. That split
+  is what stops the shared half being copy-pasted per phase, and it is the natural first move
+  when the playbooks come out of `.claude/`.
 
 ## 001 — Project scaffold
 
