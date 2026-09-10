@@ -12,8 +12,8 @@ numbering rule forbids reuse. The detail behind everything below:
 
 - `docs/plans/007-runner-runs-playbooks.md` — the run record: the plan, the decisions the spec
   left open, four internal review rounds and five external ones.
-- `docs/plans/007-runner-runs-playbooks-conformance-review{,-2,-3}.md` — three independent
-  conformance reviews by a different vendor's model (Codex/`gpt-6-astra`).
+- `docs/plans/007-runner-runs-playbooks-conformance-review.md`, `-2.md` and `-3.md` — three
+  independent conformance reviews by a different vendor's model (Codex/`gpt-6-astra`).
 
 Its final state was green — `bun run check`, 359 tests — with every finding from all eight
 rounds landed. It was parked because the spec was too large to review well, not because the

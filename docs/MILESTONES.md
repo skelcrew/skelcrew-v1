@@ -35,13 +35,13 @@ skelcrew and pivoted to the single-headless-daemon architecture (see AGENTS.md);
 milestone entries below are written for the new architecture, and the spike's findings —
 recorded here in its own lane/board vocabulary — must be absorbed by the numbered specs:
 
-- **Talk-to-the-agent is the core gap (007).** The spike spawns fire-and-forget `claude -p`;
+- **Talk-to-the-agent is the core gap (012/013).** The spike spawns fire-and-forget `claude -p`;
   when the sandbox blocked `npm run check`, the agent asked for approval *on the card* and
-  nobody could answer — it committed without running checks. 007 must drive the Agent SDK
+  nobody could answer — it committed without running checks. 012 must drive the Agent SDK
   instead: `canUseTool` becomes an attention request with Approve/Deny that resumes the run,
   and streaming input lets card comments reach the running agent mid-run. Also: playbooks
   know the repo's check commands from `AGENTS.md`, so the daemon should pre-allow them.
-- **The daemon must verify before handing off (007).** Twice the spike's develop stage
+- **The daemon must verify before handing off (014).** Twice the spike's develop stage
   ended with the agent blocked from committing — and the daemon still posted "branch ready
   for review" on a branch with zero commits, then force-removed the worktree, destroying the
   uncommitted implementation. A develop finish must confirm `git log base..branch` is
@@ -49,7 +49,7 @@ recorded here in its own lane/board vocabulary — must be absorbed by the numbe
   the reason. Never force-remove a dirty worktree — salvage (leave it and say where, or
   WIP-commit) instead. This is the verifier's "never claim a stage happened when it did not",
   mechanized.
-- **Permission allowlists don't reach the sandbox (007).** Target-repo `permissions.allow`
+- **Permission allowlists don't reach the sandbox (013).** Target-repo `permissions.allow`
   rules did not unblock the spawned agent's `npm run check`/`git commit` — the bash sandbox
   asks for out-of-sandbox approval that allow rules don't cover, and `-p` mode has no one to
   ask. Reinforces the Agent SDK/`canUseTool` design; until then, spike runs need
@@ -78,7 +78,7 @@ recorded here in its own lane/board vocabulary — must be absorbed by the numbe
   review (conflict resolution deserves independent eyes) before the PR updates. The owner is
   informed via card activity, and only *asked* when the agent cannot resolve it. Later, the
   same trigger covers clean-but-stale branches whose tests fail against the merged base.
-- **The fork base is nondeterministic (006/007).** `git worktree add -b` branches from the
+- **The fork base is nondeterministic (006 — landed).** `git worktree add -b` branches from the
   main checkout's current HEAD — so where the owner happens to be parked determines what a
   new branch contains. The daemon should branch from an explicit base (the repo's default
   branch) instead.
@@ -95,7 +95,7 @@ Findings and decisions from the spec workflow itself, newest last:
   when it finds no test files, so a "green with zero tests" scaffold is impossible. The
   scaffold therefore ships one wiring test per package — each proves the workspace resolves
   `@skelcrew/shared`'s version string — and nothing more.
-- **Specs ship with defects, and fixing one mid-run needs a rule (007/008).** Spec 001's
+- **Specs ship with defects, and fixing one mid-run needs a rule (012/008).** Spec 001's
   acceptance criteria 9 and 10 contradicted each other. The implementer built to 9, reported
   the conflict instead of editing the spec, and the owner approved a one-line rewording while
   the run was in flight. That is the shape the live pipeline needs: an agent never edits the
@@ -118,7 +118,7 @@ Findings and decisions from the spec workflow itself, newest last:
   develop phase commits it verbatim. A gate-time check for Goal, Acceptance criteria, and Out
   of scope sections was considered and dropped to keep the model simple; the push toward
   those sections is the spec playbook's template and the develop playbook refusing a card
-  without them (007). Title, phase, repo, and references stay structured data.
+  without them (012). Title, phase, repo, and references stay structured data.
 - **The repo is the only container, and milestones are cards (settled 2026-09-08).** No
   workspace, project, or milestone entity. A file like this one lives in the target repo as
   project knowledge; its entries become Idea cards by bulk filing (004, from stdin), in
@@ -145,7 +145,7 @@ Findings and decisions from the spec workflow itself, newest last:
   `ensureMember` reaches the wire only as `hello`; `getMember` only as `listMembers`.
 - **`SKELCREW_AS` names the agent the CLI speaks as (004).** `skelcrew --as <name>` or the
   environment variable `SKELCREW_AS=<name>` binds the invocation to that agent member via
-  `hello` (the flag wins); without either, it is the owner. The runner (006/007) sets
+  `hello` (the flag wins); without either, it is the owner. The runner (006/012) sets
   `SKELCREW_AS` at spawn so a playbook's commands need no flag, and nothing about identity
   is stored client-side. Path discovery (`findRepoRoot`, `resolveDataDir`, `dataPaths`)
   lives in `@skelcrew/shared` so the CLI and the daemon find the same socket from the same
@@ -194,7 +194,7 @@ Findings and decisions from the spec workflow itself, newest last:
   no target-repo tooling walks it); both are reused by later runs of the same card.
   Without a playbook the run sets the `branch` ref, comments `worktree ready at <path> on
   <branch> (from <base>)`, raises `no playbook for <phase> yet; work in <path>` to the
-  owner, and releases with reason `no playbook`; 007 replaces the request with the
+  owner, and releases with reason `no playbook`; 012 replaces the request with the
   playbook run and keeps everything before it. A failed step is a comment
   `<step> failed: <error>`, the same text as an attention request, and a release with
   reason `failed`; nothing retries. Leaving the claimable phases or archiving tears the
@@ -209,7 +209,7 @@ Findings and decisions from the spec workflow itself, newest last:
   else. The CLI and the daemon resolve a linked worktree — a `.git` file whose `gitdir`
   points into `<main>/.git/worktrees/` — to its main repository, so from inside
   `<repo>/.skelcrew/worktrees/<id>` every CLI verb reaches `<repo>/.skelcrew/` with no
-  `SKELCREW_DIR`; 007's spawned agent may still get it set, belt and braces. The rule
+  `SKELCREW_DIR`; 012's spawned agent may still get it set, belt and braces. The rule
   requires the gitdir's grandparent to be named `.git`, so a main repository initialised
   with `--separate-git-dir` does not resolve and its runner worktrees fall back to their
   own directory as the root.
