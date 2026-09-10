@@ -274,9 +274,34 @@ export function splitEntries(argument: string): string[] {
  */
 const EDITING_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
-/** A rule's path, anchored at the filesystem root: `//` and then the absolute path. */
+/** A path as the filesystem spells it, or as given when there is no file at the end of it. */
+function resolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * A rule's path, anchored at the filesystem root: `//` and then the absolute path — resolved,
+ * not merely absolutised, so the rule is spelled the way the harness spells the path it checks
+ * it against.
+ *
+ * That is not cosmetic. `resolveDataDir` absolutises `SKELCREW_DIR` lexically, so a run under
+ * `/tmp/skel` keeps the `/tmp` spelling while every path the harness builds from it also
+ * carries `/private/tmp` — and the harness treats the two as equivalent in the *allow*
+ * direction only. `Ap()` holds the table (`/private/tmp→/tmp`, `/private/var→/var`,
+ * `/private/etc→/etc` on this machine, each kept only when the alias really resolves to it),
+ * `sTt` maps a path through it, and `PZe` retries every failed allow lookup that way; `uA`'s
+ * deny loop has no such retry. Under lexical rules a `Write` to
+ * `/private/tmp/skel/worktrees/1/.git` therefore misses the deny and reaches the allow through
+ * the table — the one path `deniedTools` exists to protect, and rewriting it repoints the
+ * worktree at a git directory of the agent's choosing. Run against the shipped binary with the
+ * real table, before and after. Resolving here makes both lookups read the same text.
+ */
 function anchor(path: string): string {
-  return `/${resolve(path)}`;
+  return `/${resolved(resolve(path))}`;
 }
 
 /**
@@ -333,21 +358,25 @@ export function deniedTools(worktreePath: string): string[] {
  * which is what the harness does too, its canonicalisation being a `realpathSync` that throws on
  * a path with no file at the end of it.
  *
- * The consequence worth stating: under a worktree whose own path runs through a symlink, an
- * *existing* file inside it resolves to a path the rule does not spell, and asks. The rule is
- * written from the path the runner was given, so this is only reached when that path is itself
- * unresolved.
+ * **And a third, which is the harness's own asymmetry rather than this function's.** The harness
+ * keeps a table of trusted symlink equivalences (`Ap()`: `/private/tmp→/tmp`, `/private/var→/var`,
+ * `/private/etc→/etc` here, each kept only when the alias really resolves to it) and retries
+ * every failed *allow* lookup through it (`sTt` inside `PZe`) — while `uA`'s deny loop does not
+ * retry at all. So under a rule spelled `/tmp/…` the harness *allows* an existing file it reads
+ * as `/private/tmp/…`, where this function says the rule does not cover it; and, worse, a write
+ * to the `/private/…` spelling of the worktree's own `.git` missed the deny entirely and was
+ * allowed outright. `anchor` resolves the worktree path for exactly that reason, so both of the
+ * harness's lookups and this function read the same spelling and the asymmetry has nothing to
+ * bite on. Verified against the shipped binary with the real table, before and after; round 5
+ * recorded the opposite ("an existing file inside it … asks") from a run with the table stubbed
+ * empty.
  */
 function filePaths(input: Record<string, unknown>): string[] {
   const named = input.file_path ?? input.notebook_path ?? input.path;
   if (typeof named !== "string") return [];
   const lexical = resolve(named);
-  try {
-    const real = realpathSync(lexical);
-    return real === lexical ? [lexical] : [lexical, real];
-  } catch {
-    return [lexical];
-  }
+  const real = resolved(lexical);
+  return real === lexical ? [lexical] : [lexical, real];
 }
 
 /**

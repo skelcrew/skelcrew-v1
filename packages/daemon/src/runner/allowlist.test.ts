@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -135,11 +135,17 @@ test("a write outside the worktree is not pre-allowed, however near it sits", ()
  * too, or a "this is not pre-allowed" assertion would be asserting the wrong thing.
  */
 test("a symlink out of the worktree is not pre-allowed, though its path is inside", () => {
-  const root = mkdtempSync(join(tmpdir(), "skr-link-"));
+  // The worktree's *own* path is the resolved one, so the only link in play is the one inside
+  // it: a symlinked prefix is the case below, and mixing the two would test neither.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "skr-link-")));
   try {
     const wt = join(root, "wt");
     const common = join(root, "repo.git");
     mkdirSync(join(wt, "docs"), { recursive: true });
+    // A file that exists, so the positive case below goes through `realpathSync` rather than
+    // through the "no file at the end of it" branch, where there is no second path to check.
+    mkdirSync(join(wt, "src"), { recursive: true });
+    writeFileSync(join(wt, "src", "x.ts"), "x\n");
     mkdirSync(join(common, "refs", "remotes", "origin"), { recursive: true });
     writeFileSync(join(common, "config"), "[core]\n");
     writeFileSync(join(common, "refs", "remotes", "origin", "main"), "sha\n");
@@ -162,6 +168,47 @@ test("a symlink out of the worktree is not pre-allowed, though its path is insid
     ).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A worktree whose own path runs through a symlink, which is not exotic: `resolveDataDir`
+ * absolutises `SKELCREW_DIR` lexically, and on macOS `/tmp` and `/var` are links into
+ * `/private`. The harness carries a table of exactly those equivalences (`Ap`) and retries
+ * every failed *allow* lookup through it (`sTt` inside `PZe`) — while `uA`'s deny loop has no
+ * such retry. So rules spelled `/tmp/…` allow a write to `/private/tmp/…/.git`: the deny is
+ * missed and the allow is reached through the table. Run against the shipped binary before and
+ * after, with the real table rather than an empty stub.
+ *
+ * What closes it is spelling the rule the way the filesystem spells the path, so that the deny
+ * and the allow are read against the same text.
+ */
+test("a worktree reached through a symlinked prefix is spelled the way the filesystem spells it", () => {
+  const lexical = mkdtempSync(join(tmpdir(), "skr-prefix-"));
+  try {
+    const real = realpathSync(lexical);
+    const wt = join(lexical, "worktrees", "1");
+    const realWt = join(real, "worktrees", "1");
+    mkdirSync(join(wt, "src"), { recursive: true });
+    writeFileSync(join(wt, "src", "x.ts"), "x\n");
+    writeFileSync(join(wt, ".git"), "gitdir: /elsewhere\n");
+
+    expect(editsIn(wt)).toBe(`Edit(/${realWt}/**)`);
+    expect(deniedTools(wt)).toEqual([`Edit(/${realWt}/.git)`, `Edit(/${realWt}/.git/**)`]);
+
+    const list = [...FIXED_ALLOWLIST, editsIn(wt)];
+    const deny = deniedTools(wt);
+    const write = (path: string): boolean =>
+      allowsTool("Write", { file_path: path, content: "x" }, list, deny);
+
+    // An existing file inside the worktree, in the spelling the harness checks it under.
+    expect(write(join(realWt, "src", "x.ts"))).toBe(true);
+    // And the `/private/…` spelling of the worktree's own `.git`, which is the whole point of
+    // the deny: under the lexical spelling the harness allowed this one outright.
+    expect(write(join(realWt, ".git"))).toBe(false);
+    expect(write(join(wt, ".git"))).toBe(false);
+  } finally {
+    rmSync(lexical, { recursive: true, force: true });
   }
 });
 

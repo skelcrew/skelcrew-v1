@@ -140,8 +140,17 @@ export function startRunner(options: RunnerOptions): Runner {
   const baseEnv = options.env ?? process.env;
   /** Fired by `stop()`: a live run is told to stop rather than waited out. */
   const stopping = new AbortController();
-  const dir = worktreesDir(dataDir);
-  mkdirSync(dir, { recursive: true });
+  const worktrees = worktreesDir(dataDir);
+  mkdirSync(worktrees, { recursive: true });
+  /**
+   * Spelled the way the filesystem spells it, because a run's cwd and the file-tool rules
+   * anchored at it have to agree: `resolveDataDir` absolutises `SKELCREW_DIR` lexically, so a
+   * data directory reached through a link (`/tmp` and `/var` on macOS) otherwise leaves the two
+   * spelled differently — where the harness maps one spelling to the other when it looks a
+   * write up against an allow rule and does not when it looks the same write up against a deny
+   * rule. See `anchor` in `./allowlist`. This is also the spelling git prints back.
+   */
+  const dir = realpath(worktrees);
   // The agent's `skelcrew`: written once, before any run could need it.
   if (agent !== undefined) writeShim(dataDir);
 
