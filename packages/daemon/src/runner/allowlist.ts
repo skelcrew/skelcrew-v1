@@ -66,6 +66,12 @@
  *    back into `bun -e '<any code>'`. And it is one rule and never two: an entry has a syntax
  *    of its own, so a fenced `bun run) Bash(sh` would otherwise yield an entry the harness
  *    splits into `Bash(bun run)` **and** `Bash(sh *)`, which is arbitrary unprompted execution.
+ *    The no-widening half reads **every word** of the line, not its first, because a launcher
+ *    word puts the narrowed verb in position two — `env git push origin HEAD:main` ran
+ *    unprompted through that gap. What none of this makes the scan is a boundary: a fenced
+ *    `sh` is a plain command word with no narrowed verb in it and yields `Bash(sh *)`. Rule 6
+ *    is true of the fixed list and of good-faith documentation, and not of an instruction file
+ *    written to attack; `narrowedCommands` carries that in full.
  *    See `PATTERN_CHARS`, `LINE_CHARS`, `splitEntries` and `allowlistFor` below.
  * 7. **No entry writes a ref the next run reads.** `git branch` is absent: branch refs live in
  *    `refs/heads/` and are *shared* by the main checkout and every linked worktree, so a run
@@ -170,7 +176,9 @@
  *   ordinary course) and it is not a boundary.
  * - **Criteria 10b and 10c are true of tool calls and false of subprocesses**, which is how 013
  *   words them. `allowsTool` and `runsUnprompted` answer "does this tool call ask", and no
- *   assertion built on them says anything about what a process does once one has started.
+ *   assertion built on them says anything about what a process does once one has started. They
+ *   are bounded against the fixed list rather than against whatever a repository pre-allows for
+ *   itself, which is the same limit read from the scan's side: see `narrowedCommands`.
  *
  * The rules that must survive this belong in the daemon, not in a list: the daemon knows which
  * member is asking and which run holds the claim, and can refuse a gate-crossing move on its own
@@ -849,28 +857,50 @@ const PATTERN_CHARS = /[*?[]/;
  * `bun run) Bash(git` becomes `Bash(bun run) Bash(git *)`, which the harness reads as
  * `Bash(bun run)` **and** `Bash(git *)`, and `bun run) Bash(sh` yields `Bash(sh *)` —
  * arbitrary unprompted execution granted by a file the target repository controls, with the
- * second command in a later word where `narrowedCommands()` never looks. Parentheses are the
- * pair that does it, the comma is the harness's other separator, and everything not needed to
- * write a check command is refused with them rather than reasoned about one character at a
- * time.
+ * second command buried inside a word — `Bash(git`, not `git` — where `narrowedCommands()`
+ * does not see it however many words it reads. Parentheses are the pair that does it, the comma
+ * is the harness's other separator, and everything not needed to write a check command is
+ * refused with them rather than reasoned about one character at a time.
  */
 const LINE_CHARS = /^[A-Za-z0-9._/@+:=-]+(?: [A-Za-z0-9._/@+:=-]+)*$/;
 
-/** The first word of a scanned line, which is what the no-widening rule is read against. */
+/** The first word of a scanned line, which is what `COMMAND_WORD` is read against. */
 function firstWord(line: string): string {
   return line.split(/\s+/)[0] ?? "";
 }
 
+/** Every word of a scanned line, which is what the no-widening rule is read against. */
+function words(line: string): string[] {
+  return line.split(/\s+/).filter((word) => word.length > 0);
+}
+
 /**
  * The commands the fixed list narrows: the first word of every `Bash(…)` entry. A scanned
- * line whose first word is one of these contributes nothing, because the fixed list decides
- * what `git`, `gh` and `skelcrew` may do and a scanned line may only ever add to that — any
- * repository documenting a `git status` line triggers this, and one documenting
- * `git push --force` would otherwise grant exactly the form rule 5 withholds. Reading the
- * line's first word rather than the whole line is what keeps the rule working now that the
- * grant is of the line: `git status && rm -rf /` is dropped for its `git`, like every other
- * `git` line. Derived from the list rather than written out, so a verb narrowed later is
- * protected by the same rule without anyone remembering to add it here.
+ * line **any of whose words** is one of these contributes nothing, because the fixed list
+ * decides what `git`, `gh` and `skelcrew` may do and a scanned line may only ever add to that —
+ * any repository documenting a `git status` line triggers this, and one documenting
+ * `git push --force` would otherwise grant exactly the form rule 5 withholds. Derived from the
+ * list rather than written out, so a verb narrowed later is protected by the same rule without
+ * anyone remembering to add it here.
+ *
+ * **Every word, not the first.** The grant is of the whole line, so a launcher word puts the
+ * narrowed verb in position two where a first-word check never looks, and the entry then
+ * pre-allows the prefixed form directly — `env git push origin HEAD:main`,
+ * `command gh pr merge 42`, `nice git push` and `env skelcrew resolve 1 -m allow` each ran
+ * unprompted through that gap, and each is an action the spec reserves to the owner.
+ *
+ * **And reading every word does not make the scan a boundary, because nothing can.** A fenced
+ * block of the single word `sh` yields `Bash(sh *)`, which matches `sh -c '<anything>'`: there
+ * is no narrowed verb to find and no character to reject, and running the command a repository
+ * documents is the whole point of the scan. This is *What a subprocess reaches* from the other
+ * side — a repository's check command is arbitrary execution by construction, whether it
+ * arrives as `sh` in the entry or as a test file the check command runs. So this rule is true
+ * of the **fixed list** and of **good-faith documentation** — the defect it was written
+ * against is a repo that documents `git status` and thereby re-grants `git` — and it is not
+ * true against an instruction file written to attack; criteria 10b and 10c inherit that limit.
+ * What keeps the owner's pre-merge reading of a target repository meaningful is the base-commit
+ * read below: what grants anything is what the owner merged. The rules that must survive a
+ * repository the owner has not read belong in the daemon, which is milestone 016.
  */
 function narrowedCommands(): Set<string> {
   const out = new Set<string>();
@@ -954,7 +984,10 @@ export interface RunAllowlist {
  * line the repository's own `AGENTS.md`/`CLAUDE.md` shows in a fenced shell block — so an
  * agent following the repository's stated conventions is not stopped to ask permission for its
  * check commands. A repository with neither file gets the fixed list and the anchor exactly,
- * and nothing scanned may widen a command the fixed list narrows.
+ * and no scanned line whose words include a command the fixed list narrows contributes
+ * anything — which is a rule about the fixed list and about good-faith documentation, not a
+ * boundary against a repository writing to attack. `narrowedCommands` says why it cannot be
+ * one.
  *
  * **The files are read from a commit, never from the working tree.** A run may write its own
  * worktree freely — that is the work — so it can put a fenced block into `AGENTS.md` there in
@@ -963,12 +996,12 @@ export interface RunAllowlist {
  * widening its successor's boundary, so a file that is untracked, or modified relative to that
  * commit, contributes nothing.
  *
- * **And the commit is named by a ref nothing that runs unprompted can write**: `scanBase`, the
- * remote-tracking head of `defaultBranch`. A local branch name would not do, however carefully
- * the fixed list is drawn — `refs/heads/` is shared by the main checkout and every linked
- * worktree, so a run able to create or move a branch could point the name its successor reads
- * at a commit it authored. Two things keep `refs/remotes/origin/<default>` out of reach, and
- * both are needed:
+ * **And the commit is named by a ref no unprompted *tool call* on the fixed list can write**:
+ * `scanBase`, the remote-tracking head of `defaultBranch`. A local branch name would not do,
+ * however carefully the fixed list is drawn — `refs/heads/` is shared by the main checkout and
+ * every linked worktree, so a run able to create or move a branch could point the name its
+ * successor reads at a commit it authored. Two things keep `refs/remotes/origin/<default>` out
+ * of reach, and both are needed:
  *
  * - **No unprompted *tool call* runs a command that writes it.** Only `git fetch`, `git pull`,
  *   `git remote` and `git push` write those refs, of which only `push` is listed, and only as
@@ -989,11 +1022,15 @@ export interface RunAllowlist {
  *   were listed as wildcards; rule 3 deleted the entries, and the harness's own read-only check
  *   refuses the flag. That is the third leg, and all three are needed.
  *
- * So no *tool call* on this list can make the scan read a commit the owner has not pushed to the
- * default branch. Three legs hold that up and a subprocess steps over all three: the check
- * command this function itself pre-allows can write the ref directly, and *What a subprocess
- * reaches* above is where that is recorded. A ref or a file that cannot be read contributes
- * nothing rather than failing the run — the fixed list is the floor, and the agent asks.
+ * So no *tool call* on the **fixed list** can make the scan read a commit the owner has not
+ * pushed to the default branch. Three legs hold that up, and two things step over all three.
+ * A subprocess does: the check command this function itself pre-allows can write the ref
+ * directly, and *What a subprocess reaches* above is where that is recorded. And the scanned
+ * entries are not the fixed list — they are command lines the target repository chose, so a
+ * repository that documents `sh` gets `Bash(sh *)` and with it everything a subprocess has.
+ * That is the limit `narrowedCommands` states, and it is why the sentence above says *fixed
+ * list* rather than *this list*. A ref or a file that cannot be read contributes nothing rather
+ * than failing the run — the fixed list is the floor, and the agent asks.
  */
 export async function allowlistFor(
   git: Pick<Git, "showFile" | "revParse">,
@@ -1024,7 +1061,7 @@ export async function allowlistFor(
     }
     if (text === undefined) continue;
     for (const line of scanInstructions(text)) {
-      if (narrowed.has(firstWord(line))) continue;
+      if (words(line).some((word) => narrowed.has(word))) continue;
       const entry = `Bash(${line} *)`;
       if (tools.includes(entry)) continue;
       tools.push(entry);

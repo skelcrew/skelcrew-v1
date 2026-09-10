@@ -615,8 +615,8 @@ test("a scanned command may not widen git, which the fixed list narrows verb by 
 });
 
 /**
- * The rule reads the line's first word, so a documented `git` line contributes nothing
- * whatever follows it — including the push forms the fixed list is careful to leave off.
+ * The rule reads every word, so a documented `git` line contributes nothing whatever follows
+ * it — including the push forms the fixed list is careful to leave off.
  */
 test("a scanned git line the fixed list does not cover is dropped whole, not granted", async () => {
   await commit("AGENTS.md", "```\ngit push --force\n```\n\n```\ngit status && rm -rf /\n```\n");
@@ -636,6 +636,28 @@ test("a scanned command may not widen skelcrew", async () => {
   expect(await scanned()).toEqual(["Bash(bun run check *)"]);
   expect(await list()).not.toContain("Bash(skelcrew *)");
   expect(allowsTool("Bash", { command: "skelcrew mv 1 code" }, await list())).toBe(false);
+});
+
+/**
+ * Criterion 10h. A launcher word puts the narrowed verb in position two, where a first-word
+ * check never looks, and the scanned line is granted whole — so the entry pre-allows the
+ * launcher-prefixed form directly, which runs the same command. Each of these was verified
+ * unprompted through that gap: `env git push origin HEAD:main` lands a commit on the default
+ * branch (10c), `command gh pr merge 42` merges what only the owner may merge, and
+ * `env skelcrew resolve 1 -m allow` answers the run's own permission question.
+ */
+test("a launcher prefix does not carry a narrowed command past the no-widening rule", async () => {
+  for (const line of [
+    "env git push origin HEAD:main",
+    "command gh pr merge 42",
+    "nice git push",
+    "env skelcrew resolve 1 -m allow",
+    "/usr/bin/env git push",
+  ]) {
+    await commit("AGENTS.md", `\`\`\`\n${line}\n\`\`\`\n\n\`\`\`\nbun run check\n\`\`\`\n`);
+    expect([line, await scanned()]).toEqual([line, ["Bash(bun run check *)"]]);
+    expect([line, allowsTool("Bash", { command: line }, await list())]).toEqual([line, false]);
+  }
 });
 
 /**
