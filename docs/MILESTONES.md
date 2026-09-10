@@ -811,6 +811,43 @@ included. A blanket rule would break the body; a blanket exemption is the hole. 
 whether rendering should defend itself regardless of what validation accepts, since the terminal
 is where the damage lands and old rows already in a database were never validated.
 
+## 016 — The gate is the daemon's, not the allowlist's
+
+Found in review round 5 of 013, and it retires an assumption 013 was built on. The allowlist
+governs **tool calls**. A subprocess is not a tool call, and the phase playbooks exist to run
+one: the repository's own check command. `bun run check` dispatches through `package.json` and
+runs `bun test`, which executes any test file the run wrote in its worktree — every one of those
+files inside the `Edit(//<worktree>/**)` anchor, and therefore written unprompted. Nothing in the
+permission layer sees what the subprocess then does.
+
+That is not a defect to patch. A coding agent's job is to write code and run it; execution is the
+product. What follows is that the allowlist was never the boundary it was read as, and three
+things 013 protects by omission are not protected at all. The subprocess inherits `PATH` with the
+shim and `SKELCREW_AS=runner` (`runner/shim.ts`), so it can run the very verbs rule 4 withholds —
+`skelcrew mv`, `claim`, `release`, `archive`, `resolve` — moving its own card past the runner's
+artefact check and answering its own permission question. It can also write anything on disk the
+daemon's user can, the worktree anchor notwithstanding. 013 records all of this rather than
+claiming otherwise; closing it is this milestone.
+
+The fix is to move the rules that matter from a list the agent might evade into the daemon, which
+it cannot. The daemon knows which member a request comes from and which run holds the claim, so
+it can refuse on its own authority: a run's own member may not move its card into a phase behind
+a human-only gate, may not resolve an attention request it raised, and may not release or archive
+its own card mid-run. Enforced there, the rule survives arbitrary code execution, a rewritten
+`PATH`, and a shim called directly — none of which the allowlist survives.
+
+Two things to settle when specifying it. First, the identity the shim carries is currently an
+environment variable the subprocess can rewrite, so the daemon must derive the deciding facts
+from its own state (who holds the claim on this card) rather than from what the caller asserts.
+Second, this overlaps 014's artefact contracts: 014 checks that the artefact exists before a
+phase advances, and this checks that the mover is allowed to move it. They are the same gate seen
+from two sides, and the spec should say which check runs first and what each one's failure looks
+like on the card.
+
+Out of scope for it, and worth saying so: OS-level sandboxing of the subprocess. That is the only
+thing that would stop a check command writing outside the worktree, and it is a different
+milestone with a different cost.
+
 ## Later, deliberately unplanned
 
 TUI (the rows-and-phase-track view, live over 003) and GUI, maybe. Remote clients watching a

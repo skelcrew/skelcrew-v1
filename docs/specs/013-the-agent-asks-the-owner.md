@@ -264,9 +264,41 @@ So the file tools are anchored to the run's own worktree:
 
 Two limits belong on the record rather than in a claim. Read and Edit deny rules also cover the
 file commands the harness recognises in Bash and the targets of shell redirections, but they do
-not cover a subprocess that opens files itself; no entry on this list starts one, and any command
-that would asks. And a `Read` deny rule blocks Edit and Write on the same path while an `Edit`
+not cover a subprocess that opens files itself — **and the scan puts exactly such an entry on the
+list**, deliberately. See *What a subprocess reaches*, below, which is the boundary of everything
+claimed here. And a `Read` deny rule blocks Edit and Write on the same path while an `Edit`
 deny rule does not block reading — reading a ref was never the problem, writing one was.
+
+### What a subprocess reaches
+
+Everything above governs **tool calls**. A subprocess is not a tool call, and the playbooks exist
+to start one: the repository's own check command, which the scan pre-allows precisely so it need
+not ask. `bun run check` dispatches through `package.json` and runs `bun test`, which executes any
+test file the run wrote in its worktree — every one of those files inside the anchor, and so
+written unprompted. Nothing in the permission layer sees what that process then does.
+
+This is not a defect awaiting a patch. A coding agent's work is to write code and run it;
+execution is the product, and a harness that could prevent it would be preventing the job. What
+follows is that the allowlist is a narrower thing than it reads as, and this spec says so rather
+than claiming otherwise:
+
+- **The worktree anchor binds the file tools, not the machine.** A check subprocess writes
+  anything the daemon's user can write, refs and `.git/config` included. Rule 8 makes those
+  writes *ask when a tool makes them*; it does not make them impossible.
+- **The verbs withheld from the CLI group are obtained anyway.** The subprocess inherits `PATH`
+  with the shim and `SKELCREW_AS=runner`, so `skelcrew mv`, `claim`, `release`, `archive` and
+  `resolve` are all reachable — the run can move its own card past the artefact check and answer
+  its own permission question. Withholding them from the list is worth doing (it keeps the agent
+  from taking those actions *as itself*, visibly, in the ordinary course) and it is not a
+  boundary.
+- **Criteria 10b and 10c are true of tool calls and false of subprocesses**, and are worded that
+  way above for that reason.
+
+The rules that must survive this belong in the daemon, not in a list: the daemon knows which
+member is asking and which run holds the claim, and can refuse a gate-crossing move on its own
+authority whatever called it. That is milestone 016, and it is the reason this is recorded here
+rather than papered over. Out of scope for it and for this spec: OS-level sandboxing of the
+subprocess, which is the only thing that would make the first bullet false.
 
 **A scanned command may not widen a command the fixed list narrows.** `skelcrew`, `git` and `gh`
 are narrowed above; a repo whose instructions show `git status` must not thereby produce
@@ -300,7 +332,8 @@ any repo documenting a git command triggers it.
    `bun -e '…'` therefore still asks. A repository with neither instruction file yields exactly
    the fixed list; a fenced block in another language, and one whose first word is not a plain
    command word, each contribute nothing.
-10b. A run cannot widen its successor's allowlist by any sequence of pre-allowed commands.
+10b. A run cannot widen its successor's allowlist by any sequence of pre-allowed **tool calls**
+    — the qualifier is load-bearing; see *What a subprocess reaches*.
     Specifically: committing an instruction file and then creating, renaming or repointing a
     branch grants the next run nothing, and `git branch` is not pre-allowed at all; and no
     pre-allowed tool writes any file outside the run's own worktree — a write to a path under
@@ -314,9 +347,13 @@ any repo documenting a git command triggers it.
 10e. Removing those six verbs does not make the playbooks ask. A plain `git status`, `git log
     --oneline`, `git diff`, `git show <sha>`, `git merge-base` and `git rev-parse` each still run
     unprompted, through the harness's own read-only check rather than through this list.
-10c. No pre-allowed sequence lands a commit on the default branch. Specifically: rewriting
-    `remote.origin.push` and then running the pre-allowed bare `git push` is not available,
-    because the write to `.git/config` asks.
+10c. No pre-allowed sequence of **tool calls** lands a commit on the default branch.
+    Specifically: rewriting `remote.origin.push` and then running the pre-allowed bare
+    `git push` is not available, because the write to `.git/config` asks. A subprocess is not a
+    tool call; see *What a subprocess reaches*.
+10f. The record says what a subprocess reaches. `allowlist.ts` and the Code playbook both carry
+    it, naming the `skelcrew` verbs it obtains, and no artefact in this spec claims a boundary
+    a subprocess does not respect.
 10a. A fenced block whose line contains an unescaped `*`, `?` or `[` contributes nothing: a repo
     containing `bun *` does not pre-allow `bun -e '…'`. A fenced block written into the working
     tree during a run, or present only as an uncommitted change, contributes nothing to that run
