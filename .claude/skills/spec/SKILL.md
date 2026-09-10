@@ -116,6 +116,52 @@ What makes each section good here:
 - **Out of scope** — the adjacent work you deliberately excluded, so `/develop` does not drift
   into it. Be specific; "future improvements" is not out-of-scope.
 
+## 5. Red-team the grants, before you hand the spec over
+
+**Only if the spec grants a capability** — an allowlist, a scope, a credential, a role, a
+permission rule, a token, a path a process may write, a command it may run. If it grants
+nothing, skip this section entirely; most specs do.
+
+Spec 013 took **seven** review rounds. Every Critical finding was a defect in this document, not
+in the code, and all seven were findable by reading before a line was written. They were found
+instead by shipping and being corrected, one round at a time. This step is that hour, moved to
+the front.
+
+Do all five. They are quick, and each one caught something real:
+
+1. **Say whether this is a gate or a boundary, in the Goal.** A gate governs the ordinary
+   course and is worth having; a boundary is meant to hold against something trying to get
+   past it. Most mechanisms are gates. Write down which this is and what defeats it — one
+   sentence. Two of 013's seven rounds went to discovering that its allowlist was a gate
+   after the spec had spent pages claiming a boundary. That sentence was available on day one.
+2. **Enumerate what each grant can reach**, not what it is for. A command's flags are part of
+   the grant: `git log` looks read-only and `git log --output=<path>` writes any file on disk.
+   Read the actual flag list. A wildcard grants every flag the command has, present and
+   future, so a grant you cannot enumerate is one you cannot write as a wildcard.
+3. **Compose every grant with every other grant on the same list.** This is the one that
+   matters most: four of 013's five escalations were pairs of individually reasonable grants.
+   "Write any file" plus "ask git where its directory is" is "rewrite your own permissions."
+   Reasoning that examines each grant alone will pass all of them.
+4. **Run the real enforcer on the actual strings.** Not the documentation, not your model of
+   it — the thing that will decide at runtime. Every one of 013's rounds was settled this way,
+   and four of them would not have happened had it been done while the list was being written.
+   If the enforcer cannot be run, say so in *Implementation approach* and mark every claim that
+   rests on unverified semantics.
+5. **Ask what parses the string you are building.** If the spec composes a value into a
+   syntax — a rule, a query, a path, a command line — that syntax can be closed early and a
+   second one opened. Sanitising against the wrong language is the same as not sanitising.
+   Prefer an allowlist of permitted characters, and specify an invariant that fails loudly
+   whatever the allowlist misses.
+
+Then record the result in the spec: what you checked, what you found, and **what remains open**.
+A limitation written down is a decision; the same limitation discovered in review is a defect.
+
+One more thing, which is not a check but a preference: **prefer containment to enumeration**
+wherever the choice exists. A fence around a place ("this process writes only here") does not
+expire. A list of the dangerous things ("not these flags, not these verbs") is a maintenance
+obligation that goes stale the next time the thing it describes ships a release. Where a spec
+must enumerate, say what it was enumerated against and what to do when that moves.
+
 ## Rules
 
 - **Investigate before specifying.** A spec written from assumptions about this repo is worse
@@ -164,6 +210,8 @@ Stop after writing the spec. Report:
    criteria.
 3. Any decision you resolved from repository context that the user might disagree with —
    this is the part worth their attention.
-4. The exact next command: `/develop <NNN>`
+4. If step 5 applied: whether this is a gate or a boundary, what you ran the real enforcer
+   against, and what you left open. If step 5 did not apply, say the spec grants nothing.
+5. The exact next command: `/develop <NNN>`
 
 Then hand control back. Do not begin implementation, and do not offer to.
