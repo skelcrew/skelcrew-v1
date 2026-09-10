@@ -97,7 +97,7 @@ Read, Glob, Grep, Edit, Write, MultiEdit, Agent, TodoWrite
 Bash(skelcrew show *)   Bash(skelcrew comment *)   Bash(skelcrew body *)
 Bash(skelcrew refs *)   Bash(skelcrew attention *)
 Bash(git status *)  Bash(git log *)     Bash(git diff *)    Bash(git show *)
-Bash(git merge-base *)  Bash(git rev-parse *)  Bash(git branch *)
+Bash(git merge-base *)  Bash(git rev-parse *)
 Bash(git add *)     Bash(git commit *)
 Bash(git push -u origin HEAD)   Bash(git push)
 Bash(gh pr create *)  Bash(gh pr view *)  Bash(gh pr diff *)  Bash(gh pr comment *)
@@ -128,8 +128,12 @@ Why each group is shaped this way:
 
 - `Bash(git commit *)` permits `--no-verify`, which skips the target repo's hooks. The playbooks
   forbid it; a prefix pattern cannot. Accepted, and recorded.
-- `Bash(git branch *)` permits `git branch -D` on local branches inside a disposable worktree.
-  Accepted as recoverable.
+- **`git branch` is not on the list**, and the reasoning matters more than the entry. It was
+  admitted on the grounds that `git branch -D` only touches "local branches inside a disposable
+  worktree" — which is false. Branch refs live in `refs/heads/` and are **shared** by the main
+  checkout and every linked worktree, so an agent renaming or repointing a branch changes the
+  owner's repository, not its own scratch copy. No playbook runs `git branch`; a read-only use
+  asks.
 - `Bash(git push)` under a repo-level `push.default = matching` can push more than the card's
   branch. Accepted, and recorded.
 - Nothing here sandboxes the agent. The list governs what runs **unprompted**; everything else
@@ -167,9 +171,18 @@ A scanned line must also look like a command: if its first word is not a plain c
 fenced block into the repository's own `AGENTS.md` — a single unprompted `Write`, visible on the
 card only inside a batched tool summary — and thereby pre-allow a command for every later run.
 That is a run widening its own successor's boundary, which defeats the gate this spec exists to
-build. Reading the file from the base commit (`git show <base>:AGENTS.md`) means only a change
-the owner has already merged can grant anything; a file that is untracked, or modified relative
-to the base, contributes nothing.
+build. Reading the file from a base commit rather than the working tree means only a change the owner
+has already merged can grant anything; a file that is untracked, or modified relative to that
+commit, contributes nothing.
+
+**That base must be a ref nothing on the fixed list can write.** A local branch name is not:
+`refs/heads/` is shared by the main checkout and every worktree, so a run that can create or move
+a branch can point the name its successor reads at a commit it authored itself — instruction file
+included. Resolve the scan's base from something outside the agent's reach, such as the
+remote-tracking default branch, and treat an absent or unreadable one as granting nothing. The
+guarantee to hold is not "read a commit" but *the run cannot influence what its successor is
+allowed to do*; an implementer should state which ref it chose and why the fixed list cannot
+reach it.
 
 **A scanned command may not widen a command the fixed list narrows.** `skelcrew`, `git` and `gh`
 are narrowed above; a repo whose instructions show `git status` must not thereby produce
@@ -202,6 +215,9 @@ any repo documenting a git command triggers it.
    `bun -e '…'` therefore still asks. A repository with neither instruction file yields exactly
    the fixed list; a fenced block in another language, and one whose first word is not a plain
    command word, each contribute nothing.
+10b. A run cannot widen its successor's allowlist by any sequence of pre-allowed commands.
+    Specifically: committing an instruction file and then creating, renaming or repointing a
+    branch grants the next run nothing, and `git branch` is not pre-allowed at all.
 10a. A fenced block whose line contains an unescaped `*`, `?` or `[` contributes nothing: a repo
     containing `bun *` does not pre-allow `bun -e '…'`. A fenced block written into the working
     tree during a run, or present only as an uncommitted change, contributes nothing to that run
