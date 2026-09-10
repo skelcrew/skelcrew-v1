@@ -116,10 +116,14 @@ the lessons that do are recorded in `docs/MILESTONES.md` against the specs they 
 herdr sits underneath all of it rather than beside it — a terminal runtime that keeps agents'
 panes alive across detach, restart and remote machines, with no work item anywhere in its API —
 and is additive to skelcrew in the way the positioning above requires, not a competitor. It is
-also evidence on the alive-but-stuck gap: it classifies every pane working, blocked, idle or
-done by reading the screen, and Orca keeps process liveness and agent liveness as separate
-verdicts because a live terminal can hold a dead agent. Both answer by observation rather than
-by trusting the agent to report, which is so far the only answer anyone has.
+also one of three different answers to the alive-but-stuck gap, and the three do not agree.
+Herdr reads the screen, classifying every pane working, blocked, idle or done from regex
+manifests, because it does not own the spawn. Orca refuses that explicitly — status comes from
+hooks installed into each agent CLI and normalised per vendor, "never inferred from terminal
+titles" — and keeps process liveness separate from agent liveness, because a live terminal can
+hold a dead agent. Skelcrew owns the spawn *and* the SDK stream, so it starts where orca ended
+up; what neither reporting path covers is the harness blocking underneath the agent, which is
+013's ground.
 
 The field is crowded to the point of commodity. A community index of agent orchestrators now
 lists on the order of four hundred projects, and every primitive here — a worktree per task, a

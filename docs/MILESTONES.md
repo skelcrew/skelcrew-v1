@@ -422,6 +422,46 @@ they know that skelcrew's entries did not yet say:
   (verified current state, testable acceptance criteria, file reference table, root cause
   analysis, rollback strategy) where `spec.md` has five bullets. That is the same conclusion orca
   reached from the other side, and it is how these files should grow.
+- **Attention is derived from facts, and it is a set (010/014).** Orca stores no "needs
+  attention" flag. It projects one from the attempt's facts every time it is read, as eight
+  named categories — guidance, input, approval, failure, interruption, stale, unverifiable,
+  root_completion — of which only some make `requiresAction` true; `stale` and a root's
+  completion are informational and demand nothing. A row can carry several at once. Skelcrew
+  keeps one attention record per card and queues the rest, which is the right call for one
+  owner, but the *derivation* is the transferable half: whether a card is waiting on its owner
+  follows from facts the daemon already holds — the claim lapsed, an artefact condition is
+  unmet, the agent asked, the run failed — and computing it beats writing it wherever someone
+  noticed. Two rules are commented in that function as scar tissue, and both are cheaper to
+  copy than to rediscover: a dispatch that settled with no worker row reads unverifiable but is
+  "a statement about supervision that never existed, not work owed"; and a proven exit must
+  suppress unverifiable, because showing both told readers to keep waiting on a worker already
+  known to be gone — a proven exit is evidence, not absence.
+- **Remove a worktree by renaming it into a trash sibling, then deleting in the background
+  (006).** `git worktree remove` deletes the whole checkout inside the call — usually a
+  multi-gigabyte `node_modules` — which cost orca an 8-35 second freeze, so it renames the
+  directory into a hidden sibling trash root instead (metadata only, guaranteed same volume,
+  a nonce in the name so concurrent removals of same-named worktrees cannot collide) and sweeps
+  it later. The speed is the smaller half here. Skelcrew's rule is that a dirty worktree is
+  salvaged and never force-removed; a rename step makes salvage the default for *every* path,
+  because the checkout still exists until the sweep runs, so a wrong call about cleanliness
+  stops being destructive.
+- **A worktree should carry provenance, because a path is an assumption (006/012).** Orca
+  stamps creation time, a creation source (desktop, runtime, cli, ssh) and creator provenance
+  into each worktree's metadata, so removal can ask whether it created this checkout before
+  touching it, and it has a separate module that *proves* an orphaned git directory rather than
+  inferring one from a path. 012's runner identifies its own worktrees by the
+  `<repo>/.skelcrew/worktrees/<id>` convention and reconciles them at startup — which is a
+  convention anyone can land in, by hand or by a stale copy, and a startup sweep that deletes on
+  a path match is one collision away from removing something it did not make.
+- **What is lost from a card if the daemon dies mid-run (012).** Orca's agent hooks post status
+  to the daemon over HTTP and, when that endpoint is unreachable, append the event to a spool
+  file on disk — pane key, worktree id, launch token, hook version, source, timestamp, payload —
+  to be replayed later, with a guard that drops any record too unattributable to place. Skelcrew
+  streams the agent's events straight into the daemon and writes the transcript to a file the
+  run owns, so the transcript survives; the card's activity for the window between the last
+  write and the crash does not. Worth deciding deliberately rather than discovering: either the
+  transcript is authoritative enough to rebuild the card's activity from, or a run's events need
+  somewhere to land when the daemon is not there to receive them.
 
 ## 001 — Project scaffold
 
