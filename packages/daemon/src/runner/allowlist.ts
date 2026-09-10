@@ -63,7 +63,10 @@
  *    controls, so the widest form of it is the widest thing a repository can grant itself.
  *    For the same reason a scanned line is a literal command and never a pattern: a fenced
  *    `bun *` would otherwise yield `Bash(bun * *)`, which the harness's own matcher expands
- *    back into `bun -e '<any code>'`. See `PATTERN_CHARS` and `allowlistFor` below.
+ *    back into `bun -e '<any code>'`. And it is one rule and never two: an entry has a syntax
+ *    of its own, so a fenced `bun run) Bash(sh` would otherwise yield an entry the harness
+ *    splits into `Bash(bun run)` **and** `Bash(sh *)`, which is arbitrary unprompted execution.
+ *    See `PATTERN_CHARS`, `LINE_CHARS`, `splitEntries` and `allowlistFor` below.
  * 7. **No entry writes a ref the next run reads.** `git branch` is absent: branch refs live in
  *    `refs/heads/` and are *shared* by the main checkout and every linked worktree, so a run
  *    that can create, rename or repoint a branch changes the owner's repository rather than
@@ -203,6 +206,63 @@ export const FIXED_ALLOWLIST: readonly string[] = [
 
 /** `Tool` or `Tool(content)`; anything else is not an entry this module knows how to read. */
 const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
+
+/**
+ * How the CLI cuts what it is given into rules, transcribed from `td` in the shipped binary
+ * (`TRANSCRIBED_FROM.cli`; this is `td([argument])`). It walks the argument character by
+ * character into the rule it is building: `(` sets a flag, `)` clears it, and a comma or a
+ * space seen while that flag is clear ends the rule and starts the next. The flag is a
+ * boolean and not a depth counter, exactly as the binary has it — a second `(` does not nest,
+ * and the first `)` clears it.
+ *
+ * **An entry is therefore not one rule by construction**, which is the whole reason this is
+ * here. Anything this module builds as one `Bash(…)` entry is re-read by the harness through
+ * this function, so a `)` inside the entry ends that rule early and the rest of the entry
+ * opens further ones. `ENTRY` above cannot see the question at all: it reads
+ * `Bash(bun run) Bash(git *)` as a single malformed entry whose content matches nothing, which
+ * is silence exactly where the harness is widest. The invariant criterion 10g asserts — every
+ * entry the scan produces parses as exactly one rule — is asserted against this, not `ENTRY`.
+ *
+ * One thing this shows that round 4 recorded the other way round: a worktree path containing a
+ * `)` does **not** survive as one entry, so a checkout under `…/my (old) repo/…` would leave
+ * `editsIn` and `deniedTools` both unreadable. Fail-closed — no allow rule covers the worktree,
+ * so every write asks — and out of 013's scope, which is why it is recorded rather than fixed.
+ */
+export function splitEntries(argument: string): string[] {
+  const rules: string[] = [];
+  let rule = "";
+  let inParens = false;
+  for (const character of argument) {
+    switch (character) {
+      case "(":
+        inParens = true;
+        rule += character;
+        break;
+      case ")":
+        inParens = false;
+        rule += character;
+        break;
+      case ",":
+        if (inParens) rule += character;
+        else {
+          if (rule.trim()) rules.push(rule.trim());
+          rule = "";
+        }
+        break;
+      case " ":
+        if (inParens) rule += character;
+        else if (rule.trim()) {
+          rules.push(rule.trim());
+          rule = "";
+        }
+        break;
+      default:
+        rule += character;
+    }
+  }
+  if (rule.trim()) rules.push(rule.trim());
+  return rules;
+}
 
 /**
  * The tools an `Edit(path)` rule governs. The harness checks file permissions against
@@ -718,6 +778,24 @@ const COMMAND_WORD = /^[A-Za-z0-9._/-]+$/;
  * the only direction this boundary can afford to be wrong.
  */
 const PATTERN_CHARS = /[*?[]/;
+/**
+ * The whole of what a scanned line may be made of: words of letters, digits and
+ * `. _ / @ + : = -`, one space between them. An allowlist and not a blocklist, because the
+ * attack this closes was not the one anybody had written a blocklist for.
+ *
+ * `PATTERN_CHARS` above sanitises a line against the *pattern compiler*; this sanitises it
+ * against the **entry syntax**, which is a separate language. An entry is not one rule by
+ * construction — see `splitEntries` — so a line carrying `)` closes `Bash(` early and the rest
+ * of the line opens a second rule whose closing `*)` `allowlistFor` supplies: a fenced
+ * `bun run) Bash(git` becomes `Bash(bun run) Bash(git *)`, which the harness reads as
+ * `Bash(bun run)` **and** `Bash(git *)`, and `bun run) Bash(sh` yields `Bash(sh *)` —
+ * arbitrary unprompted execution granted by a file the target repository controls, with the
+ * second command in a later word where `narrowedCommands()` never looks. Parentheses are the
+ * pair that does it, the comma is the harness's other separator, and everything not needed to
+ * write a check command is refused with them rather than reasoned about one character at a
+ * time.
+ */
+const LINE_CHARS = /^[A-Za-z0-9._/@+:=-]+(?: [A-Za-z0-9._/@+:=-]+)*$/;
 
 /** The first word of a scanned line, which is what the no-widening rule is read against. */
 function firstWord(line: string): string {
@@ -753,9 +831,10 @@ function narrowedCommands(): Set<string> {
  * fenced shell block, whole, with a leading `$ ` stripped. Whole, because the grant is of the
  * line and not of its first word — `bun run check`, not `bun`. A block in another language is
  * skipped, a line carrying a pattern character is skipped (`PATTERN_CHARS`: a scanned line is
- * a literal command, never a pattern), a line whose first word is not a command word is
- * skipped, and a fence that is never closed contributes nothing — the direction that cannot
- * widen the boundary.
+ * a literal command, never a pattern), a line carrying anything outside `LINE_CHARS` is
+ * skipped (a scanned line is one rule, never two), a line whose first word is not a command
+ * word is skipped, and a fence that is never closed contributes nothing — the direction that
+ * cannot widen the boundary.
  */
 export function scanInstructions(text: string): string[] {
   const out: string[] = [];
@@ -783,6 +862,7 @@ export function scanInstructions(text: string): string[] {
     if (!SHELL_INFO_STRINGS.has(info.trim().split(/\s+/)[0]?.toLowerCase() ?? "")) continue;
     const line = first.replace(/^\s*\$ /, "").trim();
     if (PATTERN_CHARS.test(line)) continue;
+    if (!LINE_CHARS.test(line)) continue;
     if (!COMMAND_WORD.test(firstWord(line))) continue;
     out.push(line);
   }
