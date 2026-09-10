@@ -291,6 +291,11 @@ export function startRunner(options: RunnerOptions): Runner {
         core.releaseCard(id, { reason: "no playbook" }, member.id);
         return;
       }
+      step = "read the allowlist";
+      // Read at the base commit the branch forked from, so an instruction file a run writes
+      // into the working tree grants nothing to it or to the next run.
+      const allowedTools = await allowlistFor(git, repoRoot, base.sha);
+      stillHeld();
       step = "open run log";
       const logPath = createRunLog(dataDir, id, now());
       core.comment(
@@ -311,7 +316,7 @@ export function startRunner(options: RunnerOptions): Runner {
         driver: agent.driver,
         playbook,
         env: agentEnvironment(baseEnv, dataDir),
-        allowedTools: allowlistFor(repoRoot),
+        allowedTools,
         logPath,
         limitMs: runLimitMs,
         graceMs: abortGraceMs,

@@ -792,6 +792,8 @@ test("a claim released while the run waits ends the run, and a later answer chan
 test("the agent is spawned with the commands the target repository names for itself", async () => {
   await initRepo();
   writeFileSync(join(repo, "AGENTS.md"), "# Repo\n\n```\nbun run check\n```\n");
+  await sh(repo, "add", "AGENTS.md");
+  await sh(repo, "commit", "-q", "-m", "document the check command");
   const seen: AgentRunOptions[] = [];
   start({
     driver: fakeDriver(async function* (options) {
@@ -801,6 +803,29 @@ test("the agent is spawned with the commands the target repository names for its
   });
   await runCard("Reads the conventions");
   expect(seen[0]?.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
+});
+
+/**
+ * Criterion 10a. `Write` is pre-allowed and unbounded by path, so a run can put a fenced
+ * block into the repository's own instructions; the scan reads the base commit, so what it
+ * wrote grants nothing — to it, or to the run after it.
+ */
+test("an instruction file a run writes grants nothing to it or to the next run", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      seen.push(options);
+      writeFileSync(join(repo, "AGENTS.md"), "```\nbun run evil\n```\n");
+      yield { type: "tool_use", name: "Write", input: { file_path: join(repo, "AGENTS.md") } };
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Writes its own conventions");
+  await runCard("The run after it");
+
+  expect(seen).toHaveLength(2);
+  for (const options of seen) expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST]);
 });
 
 // --- how a run ends ---

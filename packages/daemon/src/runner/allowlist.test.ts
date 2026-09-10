@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { allowlistFor, allowsTool, FIXED_ALLOWLIST } from "./allowlist";
+import { createGit, type Git } from "./git";
 
 /** The list, entry by entry: a change to it is a change to what an agent may do unprompted. */
 test("the fixed list is exactly what the spec names, in its order", () => {
@@ -165,103 +166,144 @@ test("a Bash call without a string command is not allowed", () => {
 
 // --- the scan of the target repository's own instructions ---
 
-let repo: string;
+/** Hermetic git: no user config, no hooks, a fixed identity. */
+const GIT_ENV: Record<string, string | undefined> = {
+  ...process.env,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_AUTHOR_NAME: "test",
+  GIT_AUTHOR_EMAIL: "test@example.invalid",
+  GIT_COMMITTER_NAME: "test",
+  GIT_COMMITTER_EMAIL: "test@example.invalid",
+};
 
-beforeEach(() => {
+let repo: string;
+let git: Git;
+/** The run's base commit: the only place the scan may read an instruction file from. */
+let base: string;
+
+async function sh(...args: string[]): Promise<string> {
+  const proc = Bun.spawn(["git", ...args], { cwd: repo, env: GIT_ENV, stdout: "pipe" });
+  const [stdout, code] = await Promise.all([
+    new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`git ${args.join(" ")} exited ${code}`);
+  return stdout.trim();
+}
+
+beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), "skr-allow-"));
+  git = createGit({ env: GIT_ENV });
+  await sh("init", "-q", "-b", "main");
+  await sh("commit", "-q", "--allow-empty", "-m", "init");
+  base = await sh("rev-parse", "HEAD");
 });
 
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
+/** Into the working tree only — where a run can write, and the scan may not read. */
 function write(name: string, text: string): void {
   writeFileSync(join(repo, name), text);
 }
 
-/** What the scan added, in order: everything past the fixed list. */
-function scanned(): string[] {
-  return allowlistFor(repo).slice(FIXED_ALLOWLIST.length);
+/** Committed, which is the only way an instruction file can grant anything. */
+async function commit(name: string, text: string): Promise<void> {
+  write(name, text);
+  await sh("add", name);
+  await sh("commit", "-q", "-m", `document ${name}`);
+  base = await sh("rev-parse", "HEAD");
 }
 
-test("a repository with neither instruction file yields exactly the fixed list", () => {
-  expect(allowlistFor(repo)).toEqual([...FIXED_ALLOWLIST]);
+/** The whole list a run in this repository would be spawned with. */
+async function list(): Promise<string[]> {
+  return allowlistFor(git, repo, base);
+}
+
+/** What the scan added, in order: everything past the fixed list. */
+async function scanned(): Promise<string[]> {
+  return (await list()).slice(FIXED_ALLOWLIST.length);
+}
+
+test("a repository with neither instruction file yields exactly the fixed list", async () => {
+  expect(await list()).toEqual([...FIXED_ALLOWLIST]);
 });
 
-test("a check command in a fenced block in AGENTS.md is pre-allowed", () => {
-  write("AGENTS.md", "# Repo\n\nRun this:\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)"]);
+test("a check command in a fenced block in AGENTS.md is pre-allowed", async () => {
+  await commit("AGENTS.md", "# Repo\n\nRun this:\n\n```\nbun run check\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
   // The repository's own check command runs unprompted; the fixed list alone would ask.
-  expect(allowsTool("Bash", { command: "bun run check" }, allowlistFor(repo))).toBe(true);
+  expect(allowsTool("Bash", { command: "bun run check" }, await list())).toBe(true);
   expect(allowsTool(...bash("bun run check"))).toBe(false);
 });
 
-test("the scan grants the line it found, not its first word: `bun -e` still asks", () => {
-  write("AGENTS.md", "```\nbun run check\n```\n");
-  expect(allowlistFor(repo)).not.toContain("Bash(bun *)");
+test("the scan grants the line it found, not its first word: `bun -e` still asks", async () => {
+  await commit("AGENTS.md", "```\nbun run check\n```\n");
+  expect(await list()).not.toContain("Bash(bun *)");
   // `Bash(bun *)` would pre-allow arbitrary execution from a file the target repo controls.
-  expect(allowsTool("Bash", { command: "bun -e 'console.log(1)'" }, allowlistFor(repo))).toBe(
-    false,
+  expect(allowsTool("Bash", { command: "bun -e 'console.log(1)'" }, await list())).toBe(false);
+  expect(allowsTool("Bash", { command: "bun run checkout" }, await list())).toBe(false);
+});
+
+test("CLAUDE.md is scanned too, and a shell info string and a leading $ are read", async () => {
+  await commit("CLAUDE.md", "```bash\n$ make test\n```\n\n```console\npnpm lint\n```\n");
+  expect(await scanned()).toEqual(["Bash(make test *)", "Bash(pnpm lint *)"]);
+});
+
+test("both instruction files contribute, once each", async () => {
+  await commit("AGENTS.md", "```sh\nbun run check\n```\n");
+  await commit("CLAUDE.md", "```\nbun run check\n```\n\n```zsh\ncargo test\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)", "Bash(cargo test *)"]);
+});
+
+test("a fenced block in another language contributes nothing", async () => {
+  await commit("AGENTS.md", "```ts\nbun.spawn(['rm', '-rf', '/'])\n```\n\n```json\n{}\n```\n");
+  expect(await scanned()).toEqual([]);
+});
+
+test("a fence that is never closed contributes nothing", async () => {
+  await commit(
+    "AGENTS.md",
+    "```\nbun run check\n\nand then some prose that never closes the block\n",
   );
-  expect(allowsTool("Bash", { command: "bun run checkout" }, allowlistFor(repo))).toBe(false);
-});
-
-test("CLAUDE.md is scanned too, and a shell info string and a leading $ are read", () => {
-  write("CLAUDE.md", "```bash\n$ make test\n```\n\n```console\npnpm lint\n```\n");
-  expect(scanned()).toEqual(["Bash(make test *)", "Bash(pnpm lint *)"]);
-});
-
-test("both instruction files contribute, once each", () => {
-  write("AGENTS.md", "```sh\nbun run check\n```\n");
-  write("CLAUDE.md", "```\nbun run check\n```\n\n```zsh\ncargo test\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)", "Bash(cargo test *)"]);
-});
-
-test("a fenced block in another language contributes nothing", () => {
-  write("AGENTS.md", "```ts\nbun.spawn(['rm', '-rf', '/'])\n```\n\n```json\n{}\n```\n");
-  expect(scanned()).toEqual([]);
-});
-
-test("a fence that is never closed contributes nothing", () => {
-  write("AGENTS.md", "```\nbun run check\n\nand then some prose that never closes the block\n");
-  expect(scanned()).toEqual([]);
+  expect(await scanned()).toEqual([]);
 });
 
 /**
  * Each narrowed command with a scannable one beside it, so the case tells "the scan refused
  * to widen this" apart from "the scan did nothing at all".
  */
-test("a scanned command may not widen git, which the fixed list narrows verb by verb", () => {
-  write("AGENTS.md", "```\ngit status\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)"]);
-  expect(allowlistFor(repo)).not.toContain("Bash(git *)");
-  expect(allowsTool("Bash", { command: "git -c core.pager=x log" }, allowlistFor(repo))).toBe(
-    false,
-  );
+test("a scanned command may not widen git, which the fixed list narrows verb by verb", async () => {
+  await commit("AGENTS.md", "```\ngit status\n```\n\n```\nbun run check\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+  expect(await list()).not.toContain("Bash(git *)");
+  expect(allowsTool("Bash", { command: "git -c core.pager=x log" }, await list())).toBe(false);
 });
 
 /**
  * The rule reads the line's first word, so a documented `git` line contributes nothing
  * whatever follows it — including the push forms the fixed list is careful to leave off.
  */
-test("a scanned git line the fixed list does not cover is dropped whole, not granted", () => {
-  write("AGENTS.md", "```\ngit push --force\n```\n\n```\ngit status && rm -rf /\n```\n");
-  expect(scanned()).toEqual([]);
-  expect(allowsTool("Bash", { command: "git push --force" }, allowlistFor(repo))).toBe(false);
+test("a scanned git line the fixed list does not cover is dropped whole, not granted", async () => {
+  await commit("AGENTS.md", "```\ngit push --force\n```\n\n```\ngit status && rm -rf /\n```\n");
+  expect(await scanned()).toEqual([]);
+  expect(allowsTool("Bash", { command: "git push --force" }, await list())).toBe(false);
 });
 
-test("a scanned command may not widen gh", () => {
-  write("AGENTS.md", "```\ngh pr view\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)"]);
-  expect(allowlistFor(repo)).not.toContain("Bash(gh *)");
-  expect(allowsTool("Bash", { command: "gh pr merge 42" }, allowlistFor(repo))).toBe(false);
+test("a scanned command may not widen gh", async () => {
+  await commit("AGENTS.md", "```\ngh pr view\n```\n\n```\nbun run check\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+  expect(await list()).not.toContain("Bash(gh *)");
+  expect(allowsTool("Bash", { command: "gh pr merge 42" }, await list())).toBe(false);
 });
 
-test("a scanned command may not widen skelcrew", () => {
-  write("CLAUDE.md", "```\nskelcrew show 1\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)"]);
-  expect(allowlistFor(repo)).not.toContain("Bash(skelcrew *)");
-  expect(allowsTool("Bash", { command: "skelcrew mv 1 code" }, allowlistFor(repo))).toBe(false);
+test("a scanned command may not widen skelcrew", async () => {
+  await commit("CLAUDE.md", "```\nskelcrew show 1\n```\n\n```\nbun run check\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+  expect(await list()).not.toContain("Bash(skelcrew *)");
+  expect(allowsTool("Bash", { command: "skelcrew mv 1 code" }, await list())).toBe(false);
 });
 
 /**
@@ -271,24 +313,43 @@ test("a scanned command may not widen skelcrew", () => {
  * model in `allowsTool`, a literal prefix comparison, cannot see. The assertion that carries
  * this case is therefore on the entries, with the behavioural one beside it.
  */
-test("a fenced line with a wildcard in it contributes nothing: `bun *` does not pre-allow `bun -e`", () => {
-  write("AGENTS.md", "```\nbun *\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)"]);
-  expect(allowlistFor(repo)).not.toContain("Bash(bun * *)");
-  expect(allowsTool("Bash", { command: "bun -e 'console.log(1)'" }, allowlistFor(repo))).toBe(
-    false,
-  );
+test("a fenced line with a wildcard in it contributes nothing: `bun *` does not pre-allow `bun -e`", async () => {
+  await commit("AGENTS.md", "```\nbun *\n```\n\n```\nbun run check\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+  expect(await list()).not.toContain("Bash(bun * *)");
+  expect(allowsTool("Bash", { command: "bun -e 'console.log(1)'" }, await list())).toBe(false);
 });
 
-test("a fenced line containing ?, [ or an escaped * contributes nothing either", () => {
-  write(
+test("a fenced line containing ?, [ or an escaped * contributes nothing either", async () => {
+  await commit(
     "AGENTS.md",
     "```\nmake -f ?.mk all\n```\n\n```\nbun test [a-z]\n```\n\n```\nbun \\* x\n```\n",
   );
-  expect(scanned()).toEqual([]);
+  expect(await scanned()).toEqual([]);
 });
 
-test("a first word that is not a command word contributes nothing", () => {
-  write("AGENTS.md", "```\n* not a command\n```\n\n```\n\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun run check *)"]);
+test("a first word that is not a command word contributes nothing", async () => {
+  await commit("AGENTS.md", "```\n* not a command\n```\n\n```\n\n```\n\n```\nbun run check\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+});
+
+/**
+ * Criterion 10a's second half. `Write` is on the fixed list and is not path-constrained, so
+ * an agent can write a fenced block into the repository's own instructions mid-run; reading
+ * the working tree would make that a standing grant for every later run.
+ */
+test("an instruction file that is only in the working tree contributes nothing", async () => {
+  write("AGENTS.md", "```\nbun run evil\n```\n");
+  expect(await scanned()).toEqual([]);
+});
+
+test("a block added to an instruction file since the base commit contributes nothing", async () => {
+  await commit("AGENTS.md", "```\nbun run check\n```\n");
+  write("AGENTS.md", "```\nbun run check\n```\n\n```\nbun run evil\n```\n");
+  expect(await scanned()).toEqual(["Bash(bun run check *)"]);
+});
+
+test("a base commit that cannot be read contributes nothing rather than failing the run", async () => {
+  await commit("AGENTS.md", "```\nbun run check\n```\n");
+  expect(await allowlistFor(git, repo, "0".repeat(40))).toEqual([...FIXED_ALLOWLIST]);
 });

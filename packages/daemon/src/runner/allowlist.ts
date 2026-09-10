@@ -42,8 +42,7 @@
  * agent: the list governs what runs **unprompted**, and everything else remains available by
  * asking. This is a gate, not a jail.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import type { Git } from "./git";
 
 export const FIXED_ALLOWLIST: readonly string[] = [
   "Read",
@@ -246,17 +245,32 @@ export function scanInstructions(text: string): string[] {
  * block — so an agent following the repository's stated conventions is not stopped to ask
  * permission for its check commands. A repository with neither file gets the fixed list
  * exactly, and nothing scanned may widen a command the fixed list narrows.
+ *
+ * **The files are read as of `base`, the run's base commit, never from the working tree.**
+ * `Write` and `Edit` are on the fixed list and are not path-constrained, so a run can write a
+ * fenced block into `AGENTS.md` itself — one unprompted call, visible on the card only inside
+ * a batched tool summary — and every later run in that repository would then pre-allow the
+ * command line it chose. That is a run widening its successor's boundary, so a file that is
+ * untracked, or modified relative to `base`, contributes nothing: only what the owner has
+ * already merged can grant anything. A base commit that cannot be read contributes nothing
+ * either, rather than failing the run — the fixed list is the floor, and the agent asks.
  */
-export function allowlistFor(repoRoot: string): string[] {
+export async function allowlistFor(
+  git: Pick<Git, "showFile">,
+  repoRoot: string,
+  base: string,
+): Promise<string[]> {
   const list = [...FIXED_ALLOWLIST];
   const narrowed = narrowedCommands();
   for (const name of INSTRUCTION_FILES) {
-    let text: string;
+    let text: string | undefined;
     try {
-      text = readFileSync(join(repoRoot, name), "utf8");
+      text = await git.showFile(repoRoot, base, name);
     } catch {
+      // A git that cannot run at all: the scan contributes nothing and the run goes on.
       continue;
     }
+    if (text === undefined) continue;
     for (const line of scanInstructions(text)) {
       if (narrowed.has(firstWord(line))) continue;
       const entry = `Bash(${line} *)`;
