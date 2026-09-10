@@ -856,6 +856,36 @@ test("a run over its time limit is aborted: the agent's signal fires and the car
   expect(card.attention).toMatchObject({ to: owner.id, note: said });
 });
 
+/**
+ * The feature's expected path: asked at 23:00, owner asleep, the limit fires at midnight.
+ * The permission request must not outlive the run — its `skelcrew resolve -m allow` allows
+ * no tool once nothing is waiting on it, and while it is open the ending's reason never
+ * reaches the owner's queue at all.
+ */
+test("a run that ends with its own question still open hands over the reason it ended", async () => {
+  await initRepo();
+  start({
+    runLimitMs: 100,
+    abortGraceMs: 500,
+    driver: fakeDriver(async function* (options) {
+      await options.canUseTool("Bash", { command: "rm -rf build" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Asked at 23:00" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+  expect(core.getCard(card.id).attention?.note).toContain("rm -rf build");
+  await done;
+
+  const request = core.getCard(card.id).attention;
+  expect(request?.note).toContain("time limit");
+  expect(request?.note).not.toContain("skelcrew resolve");
+  expect(comments(card.id).at(-1)).toContain("time limit");
+});
+
 test("stop() during a live run ends it quickly and leaves the card waiting, not re-runnable", async () => {
   await initRepo();
   start({

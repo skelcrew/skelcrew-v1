@@ -12,6 +12,13 @@
  * because the runner claims only a card whose attention is `null`, so anything open at the end
  * of a run was raised during it.
  *
+ * The one request the rule does not protect is the run's *own* permission question, and the
+ * caller says so with `replaces`: a run that ends while waiting on the owner leaves a question
+ * nothing will ever answer — `skelcrew resolve -m allow` then allows no tool, it only clears
+ * the request — and the ending's reason would never reach the owner's queue. The caller
+ * decides, because only the run holds the record the core made for its own call; this module
+ * still refuses to guess. Anything it is not told about stands.
+ *
  * Every way a run can end goes through here: `run.ts`'s endings — the agent's session ending,
  * the time limit, the daemon stopping, a driver error, no result, an error result — and
  * `runner.ts`'s failed step, which is where a throw out of a run that had already escalated
@@ -25,6 +32,7 @@
  * agent — or any use of it after work has happened — adopts the guard here rather than
  * inheriting the exemption as settled.
  */
+import type { Attention } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 
 export interface RunEnding {
@@ -42,6 +50,14 @@ export interface RunEnding {
   note: string;
   /** The release reason. */
   reason: string;
+  /**
+   * Whether an open request is one the ending may replace: the run's own permission
+   * question, which nothing answers once the run is over. Left out — or answering `false` —
+   * the request stands and the ending is a comment alone, which is the rule above. Only the
+   * run can decide this, because only it holds the record the core made for its own call;
+   * `raisedBy` cannot tell the agent's question from the run's.
+   */
+  replaces?: (open: Attention) => boolean;
 }
 
 function message(error: unknown): string {
@@ -49,10 +65,20 @@ function message(error: unknown): string {
 }
 
 /** Posts the reason, hands the card over unless something is already waiting, and releases. */
-export function endRun({ core, cardId, memberId, ownerId, warn, note, reason }: RunEnding): void {
+export function endRun({
+  core,
+  cardId,
+  memberId,
+  ownerId,
+  warn,
+  note,
+  reason,
+  replaces,
+}: RunEnding): void {
   try {
     core.comment(cardId, note, memberId);
-    if (core.getCard(cardId).attention === null) {
+    const open = core.getCard(cardId).attention;
+    if (open === null || replaces?.(open) === true) {
       core.requestAttention(cardId, { to: ownerId(), note }, memberId);
     }
   } catch (error) {

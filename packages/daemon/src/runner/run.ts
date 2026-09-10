@@ -317,8 +317,14 @@ export async function runPlaybook(input: RunInput): Promise<void> {
 
   /** Asked and not yet on the card, oldest first. */
   const queued: Ask[] = [];
-  /** The ask the card's open request is for, and the request the core recorded for it. */
+  /** The ask the card's open request is for. */
   let asking: Ask | undefined;
+  /**
+   * The request the core recorded for this run's own question, while it is still the card's:
+   * cleared when it is answered or replaced, and *not* when the ask it belongs to is settled,
+   * because a run ending with its question still open is exactly when the ending needs to
+   * know which request is its own to replace.
+   */
   let raised: Attention | undefined;
 
   /** What the tool is called on the card, in the question and in the answer's record. */
@@ -382,11 +388,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       raiseNext();
     });
 
-  /** Nothing is left waiting on an answer that is not coming. */
+  /** Nothing is left waiting on an answer that is not coming. `raised` outlives this: see it. */
   const settleAll = (): void => {
     const pending = asking === undefined ? [] : [asking];
     asking = undefined;
-    raised = undefined;
     for (const outstanding of [...pending, ...queued.splice(0)]) over(outstanding);
   };
   abort.signal.addEventListener("abort", settleAll, { once: true });
@@ -575,6 +580,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // a harness message amputated mid-sentence with nothing saying so misleads the owner.
       note: cutMarked(note, COMMENT_MAX_BYTES / 4),
       reason,
+      // The one open request an ending may replace is this run's own question, which nothing
+      // will answer now: the owner's queue must show why the run ended, not a resolve command
+      // that allows no tool. A question the agent raised is left exactly where it is.
+      replaces: isRaisedHere,
     });
   };
   const fail = (note: string): void => {
