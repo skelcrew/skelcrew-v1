@@ -19,7 +19,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 6 | 009 Claims as leases | landed, PR #6 |
 | 7 | 006 Runner skeleton | landed, PR #7 |
 | — | 007 Runner runs the phase playbooks | **spiked, not merged** — PR #8 closed, split into 011–014 |
-| 8 | 011 Artefact refs | next |
+| 8 | 011 Which refs a run set; spec export bookmark | in review, PR #9 |
 | 9 | 012 Spawn an agent, show what it does | planned |
 | 10 | 013 The agent asks the owner | planned |
 | 11 | 014 A phase ends in a verified artefact | planned |
@@ -354,20 +354,31 @@ the log. The CLI gains its home view: what's waiting on you, resolvable in place
 ping — an attention request reaches the owner without polling (OS notification from a watch
 mode; the spec decides the mechanism). An agent raises and sees them through the same CLI.
 
-## 011 — Artefact refs: the card records what it produced
+## 011 — The card records which refs a run set, and where it exported the spec
 
-`CardRefs` carries `branch`, `commits` and `prUrl`, and nothing for the spec the Code phase
-commits. Three rounds of playbook prose failed to substitute for that: matching the card's spec
-by number deadlocked revision runs, matching by content broke the moment the owner revised the
-text, and matching by "number or content" shipped a stale spec in the PR. Identity has to be
-recorded when the artefact is made, not re-derived afterwards by heuristic.
+Two changes, and they are not equally important.
 
-So: `refs` gains the committed spec's path, with the CLI flag to set it, and `refs_set` records
-**which keys a call set** rather than only the merged result — today "did this run record a PR?"
-cannot be answered precisely, so a run writing any other ref while a `prUrl` sits on the card
-satisfies the same check. Small, and 014 depends on both halves. This is also where the
-"objects" instinct cashes out: the card stays one object with a phase, and its artefacts get
-honest references — not an entity model.
+**The load-bearing half: `refs_set` records which keys a call set**, not only the merged
+result. Without it "did *this run* record a pull request?" cannot be answered — a run writing
+any other reference while a `prUrl` sits on the card satisfies the same check, which is how the
+daemon came to post "ready for review" on work a run had not done. 014's contract needs this in
+every repository, and it is the reason this milestone comes first.
+
+**The optional half: `refs` gains `specPath`.** The card body *is* the spec, in SQLite; a spec
+file committed into a target repo is an export of it, for readers who cannot reach the database.
+`specPath` is a bookmark to that copy, so a later run of the same card replaces it instead of
+duplicating it. It matters only where a repository publishes specs into its own tree — this one
+does — and the 007 spike spent three review rounds proving that finding the copy by guessing
+does not work: by number a run treats its own previous file as a collision and stops, by content
+it breaks the moment the owner revises the text, by either it ships a stale spec in the pull
+request.
+
+Nothing requires the export to exist. A repository that publishes nothing sets no `specPath` and
+finishes its phases exactly the same way — the pull request description carries the spec for its
+reviewer, and a description needs no bookmark because its identity is the `prUrl` already on the
+card. Whether a committed file is worth its cost at all is deliberately left open: deriving the
+path from the card (`<id>-<slug>`) would make it a pure function and need no record, and that
+choice should be made when dogfooding produces evidence rather than now.
 
 ## 012 — The runner spawns an agent and the card shows what it does
 
@@ -403,9 +414,12 @@ widening anything the fixed list narrowed.
 
 The contracts and the endings. Spec: a body written by this run, and a non-empty one. Code:
 commits past the base — with **both** ends of the range qualified as `refs/heads/…`, since a
-tag sharing the base branch's name silently replaces it — a clean worktree, and the card's spec
-and PR recorded by this run (011). Meeting it is an attention request carrying the move; failing
-it names every unmet condition, keeps the worktree, and asks.
+tag sharing the base branch's name silently replaces it — a clean worktree, and the PR recorded
+*by this run* (011's recorded keys, not the value sitting on the card). Meeting it is an
+attention request carrying the move; failing it names every unmet condition, keeps the worktree,
+and asks. The spec is deliberately **not** a condition: the card body is the spec and a file in
+the repo is an export, so a repository that publishes nothing must finish its phases the same
+way.
 
 And the endings, which is where most of the spike's pain lived: what happens when the card moves,
 is archived, is released, is claimed by someone else, or the agent acts on its own card. The rule

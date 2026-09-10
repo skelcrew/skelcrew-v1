@@ -36,6 +36,13 @@ These are correctness requirements, not preferences. A change that violates one 
 - **Skelcrew never stores repository contents.** Cards carry references — branch names,
   commit shas, PR URLs, file paths, log excerpts an agent chose to post — never a checkout.
   Code lives in the user's repositories and in the runner's worktrees.
+- **The card is the source of truth; anything written into a repository is an export of it.**
+  The spec is the card's body, in the daemon's SQLite. A spec file committed into a target
+  repo, a pull request description, a rendered summary — each is a copy pushed outward for
+  readers who cannot reach the database, and none of them is ever read back as authority. A
+  run reads the card, refreshes whatever copies exist, and never reconciles one against
+  another. Nothing skelcrew does may require an export to exist: a repository that publishes
+  nothing must still be able to finish every phase.
 - **Skelcrew never calls a model.** No LLM API keys, clients, or SDKs anywhere. All
   intelligence enters through members: the human over the CLI, agents over the same CLI as
   agent members, and the coding agents the runner spawns as subprocesses. Model auth is strictly between the user

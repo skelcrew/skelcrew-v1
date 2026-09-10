@@ -35,11 +35,17 @@ After 012 and 013:
 during the run hands the card to the owner with the move into Code attached, and releases as
 finished. One that did not fails, says so, and asks — the card stays in Spec.
 
-**Code finishes when there is a branch, a spec and a pull request.** A Code run must have
-produced commits on its branch past the base, left the worktree clean, and recorded during this
-run both the path where it committed the card's spec and the pull request URL. Meeting all four
-hands the card on with the move into PR attached. Failing any of them names **every** unmet
-condition, keeps the worktree, and asks.
+**Code finishes when there is a branch and a pull request.** A Code run must have produced
+commits on its branch past the base, left the worktree clean, and recorded the pull request URL
+during this run. Meeting all three hands the card on with the move into PR attached. Failing any
+of them names **every** unmet condition, keeps the worktree, and asks.
+
+**The spec is not one of the conditions.** The card body is the spec, in SQLite; a spec file in
+the target repo is an *export* of it, and `AGENTS.md` requires that nothing skelcrew does depend
+on an export existing. A repository that publishes no spec file must finish its phases exactly
+like one that does — its pull request description carries the spec for the reviewer. Where a run
+does export a file, it records the path with `skelcrew refs --spec` so a later run replaces that
+copy rather than duplicating it, but the contract never asks whether it did.
 
 Two things the artefact rule turns on, both learned the hard way:
 
@@ -80,19 +86,20 @@ In `run.ts`, at the end of a run whose session ended normally and whose claim is
 non-empty body on the card now. Met → attention request `spec ready` carrying the move to
 `code`, release `finished`. Unmet → `run finished without a spec`.
 
-**Code**: four conditions, and the failure message names every one that is unmet, joined, in a
-stable order:
+**Code**: three conditions, and the failure message names every one that is unmet, joined, in
+a stable order:
 
 1. commits in `refs/heads/<base>..refs/heads/<branch>`, both ends qualified;
 2. a clean worktree;
-3. a `refs_set` by the runner within this run whose recorded keys include `specPath`;
-4. a `refs_set` by the runner within this run whose recorded keys include `prUrl`.
+3. a `refs_set` by the runner within this run whose recorded keys include `prUrl`.
 
 Met → the commits are written to the card's refs, an attention request `ready for review: <url>`
 carries the move to `pr`, release `finished`.
 
-Conditions 3 and 4 are what 011 exists for. Without the recorded keys they could only be
-approximated, and the approximation is what shipped a stale spec and passed an idle revision.
+Condition 3 is the half of 011 this contract depends on. Without the recorded keys it could only
+be approximated — a card that already carried a `prUrl` would satisfy any check that looked at
+the value rather than at what this run did, which is how an idle revision run came to hand its
+card on using the previous run's commits.
 
 ### The endings
 
@@ -123,12 +130,19 @@ raised it — which is also why this helper belongs at the runner boundary and n
 
 ### The playbooks
 
-`code.md` gains the parts the contract now requires: record the committed spec's path with
-`skelcrew refs --spec` on every run; on a card returning from PR, read that recorded path back
-and bring the file into line with the card's body if the owner revised it, rather than matching
-by number or content; record the pull request on every run, reading the existing URL with
-`gh pr view --json url` when the branch already has one; and name the base branch unambiguously
-wherever it computes a diff.
+`code.md` gains the parts the contract now requires: record the pull request on every run,
+reading the existing URL with `gh pr view --json url` when the branch already has one, since the
+recording is what the contract checks; and name the base branch unambiguously wherever it
+computes a diff.
+
+For the spec itself, the playbook exports rather than commits by default: the pull request
+description carries the card's spec, which needs no bookmark because its identity is the `prUrl`
+already on the card. A spec file is written **only** where the repository already keeps specs —
+its own `AGENTS.md` says so, or such a directory plainly exists. Then, and only then, the run
+records the path with `skelcrew refs --spec`, and a card returning from PR reads that recorded
+path back and overwrites the file from the card's body rather than matching by number or
+content. Whether a committed file earns its cost at all is open; the milestone entry records
+that deriving the path from the card would remove the need for the bookmark entirely.
 
 ## Acceptance criteria
 
@@ -141,11 +155,12 @@ wherever it computes a diff.
 4. A Code run meeting all four conditions finishes: the card's refs carry the run's commits, the
    request reads `ready for review: <url>` and offers the move to `pr`, release `finished`.
 5. Each unmet Code condition produces a failure naming it, the worktree is left in place, and
-   the card stays in Code: no commits; a dirty worktree; no `specPath` recorded during the run;
-   no `prUrl` recorded during the run. A run failing two conditions names both.
-6. A revision run that re-records the **same** `prUrl` and the **same** `specPath`, and makes
-   new commits, passes. A revision run that records neither fails, even though the card already
-   carries both values and the branch already carries the previous run's commits.
+   the card stays in Code: no commits; a dirty worktree; no `prUrl` recorded during the run. A
+   run failing two conditions names both. A run that exports no spec file, and therefore records
+   no `specPath`, still passes when the three conditions are met.
+6. A revision run that re-records the **same** `prUrl` and makes new commits passes. A
+   revision run that records nothing fails, even though the card already carries a `prUrl` and
+   the branch already carries the previous run's commits.
 7. In a repository holding a tag whose name equals the base branch's, and whose card branch has
    no commits past the base branch, the Code run fails with the no-commits condition. A tag whose
    name equals the card's branch does not change the result either.
@@ -164,8 +179,10 @@ wherever it computes a diff.
 14. A run whose artefact is complete but whose agent left a question open comments that the
     artefact landed, leaves the question standing, offers no phase move, and releases as
     blocked. Resolving the question makes the card ready and a fresh run starts.
-15. A Code playbook run on a card returning from PR reuses the recorded spec path rather than
-    allocating a new number, and updates that file when the card's body has changed.
+15. Where a repository publishes spec files, a Code playbook run on a card returning from PR
+    reuses the recorded spec path rather than allocating a new number, and overwrites that file
+    from the card's body. Where a repository publishes none, no spec file is written and no
+    `specPath` is recorded.
 
 ## Tests
 
