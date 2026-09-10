@@ -80,12 +80,21 @@ const GIT_ENV: Record<string, string> = {
   GIT_COMMITTER_EMAIL: "test@example.invalid",
 };
 
-/** The runner is off unless a test turns it on: 003's tests are about the socket alone. */
-function spawnDaemon(options: { cwd: string; dataDir?: string; runner?: boolean }): Daemon {
+/**
+ * The runner is off unless a test turns it on: 003's tests are about the socket alone. No
+ * test spawns a coding agent: `SKELCREW_AGENT=none` keeps the runner on 006's handoff.
+ */
+function spawnDaemon(options: {
+  cwd: string;
+  dataDir?: string;
+  runner?: boolean;
+  agent?: string;
+}): Daemon {
   const env: Record<string, string | undefined> = { ...process.env, ...GIT_ENV };
   delete env.SKELCREW_DIR;
   if (options.dataDir) env.SKELCREW_DIR = options.dataDir;
   env.SKELCREW_RUNNER = options.runner ? "1" : "0";
+  env.SKELCREW_AGENT = options.agent ?? "none";
   const proc = Bun.spawn([process.execPath, MAIN], {
     cwd: options.cwd,
     env,
@@ -398,4 +407,31 @@ test("with SKELCREW_DIR set but no repository around the cwd, the daemon serves 
   expect(await stopped(daemon, "SIGTERM")).toBe(0);
   expect(await daemon.stderr()).toContain("runner");
   expect(await daemon.stderr()).toContain("not inside a git repository");
+});
+
+// --- the driver selection (012) ---
+
+test("an unknown SKELCREW_AGENT stops the daemon before it creates anything", async () => {
+  const daemon = spawnDaemon({ cwd: dir, dataDir: join(dir, "data"), agent: "nope" });
+  expect(await daemon.proc.exited).toBe(1);
+  expect(await daemon.stderr()).toContain('SKELCREW_AGENT must be "claude" or "none", not "nope"');
+  expect(await daemon.stdout()).toBe("");
+  expect(existsSync(join(dir, "data"))).toBe(false);
+});
+
+test("with SKELCREW_AGENT=claude the daemon loads the driver and its playbooks and serves; with no card, nothing is spawned", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true, agent: "claude" });
+  expect(await daemon.firstLine()).toBe(
+    `skelcrew daemon ${VERSION} listening on ${join(data, "skelcrew.sock")}`,
+  );
+  const client = await connect(join(data, "skelcrew.sock"), { kind: "human" });
+  expect((await client.call("listMembers", {})).map((m) => m.name)).toContain("runner");
+  expect(await client.call("listCards", {})).toEqual([]);
+  await client.close();
+  // The agent's `skelcrew` is in place before any run could need it.
+  expect(mode(join(data, "bin", "skelcrew")) & 0o111).toBe(0o111);
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
 });

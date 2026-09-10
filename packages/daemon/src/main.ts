@@ -1,6 +1,10 @@
 import { findRepoRoot, VERSION } from "@skelcrew/shared";
 import { openCore } from "./core/core";
+import type { AgentDriver } from "./runner/agent";
 import { createGit } from "./runner/git";
+import { selectAgent } from "./runner/none";
+import { loadPlaybooks, type Playbooks } from "./runner/playbooks";
+import { runLimitFromEnv } from "./runner/run";
 import { RUNNER_MEMBER_NAME, type Runner, startRunner } from "./runner/runner";
 import { daemonAnswers, dataPaths, prepareDataDir, resolveDataDir } from "./server/paths";
 import { startServer } from "./server/server";
@@ -9,10 +13,39 @@ import { sweepTick } from "./sweep";
 /** How often lapsed claims are expired into `run_interrupted` events while the daemon runs. */
 const CLAIM_SWEEP_INTERVAL_MS = 5000;
 
+function stop(error: unknown): never {
+  console.error(`skelcrew daemon: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+
 const dir = resolveDataDir(process.env, process.cwd());
 if (dir === undefined) {
   console.error("skelcrew daemon: not inside a git repository, and SKELCREW_DIR is not set");
   process.exit(1);
+}
+
+// A typo in the agent selection or the run limit stops the daemon; it does not pick a default.
+let agentKind: ReturnType<typeof selectAgent>;
+let runLimitMs: number;
+try {
+  agentKind = selectAgent(process.env);
+  runLimitMs = runLimitFromEnv(process.env);
+} catch (error) {
+  stop(error);
+}
+// The SDK and the playbooks are loaded only when they will be used — with `none` the daemon
+// never touches them — and before the socket opens, so "listening" means the runner is ready
+// too; a missing or empty playbook stops the daemon the way a bad variable does.
+let agent: { driver: AgentDriver; playbooks: Playbooks } | undefined;
+if (agentKind === "claude" && process.env.SKELCREW_RUNNER !== "0") {
+  try {
+    agent = {
+      driver: (await import("./runner/claude")).claudeDriver,
+      playbooks: loadPlaybooks(),
+    };
+  } catch (error) {
+    stop(error);
+  }
 }
 
 const { dbPath, socketPath } = dataPaths(dir);
@@ -46,6 +79,8 @@ if (process.env.SKELCREW_RUNNER !== "0") {
       git: createGit(),
       member: core.ensureMember(RUNNER_MEMBER_NAME, "agent"),
       warn: (line) => console.error(line),
+      runLimitMs,
+      ...(agent === undefined ? {} : { agent }),
     });
   }
 }
