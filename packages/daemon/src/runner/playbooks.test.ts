@@ -41,18 +41,38 @@ test("both playbooks tell the agent to ask rather than guess, with skelcrew atte
 });
 
 /**
+ * The paragraphs a playbook's commands are not read from. Criterion 11 is about the commands a
+ * playbook *instructs*, and these two say something else: the paragraph advertising what needs
+ * no asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
+ * prove the list matches its own restatement; and the paragraph forbidding commands names
+ * `git commit --no-verify`, which the playbook exists to rule out, not to run.
+ */
+const NOT_INSTRUCTIONS = [
+  "Pre-allowed, so they run unprompted:",
+  "Reading the repository with git",
+  "Three rules the list cannot enforce",
+  "**Never ",
+];
+
+/**
  * Every `skelcrew`, `git` or `gh` command a playbook shows, in a fenced block or in an
  * inline code span. Not a shell parser: it is how the criterion "the playbook's own commands
  * run without asking" is checked command by command against the playbook's own text, so a
  * command added to a playbook later is checked the same way.
+ *
+ * A playbook writes its arguments as `<id>`-style placeholders, which are not commands — the
+ * angle brackets are shell redirections. Each is replaced with a word, so what the criterion is
+ * checked against is the command the agent would run rather than the template it reads.
  */
 function commandsIn(playbook: string): string[] {
-  const spans = playbook.match(/`{1,3}[^`]+`{1,3}/g) ?? [];
   const out: string[] = [];
-  for (const span of spans) {
-    for (const line of span.replaceAll("`", "").split("\n")) {
-      const command = line.trim();
-      if (/^(skelcrew|git|gh) \S/.test(command)) out.push(command);
+  for (const paragraph of playbook.split("\n\n")) {
+    if (NOT_INSTRUCTIONS.some((marker) => paragraph.includes(marker))) continue;
+    for (const span of paragraph.match(/`{1,3}[^`]+`{1,3}/g) ?? []) {
+      for (const line of span.replaceAll("`", "").split("\n")) {
+        const command = line.trim().replaceAll(/<[^<>]*>/g, "PLACEHOLDER");
+        if (/^(skelcrew|git|gh) \S/.test(command)) out.push(command);
+      }
     }
   }
   return out;
@@ -73,6 +93,21 @@ test("every command the playbooks run goes unprompted, so none of them stops to 
       expect([phase, command, runsUnprompted("Bash", { command })]).toEqual([phase, command, true]);
     }
   }
+});
+
+/**
+ * What the criterion is checked against has to be the commands the playbook *instructs*. Two
+ * paragraphs are not that: the one advertising what needs no asking is pinned to
+ * `FIXED_ALLOWLIST` by the test below, so checking it here proves the list matches itself; and
+ * the one listing what the agent must never do put `git commit --no-verify` — which the playbook
+ * **forbids** — among the commands asserted to run without asking.
+ */
+test("the criterion-11 check reads the playbook's instructions, not its advertisement", () => {
+  const commands = commandsIn(loadPlaybooks().code);
+  expect(commands).not.toContain("git commit --no-verify");
+  expect(commands).toContain("skelcrew show PLACEHOLDER");
+  expect(commands).toContain("git status");
+  expect(commands).toContain('skelcrew comment PLACEHOLDER "PLACEHOLDER"');
 });
 
 /** The sentence in `code.md` that tells the agent what needs no asking. */
