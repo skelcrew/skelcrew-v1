@@ -29,7 +29,9 @@
  *    `Bash(bun *)` — which would match `bun -e '<any code>'`, and the same holds for `node -e`,
  *    `python -c`, `npm` and `make`. This entry is derived from a file the *target repository*
  *    controls, so the widest form of it is the widest thing a repository can grant itself.
- *    See `allowlistFor` below.
+ *    For the same reason a scanned line is a literal command and never a pattern: a fenced
+ *    `bun *` would otherwise yield `Bash(bun * *)`, which the harness's own matcher expands
+ *    back into `bun -e '<any code>'`. See `PATTERN_CHARS` and `allowlistFor` below.
  *
  * What the list deliberately does not close, recorded rather than discovered:
  * `Bash(git commit *)` permits `--no-verify`, which skips the target repository's hooks (the
@@ -159,6 +161,17 @@ const SHELL_INFO_STRINGS = new Set(["", "sh", "bash", "shell", "zsh", "console"]
 const FENCE_OPEN = /^ {0,3}(`{3,})[ \t]*([^`]*)$/;
 /** A command word: anything else in the first position is not a command and is skipped. */
 const COMMAND_WORD = /^[A-Za-z0-9._/-]+$/;
+/**
+ * A character that would make a scanned line a *pattern* rather than a command. Read out of
+ * the shipped binary and run against it: the harness compiles `*` in a rule to `.*`, so
+ * `Bash(bun * *)` matches `bun -e '<any code>'` and `Bash(make * *)` matches
+ * `make -f /tmp/evil.mk all` — arbitrary unprompted execution granted by a file the target
+ * repository controls. `?` and `[` are escaped rather than compiled there, and `\*` is
+ * honoured as a literal star, but a line carrying any of them contributes nothing here all
+ * the same: the spec names all three, and dropping the line is narrower than the harness in
+ * the only direction this boundary can afford to be wrong.
+ */
+const PATTERN_CHARS = /[*?[]/;
 
 /** The first word of a scanned line, which is what the no-widening rule is read against. */
 function firstWord(line: string): string {
@@ -193,8 +206,10 @@ function narrowedCommands(): Set<string> {
  * The command lines a repository's instruction file names for itself: the first line of each
  * fenced shell block, whole, with a leading `$ ` stripped. Whole, because the grant is of the
  * line and not of its first word — `bun run check`, not `bun`. A block in another language is
- * skipped, a line whose first word is not a command word is skipped, and a fence that is
- * never closed contributes nothing — the direction that cannot widen the boundary.
+ * skipped, a line carrying a pattern character is skipped (`PATTERN_CHARS`: a scanned line is
+ * a literal command, never a pattern), a line whose first word is not a command word is
+ * skipped, and a fence that is never closed contributes nothing — the direction that cannot
+ * widen the boundary.
  */
 export function scanInstructions(text: string): string[] {
   const out: string[] = [];
@@ -218,6 +233,7 @@ export function scanInstructions(text: string): string[] {
     if (first === undefined) continue;
     if (!SHELL_INFO_STRINGS.has(info.trim().split(/\s+/)[0]?.toLowerCase() ?? "")) continue;
     const line = first.replace(/^\s*\$ /, "").trim();
+    if (PATTERN_CHARS.test(line)) continue;
     if (!COMMAND_WORD.test(firstWord(line))) continue;
     out.push(line);
   }

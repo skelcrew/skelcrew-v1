@@ -264,6 +264,30 @@ test("a scanned command may not widen skelcrew", () => {
   expect(allowsTool("Bash", { command: "skelcrew mv 1 code" }, allowlistFor(repo))).toBe(false);
 });
 
+/**
+ * Criterion 10a. The harness compiles `*` in a rule to `.*`, so a metacharacter surviving
+ * into an entry is a wildcard the *repository* chose: `Bash(bun * *)` matches
+ * `bun -e '<any code>'` there — verified against the shipped binary's own matcher — which the
+ * model in `allowsTool`, a literal prefix comparison, cannot see. The assertion that carries
+ * this case is therefore on the entries, with the behavioural one beside it.
+ */
+test("a fenced line with a wildcard in it contributes nothing: `bun *` does not pre-allow `bun -e`", () => {
+  write("AGENTS.md", "```\nbun *\n```\n\n```\nbun run check\n```\n");
+  expect(scanned()).toEqual(["Bash(bun run check *)"]);
+  expect(allowlistFor(repo)).not.toContain("Bash(bun * *)");
+  expect(allowsTool("Bash", { command: "bun -e 'console.log(1)'" }, allowlistFor(repo))).toBe(
+    false,
+  );
+});
+
+test("a fenced line containing ?, [ or an escaped * contributes nothing either", () => {
+  write(
+    "AGENTS.md",
+    "```\nmake -f ?.mk all\n```\n\n```\nbun test [a-z]\n```\n\n```\nbun \\* x\n```\n",
+  );
+  expect(scanned()).toEqual([]);
+});
+
 test("a first word that is not a command word contributes nothing", () => {
   write("AGENTS.md", "```\n* not a command\n```\n\n```\n\n```\n\n```\nbun run check\n```\n");
   expect(scanned()).toEqual(["Bash(bun run check *)"]);
