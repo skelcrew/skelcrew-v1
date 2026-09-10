@@ -124,3 +124,140 @@ the scanned line and drops the line whole if that word is one the fixed list nar
 - **`Write`, `Edit` and `MultiEdit` are unbounded by path** — per the spec, which lists them
   bare, and sandboxing is out of scope. Recorded in `allowlist.ts`'s module doc rather than
   changed.
+
+## Review round 1
+
+Six findings, one commit each. The spec was amended again before this round — the scan section
+gained the literal-command rule and the base-commit rule, and criterion 10a was added — so the
+Critical and Important 1 below were defects in the spec as much as in the code; what follows
+implements the amended spec. Two decisions recorded above are superseded by it: "the scan reads
+`repoRoot`, not the card's worktree" (it reads the base commit now, from either) and "a run that
+ends while its own permission request is open leaves it open".
+
+### Critical — a scanned line's metacharacters became harness wildcards
+
+The `COMMAND_WORD` guard validated the line's first word only; the rest went into
+`Bash(${line} *)` raw. A fenced `bun *` in a target repo's `AGENTS.md` yielded
+`Bash(bun * *)`.
+
+Verified myself, against the harness rather than by reasoning: the shipped binary at
+`~/.local/share/claude/versions/2.1.267` embeds its matcher, `PW(rule, command, caseInsensitive,
+normalizeWhitespace)`, which compiles a rule by escaping regex metacharacters and then
+`replaceAll("*", ".*")`. Extracted and run:
+
+```
+"bun * *"          | "bun -e 'console.log(1)'"    -> true
+"make * *"         | "make -f /tmp/evil.mk all"   -> true
+"bun run check *"  | "bun -e 'console.log(1)'"    -> false
+"bun \* *"         | "bun -e 'x'"                 -> false   (\* is a literal star)
+"bun ?? *"         | "bun -e"                     -> false   (? and [ are escaped, not compiled)
+```
+
+So `*` is the character that widens; `?` and `[` are literal to this harness. The spec names all
+three, and the fix drops a line carrying any of them — including an escaped `\*`, which the
+harness would honour as a literal. Escaping instead of rejecting would work against *this*
+version's matcher, but rejecting is simpler to state, simpler to test, and cannot be wrong.
+
+Red (`allowlist.test.ts`, criterion 10a):
+
+```
+- [ "Bash(bun run check *)" ]        expected
++ [ "Bash(bun * *)", "Bash(bun run check *)" ]   received
+```
+
+The assertion is on the entries, not on `allowsTool`: this module's model of the harness is a
+literal prefix comparison, so it cannot see `Bash(bun * *)` matching `bun -e` — the bug lives
+where the model is deliberately not a regex engine. Both are asserted, with that reason written
+beside them.
+
+### Important 1 — an agent could widen its own next run's allowlist
+
+`allowlistFor` read the working tree, and `Write` is on the fixed list and not path-constrained.
+One unprompted `Write` into `AGENTS.md` — on the card as `ran 1 tool: Write` inside a batched
+30-second summary — pre-allowed a command line for every later run in that repository.
+
+Red, at the unit that does the reading:
+
+```
+test("an instruction file that is only in the working tree contributes nothing")
+- []                            expected
++ [ "Bash(bun run evil *)" ]    received
+```
+
+and at the run, with the implementation reverted to check that the case is real (`run.test.ts`,
+two consecutive runs of the same repo, the first writing `AGENTS.md`):
+
+```
+   "Bash(gh repo view *)",
++  "Bash(bun run evil *)"    the second run's allowedTools
+```
+
+`git.ts` gains `showFile(repoRoot, ref, path)` — `git show <ref>:<path>`, undefined when the
+path or the ref is not there, which git reports as the same exit. `allowlistFor(git, repoRoot,
+base)` reads each instruction file through it and is now async.
+
+**Getting the base in.** The runner already resolves `base` (`git.defaultBranch(repoRoot)`) to
+fork the branch from, so `base.sha` is passed straight down — no new resolution, no new option,
+one more `await` in the same try, with `stillHeld()` after it like every other window there.
+Reading the *default branch head* rather than the card branch's tip is deliberate and slightly
+stricter than the spec's words: a commit the agent made on its own branch in an earlier run
+grants nothing either, and only what the owner merged counts.
+
+### Important 2 — a run's own permission request outlived the run
+
+Ending with the question still open, `settleAll` denied the ask locally, `endRun` saw
+`attention !== null` and posted its reason as a comment alone. The owner's queue showed
+`allow Bash rm -rf build? (skelcrew resolve 1 -m allow | …)` — an action that allows nothing
+once the run is gone — and `run aborted: time limit …` never reached the queue.
+
+Red (`run.test.ts`):
+
+```
+expect(request?.note).toContain("time limit")
+Expected to contain: "time limit"
+Received: "allow Bash rm -rf build? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)"
+```
+
+`endRun` takes `replaces?: (open: Attention) => boolean` and the run passes `isRaisedHere`,
+which compares the card's open request by value against the record the core returned for the
+run's own `requestAttention` call (`to`, `note`, `raisedBy`, `raisedAt`). That is how the two
+are told apart: `raisedBy` cannot, because the agent's `skelcrew attention` runs as the same
+`runner` member. A caller that passes nothing gets `ending.ts`'s rule unchanged, and the three
+tests for an agent's own question surviving an ending — session end, time limit, throw — still
+pass untouched. `raised` therefore has to outlive the ask it belongs to: it is cleared when the
+request is answered or replaced, not when `settleAll` settles the ask.
+
+`resolveAttention` was not used for this: the request is addressed to the owner, a human, and
+the core refuses an agent resolving a request that is not its own. Replacing it is the path the
+core allows.
+
+### Minor 1 — the case-insensitivity claim
+
+`LV`, the harness's comparator for a wildcard rule, is `PW(e, n, !1, !0)`: case-insensitive
+`false`, whitespace-normalizing `true`. Exact rules are compared with `===` on the unlowered
+command. Run against the extracted matcher: `"git log *" | "GIT LOG --oneline" -> false`.
+`entryAllows` lowercases both sides, so it errs wide — recorded as the fourth divergence
+instead of as an agreement. The whitespace flag is recorded beside it as the one place the
+model is *narrower* than the harness; nothing is compensated for either way.
+
+### Minor 2 — two assertions that could not fail
+
+`toContain("no")` passes against "The owner did not allow Write, and said nothing about why."
+Both sites now assert the message in full. Checked by mutation — with the reason reworded to
+"The owner refused Write: deny" the loop fails, which it did not before.
+
+### Minor 3 — a failed `requestAttention` stalled the run
+
+Red: with a core whose `requestAttention` throws, the agent was told
+`"The run ended before the owner answered, so Bash did not run."` a full second later, when the
+run's limit fired; the card said nothing at all. The ask is now denied naming the failure, the
+card gets `could not ask the owner about …`, and the next queued ask is raised.
+
+### Files, this round
+
+`packages/daemon/src/runner/allowlist.ts`, `allowlist.test.ts`, `run.ts`, `run.test.ts`,
+`ending.ts`, `runner.ts`, `git.ts`, `git.test.ts`, this file.
+
+### Checks
+
+`bun run check` green: 403 tests, 0 fail.
