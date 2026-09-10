@@ -527,3 +527,33 @@ ask   …/wt/base                                 paths: …/wt/base + …/repo.
 
 The harness resolves. The anchor holds, and the model is made to agree rather than the divergence
 being listed.
+
+### What changed, per finding
+
+- **Critical / 10f.** `allowlist.ts` gained a *What a subprocess reaches* section, a preamble
+  pointing at it before any rule reads as a wall, an entry in "what this list does not close",
+  and a rewritten `deniedTools` doc — which had claimed no entry on the list starts such a
+  subprocess. Milestone 016 is named. `code.md` carries the same record in its own register, and
+  `playbooks.test.ts` pins it by cross-checking the verbs the paragraph names against
+  `FIXED_ALLOWLIST`, so the record and the list cannot drift apart. The module doc itself is not
+  pinned by a test: a test that greps its own module's comment asserts prose, not behaviour.
+- **Important 1.** The branch's spec is `git checkout main --`'d and byte-identical to main's.
+- **Important 2.** Modelled rather than listed as a divergence: `redirectionsIn` and
+  `pastRedirections`. It sits beside `entryMatches` rather than inside it because a target is
+  checked against every `Edit` rule, which one entry does not know.
+- **Important 3.** The harness resolves; recorded, modelled in `filePaths`, asserted with a real
+  symlink out of a real worktree, and `entryMatches` takes the allow/deny behaviour because the
+  harness denies on one path and allows only on all of them.
+- **Minor 1.** Rule 7's sentence corrected: the read-only tier is twenty-four verbs, `git branch
+  --show-current` among them; the security half stands. The spec carries the same wrong sentence
+  and is reported rather than edited.
+- **Minor 2.** Three known-wide places in `selfApprovedReadOnlyGit`, not two.
+- **Minor 3.** `commandsIn` skips the advertisement, the read-only-git and the prohibition
+  paragraphs, and substitutes `<id>`-style placeholders — angle brackets are redirections.
+- **Minor 4.** `TRANSCRIBED_FROM` pins the SDK, CLI, git and gh versions; `claude.test.ts` (the
+  one file allowed to name the SDK) checks two of them against what is installed.
+- **Minor 5.** The fail-closed polarity is stated, with its one exception.
+
+### Checks
+
+`bun run check` green: 440 tests, 0 fail (434 before this round).

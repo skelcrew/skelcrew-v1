@@ -531,9 +531,8 @@ function pastRedirections(
   if (tool !== "Bash" || typeof input.command !== "string") return input;
   const found = redirectionsIn(input.command);
   if (!found.readable) return undefined;
-  if (found.targets.length === 0) return input;
   if (!found.targets.every((target) => redirectionAllowed(target, list, denied))) return undefined;
-  return { ...input, command: found.command };
+  return found.command === input.command ? input : { ...input, command: found.command };
 }
 
 /**
