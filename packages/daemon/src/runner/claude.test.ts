@@ -170,7 +170,8 @@ function runOptions(): AgentRunOptions {
     cwd: "/repo/worktree",
     env: { PATH: "/data/bin:/usr/bin", HOME: "/home/owner" },
     systemPrompt: "# Playbook: Spec",
-    allowedTools: ["Read", "Bash(git log *)"],
+    allowedTools: ["Read", "Bash(git log *)", "Edit(//repo/worktree/**)"],
+    disallowedTools: ["Edit(//repo/worktree/.git)", "Edit(//repo/worktree/.git/**)"],
     canUseTool: () => Promise.resolve({ behavior: "deny", message: "no" }),
     input: noInput(),
     log: () => {},
@@ -188,6 +189,20 @@ test("the run's permissions are the fixed list and canUseTool, and nothing a set
   // `git push` by committing a file, with no denial and nothing on the card. `[]` is the
   // SDK's own "disable filesystem settings", which is what makes the list a list.
   expect(sdkOptions.settingSources).toEqual([]);
-  expect(sdkOptions.allowedTools).toEqual(["Read", "Bash(git log *)"]);
+  expect(sdkOptions.allowedTools).toEqual(["Read", "Bash(git log *)", "Edit(//repo/worktree/**)"]);
   expect(sdkOptions.permissionMode).toBe("default");
+});
+
+/**
+ * The run's deny rules have to reach the harness, not merely be computed. `canUseTool` is
+ * never consulted for a call an allow entry matches, so a deny that the driver drops is no
+ * deny at all — and the one path this denies, the worktree's own `.git` file, sits inside the
+ * allow entry's anchor.
+ */
+test("the run's deny rules reach the harness alongside the list", () => {
+  const { sdkOptions } = buildSdkOptions(runOptions());
+  expect(sdkOptions.disallowedTools).toEqual([
+    "Edit(//repo/worktree/.git)",
+    "Edit(//repo/worktree/.git/**)",
+  ]);
 });

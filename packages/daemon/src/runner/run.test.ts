@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { type Activity, COMMENT_MAX_BYTES, type Member, worktreesDir } from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
 import type { AgentDriver, AgentEvent, AgentRunOptions, ToolDecision } from "./agent";
-import { FIXED_ALLOWLIST } from "./allowlist";
+import { allowsTool, deniedTools, editsIn, FIXED_ALLOWLIST } from "./allowlist";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
 import { createRunLog, runLimitFromEnv, TEXT_EXCERPT_BYTES } from "./run";
@@ -182,6 +182,14 @@ function logPathFrom(comment: string): string {
   return comment.slice(at + "run log at ".length).trim();
 }
 
+/**
+ * The list a run working in `cwd` is spawned with: the fixed list, the one file-tool entry
+ * anchored at its own worktree, and then whatever the repository's instructions added.
+ */
+function spawnedWith(cwd: string, ...scanned: string[]): string[] {
+  return [...FIXED_ALLOWLIST, editsIn(cwd), ...scanned];
+}
+
 /** Files a card as the owner, moves it into spec, and waits for the run to end. */
 async function runCard(title: string): Promise<number> {
   const card = core.createCard({ title }, owner.id);
@@ -250,7 +258,8 @@ test("a Spec run: the log path, the turn, the batched tools, and the handoff, in
   const options = seen[0] as AgentRunOptions;
   expect(options.cwd).toBe(path);
   expect(options.systemPrompt).toBe(playbooks.spec);
-  expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST]);
+  expect(options.allowedTools).toEqual(spawnedWith(path));
+  expect(options.disallowedTools).toEqual(deniedTools(path));
   expect(options.env).toEqual(
     agentEnvironment({ PATH: "/usr/bin", HOME: join(tmp, "home") }, dataDir),
   );
@@ -856,7 +865,9 @@ test("the agent is spawned with the commands the target repository names for its
     }),
   });
   await runCard("Reads the conventions");
-  expect(seen[0]?.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
+  expect(seen[0]?.allowedTools).toEqual(
+    spawnedWith(seen[0]?.cwd as string, "Bash(bun run check *)"),
+  );
 });
 
 /**
@@ -888,7 +899,7 @@ test("a run that commits an instruction file and repoints the default branch gra
 
   expect(seen).toHaveLength(2);
   for (const options of seen) {
-    expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
+    expect(options.allowedTools).toEqual(spawnedWith(options.cwd, "Bash(bun run check *)"));
   }
 });
 
@@ -913,8 +924,121 @@ test("an instruction file a run writes grants nothing to it or to the next run",
 
   expect(seen).toHaveLength(2);
   for (const options of seen) {
-    expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
+    expect(options.allowedTools).toEqual(spawnedWith(options.cwd, "Bash(bun run check *)"));
   }
+});
+
+/**
+ * Criterion 10b's last clause, as the chain a run would really walk. Every step here is a
+ * command the list pre-allows, and the last one — the write that would put a sha the run
+ * authored into the ref its successor's scan reads — must not be. `git rev-parse` is on the
+ * list, so the run can name the git common directory; refs are plain files, and a loose ref
+ * wins over `packed-refs`, so a forged one would stand for every later run in the repository.
+ */
+test("no pre-allowed tool writes the ref the scan reads, so a run cannot forge its successor's base", async () => {
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
+  let ref: string | undefined;
+  let preAllowed: boolean | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      // The pre-allowed steps, run for real in the worktree.
+      for (const command of [
+        "git add -A",
+        "git commit -m docs",
+        "git rev-parse --git-common-dir",
+      ]) {
+        expect([command, allowsTool("Bash", { command }, options.allowedTools)]).toEqual([
+          command,
+          true,
+        ]);
+      }
+      writeFileSync(join(options.cwd, "AGENTS.md"), "```\nbun run evil\n```\n");
+      await sh(options.cwd, "add", "-A");
+      await sh(options.cwd, "commit", "-q", "-m", "docs");
+      const common = await sh(
+        options.cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      );
+      ref = join(common, "refs", "remotes", "origin", "main");
+      // The last step: the write that would make the sha it just authored the scan's base.
+      preAllowed = allowsTool(
+        "Write",
+        { file_path: ref, content: "sha" },
+        options.allowedTools,
+        options.disallowedTools,
+      );
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Forges its successor's base");
+
+  expect(ref).toContain("refs/remotes/origin/main");
+  expect(preAllowed).toBe(false);
+});
+
+/**
+ * Criterion 10c. `remote.origin.push` outranks `push.default` and turns the pre-allowed bare
+ * `git push` into a push to the default branch. It lives in the git common directory, which
+ * the file-tool anchor excludes — so the line that would do it asks.
+ */
+test("no pre-allowed tool writes the git config, so a bare git push cannot be aimed at the default branch", async () => {
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
+  let config: string | undefined;
+  let preAllowed: boolean | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      expect(allowsTool("Bash", { command: "git push" }, options.allowedTools)).toBe(true);
+      const common = await sh(
+        options.cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      );
+      config = join(common, "config");
+      preAllowed = allowsTool(
+        "Edit",
+        { file_path: config, old_string: "x", new_string: "push = +HEAD:refs/heads/main" },
+        options.allowedTools,
+        options.disallowedTools,
+      );
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Aims the bare push");
+
+  expect(config).toEndWith("/config");
+  expect(preAllowed).toBe(false);
+});
+
+/**
+ * The other side of the two chains: a run may write its own worktree without asking, because
+ * that is the work — and may not rewrite the `.git` file that says which git directory the
+ * worktree belongs to, because that repoints it at one of the agent's choosing.
+ */
+test("a run may write inside its worktree unprompted, but not the worktree's own .git", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      seen.push(options);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Writes its own worktree");
+
+  const options = seen[0] as AgentRunOptions;
+  const inside = (path: string): boolean =>
+    allowsTool(
+      "Write",
+      { file_path: path, content: "x" },
+      options.allowedTools,
+      options.disallowedTools,
+    );
+  expect(inside(join(options.cwd, "src", "x.ts"))).toBe(true);
+  expect(inside(join(options.cwd, ".git"))).toBe(false);
+  expect(inside(join(options.cwd, ".git", "config"))).toBe(false);
 });
 
 // --- how a run ends ---

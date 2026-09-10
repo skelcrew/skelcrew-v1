@@ -58,6 +58,8 @@ export interface RunInput {
   playbook: string;
   env: Record<string, string>;
   allowedTools: string[];
+  /** Paths no file tool may touch, however `allowedTools` reads: deny outranks allow. */
+  deniedTools: string[];
   /** This run's log, already created by `createRunLog`; appended to, never truncated. */
   logPath: string;
   limitMs: number;
@@ -522,6 +524,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         env: input.env,
         systemPrompt: input.playbook,
         allowedTools: input.allowedTools,
+        disallowedTools: input.deniedTools,
         canUseTool: ask,
         input: messages,
         log: (entry) => appendLog(logPath, entry),

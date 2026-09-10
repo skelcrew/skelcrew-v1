@@ -300,8 +300,9 @@ export function startRunner(options: RunnerOptions): Runner {
       step = "read the allowlist";
       // Read from the remote-tracking head of the default branch — a ref nothing the list
       // pre-allows can write — so an instruction file a run writes, commits, or points a
-      // branch at grants nothing to it or to the next run.
-      const allowedTools = await allowlistFor(git, repoRoot, base.name);
+      // branch at grants nothing to it or to the next run. The file tools are anchored at
+      // this worktree, which is what keeps that ref out of reach.
+      const allowlist = await allowlistFor(git, repoRoot, base.name, path);
       stillHeld();
       step = "open run log";
       const logPath = createRunLog(dataDir, id, now());
@@ -323,7 +324,8 @@ export function startRunner(options: RunnerOptions): Runner {
         driver: agent.driver,
         playbook,
         env: agentEnvironment(baseEnv, dataDir),
-        allowedTools,
+        allowedTools: allowlist.tools,
+        deniedTools: allowlist.denied,
         question,
         logPath,
         limitMs: runLimitMs,

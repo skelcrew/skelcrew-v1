@@ -6,9 +6,9 @@
  * here: it self-approves a set of read-only Bash commands, it allows outright any tool that
  * defines no permission check of its own, and it reads a wildcard entry as covering
  * `xargs <that command>` as well. So this list is not the complete set of what runs
- * unprompted. `entryAllows` below records every divergence in full, and which class each is.
+ * unprompted. `entryMatches` below records every divergence in full, and which class each is.
  *
- * Five rules shape it, each from a defect this project shipped:
+ * Six rules shape it, each from a defect this project shipped:
  *
  * 1. **The wildcard goes after the subcommand, never before it.** `Bash(x *)` is wildcard
  *    matching — every command beginning with `x ` — so `Bash(git *)` would pre-allow `git
@@ -38,24 +38,35 @@
  *    its own scratch copy — and can point the name its successor's base resolves from at a
  *    commit it wrote itself, instruction file included. No playbook runs `git branch`; a
  *    read-only use of it asks. `allowlistFor` closes the same hole from the other side.
+ * 6. **The file tools are anchored to the run's own worktree.** Choosing a ref the list cannot
+ *    write is not enough while a file tool is on the list bare: a ref is a plain file, and
+ *    `git rev-parse --git-common-dir` — pre-allowed — names the directory holding it, so a run
+ *    could commit an instruction file and then write the sha into
+ *    `refs/remotes/origin/<default>` itself. The same unqualified write reaches `.git/config`,
+ *    where one `remote.origin.push` line turns the pre-allowed bare `git push` into a push to
+ *    the default branch. So `Edit`, `Write` and `MultiEdit` are off the list, and a run gets
+ *    `editsIn(<its worktree>)` instead, with `deniedTools(<its worktree>)` denying the `.git`
+ *    file that says which git directory the worktree belongs to. See those two below.
  *
  * What the list deliberately does not close, recorded rather than discovered:
  * `Bash(git commit *)` permits `--no-verify`, which skips the target repository's hooks (the
- * playbooks forbid it; a prefix pattern cannot); `Bash(git push)` under a repo-level
- * `push.default = matching` can push more than the card's branch; and `Write`, `Edit` and
- * `MultiEdit` are pre-allowed for any path the daemon's user can write, not only the worktree.
- * Nothing here sandboxes the agent: the list governs what runs **unprompted**, and everything
- * else remains available by asking. This is a gate, not a jail.
+ * playbooks forbid it; a prefix pattern cannot); and `Bash(git push)` is only as narrow as the
+ * config that governs it — under a repo-level `push.default = matching` it can push more than
+ * the card's branch, and `remote.origin.push`, which outranks `push.default`, could turn it
+ * into a push to the default branch. Both settings live in the git common directory, which
+ * rule 6's anchor puts out of reach; if that anchoring is ever removed, this entry stops being
+ * narrow. Nothing here sandboxes the agent: the list governs what runs **unprompted**, and
+ * everything else remains available by asking. This is a gate, not a jail — anchoring the file
+ * tools decides which writes ask, and denies only the one path whose whole purpose is to
+ * redirect the others.
  */
+import { resolve } from "node:path";
 import type { Git } from "./git";
 
 export const FIXED_ALLOWLIST: readonly string[] = [
   "Read",
   "Glob",
   "Grep",
-  "Edit",
-  "Write",
-  "MultiEdit",
   "Agent",
   "TodoWrite",
   "Bash(skelcrew show *)",
@@ -82,6 +93,64 @@ export const FIXED_ALLOWLIST: readonly string[] = [
 
 /** `Tool` or `Tool(content)`; anything else is not an entry this module knows how to read. */
 const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
+
+/**
+ * The tools an `Edit(path)` rule governs. The harness checks file permissions against
+ * `Edit(path)` and `Read(path)` rules **only**: a path rule spelled for `Write`, `MultiEdit`,
+ * `NotebookEdit` or `Glob` is accepted, never consulted, and warned about at startup — it
+ * would read as a constraint and enforce nothing. One `Edit(…)` rule covers every built-in
+ * tool that edits a file, which is why `Write` and `MultiEdit` are off the list rather than
+ * carrying path rules of their own.
+ */
+const EDITING_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
+/** A rule's path, anchored at the filesystem root: `//` and then the absolute path. */
+function anchor(path: string): string {
+  return `/${resolve(path)}`;
+}
+
+/**
+ * The one file-tool entry a run gets: its own worktree and nothing else. A leading `//`
+ * anchors a rule at the filesystem root, and as an *allow* rule a `dir/**` pattern matches
+ * only at its anchor rather than at any depth — which is what is wanted here. The git common
+ * directory is not under the worktree (a linked worktree's real git directory lives beside the
+ * main checkout), so this one anchor puts every ref, `packed-refs` and every `config` out of
+ * reach in a single stroke. Everything outside stays available by asking.
+ */
+export function editsIn(worktreePath: string): string {
+  return `Edit(${anchor(worktreePath)}/**)`;
+}
+
+/**
+ * What no file tool may touch however the allow list reads; deny outranks allow. In a linked
+ * worktree `.git` is a *file* holding `gitdir: <common>/worktrees/<name>`, so it sits inside
+ * the anchor above, and rewriting it repoints the worktree at a git directory of the agent's
+ * choosing. Both forms are named because both are what the spec names; each already covers
+ * the other under the harness's gitignore matching, which is belt and braces rather than a
+ * mistake.
+ */
+export function deniedTools(worktreePath: string): string[] {
+  return [`Edit(${anchor(worktreePath)}/.git)`, `Edit(${anchor(worktreePath)}/.git/**)`];
+}
+
+/** The path a file tool's call is about, absolute, or undefined when it names none. */
+function filePath(input: Record<string, unknown>): string | undefined {
+  const path = input.file_path ?? input.notebook_path ?? input.path;
+  return typeof path === "string" ? resolve(path) : undefined;
+}
+
+/**
+ * Whether an `Edit(//…)` rule's path covers `path`. Both shapes the entries above use — `//X`
+ * and `//X/**` — cover `X` itself and everything under it, checked against the shipped
+ * binary's own matcher as an allow rule and as a deny rule. No other shape is modelled: a
+ * relative or `~`-rooted pattern, or a glob in the middle of a path, matches nothing here, so
+ * the list assertions are what pin the entries to the shapes this does read.
+ */
+function coversPath(content: string, path: string): boolean {
+  if (!content.startsWith("//")) return false;
+  const at = content.slice(1).replace(/\/\*\*$/, "");
+  return path === at || path.startsWith(`${at}/`);
+}
 
 /**
  * How the harness reads one entry, spelled out here so the list above can be asserted as
@@ -148,10 +217,15 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  * tier can be dropped on a machine with an IT-managed one — so `canUseTool` stays
  * authoritative and no assertion here claims the list is the complete set.
  */
-function entryAllows(entry: string, tool: string, input: Record<string, unknown>): boolean {
+function entryMatches(entry: string, tool: string, input: Record<string, unknown>): boolean {
   const parsed = ENTRY.exec(entry);
   if (parsed === null) return false;
   const [, name, content] = parsed;
+  if (name === "Edit" && content !== undefined) {
+    if (!EDITING_TOOLS.has(tool)) return false;
+    const path = filePath(input);
+    return path !== undefined && coversPath(content, path);
+  }
   if (name !== tool) return false;
   if (content === undefined) return true;
   if (tool !== "Bash") return false;
@@ -166,13 +240,18 @@ function entryAllows(entry: string, tool: string, input: Record<string, unknown>
   return command === rule;
 }
 
-/** Whether the list pre-allows this call, and so never asks the run about it. */
+/**
+ * Whether the list pre-allows this call, and so never asks the run about it. A `denied` entry
+ * outranks every allow entry, the way the harness's deny rules do.
+ */
 export function allowsTool(
   tool: string,
   input: Record<string, unknown>,
   list: readonly string[] = FIXED_ALLOWLIST,
+  denied: readonly string[] = [],
 ): boolean {
-  return list.some((entry) => entryAllows(entry, tool, input));
+  if (denied.some((entry) => entryMatches(entry, tool, input))) return false;
+  return list.some((entry) => entryMatches(entry, tool, input));
 }
 
 /** The target repository's own instructions, in the order they are scanned. */
@@ -270,43 +349,63 @@ function scanBase(defaultBranch: string): string {
   return `refs/remotes/origin/${defaultBranch}`;
 }
 
+/** What one run may do without asking, what it may not touch, and what the card is told. */
+export interface RunAllowlist {
+  /** The entries the run is spawned with: the fixed list, its worktree, and the scan's. */
+  tools: string[];
+  /** Deny rules, which outrank every entry in `tools`. */
+  denied: string[];
+}
+
 /**
- * What a run in `repoRoot` may do without asking: the fixed list, plus `Bash(<line> *)` for
- * each command line the repository's own `AGENTS.md`/`CLAUDE.md` shows in a fenced shell
- * block — so an agent following the repository's stated conventions is not stopped to ask
- * permission for its check commands. A repository with neither file gets the fixed list
- * exactly, and nothing scanned may widen a command the fixed list narrows.
+ * What a run in `repoRoot`, working in `worktreePath`, may do without asking: the fixed list,
+ * plus one file-tool entry anchored at that worktree, plus `Bash(<line> *)` for each command
+ * line the repository's own `AGENTS.md`/`CLAUDE.md` shows in a fenced shell block — so an
+ * agent following the repository's stated conventions is not stopped to ask permission for its
+ * check commands. A repository with neither file gets the fixed list and the anchor exactly,
+ * and nothing scanned may widen a command the fixed list narrows.
  *
- * **The files are read from a commit, never from the working tree.** `Write` and `Edit` are on
- * the fixed list and are not path-constrained, so a run can write a fenced block into
- * `AGENTS.md` itself — one unprompted call, visible on the card only inside a batched tool
- * summary — and every later run in that repository would then pre-allow the command line it
- * chose. That is a run widening its successor's boundary, so a file that is untracked, or
- * modified relative to that commit, contributes nothing.
+ * **The files are read from a commit, never from the working tree.** A run may write its own
+ * worktree freely — that is the work — so it can put a fenced block into `AGENTS.md` there in
+ * one unprompted call, visible on the card only inside a batched tool summary, and every later
+ * run in that repository would then pre-allow the command line it chose. That is a run
+ * widening its successor's boundary, so a file that is untracked, or modified relative to that
+ * commit, contributes nothing.
  *
- * **And the commit is named by a ref no pre-allowed command can write**: `scanBase`, the
+ * **And the commit is named by a ref no pre-allowed tool can write**: `scanBase`, the
  * remote-tracking head of `defaultBranch`. A local branch name would not do, however carefully
  * the fixed list is drawn — `refs/heads/` is shared by the main checkout and every linked
  * worktree, so a run able to create or move a branch could point the name its successor reads
- * at a commit it authored. Nothing under `refs/remotes/` is writable by anything on the list:
- * only `git fetch`, `git pull`, `git remote` and `git push` write those refs, of which only
- * `push` is listed, and only as `git push -u origin HEAD` and a bare `git push`. The first
- * pushes the worktree's HEAD — the card branch `skelcrew/<id>-…`, named by the runner — and so
- * writes that branch's remote-tracking ref and no other. The second, under a repo-level
- * `push.default = matching`, pushes every local branch with a counterpart on the remote, the
- * default branch included; but it pushes each at the value it already holds, and no
- * pre-allowed command can change that value: a run's commits land on its own HEAD, and
- * `git branch` is off the list precisely so nothing else can move a `refs/heads/` entry. So
- * only a commit the owner has pushed to the default branch can grant anything. A ref or a file
- * that cannot be read contributes nothing rather than failing the run — the fixed list is the
- * floor, and the agent asks.
+ * at a commit it authored. Two things keep `refs/remotes/origin/<default>` out of reach, and
+ * both are needed:
+ *
+ * - **No listed command writes it.** Only `git fetch`, `git pull`, `git remote` and `git push`
+ *   write those refs, of which only `push` is listed, and only as `git push -u origin HEAD` and
+ *   a bare `git push`. The first pushes the worktree's HEAD — the card branch
+ *   `skelcrew/<id>-…`, named by the runner — and so writes that branch's remote-tracking ref
+ *   and no other. The second, under a repo-level `push.default = matching`, pushes every local
+ *   branch with a counterpart on the remote, the default branch included; but it pushes each at
+ *   the value it already holds, and no pre-allowed command can change that value: a run's
+ *   commits land on its own HEAD, and `git branch` is off the list precisely so nothing else
+ *   can move a `refs/heads/` entry.
+ * - **No listed *tool* writes it either.** A ref is a plain file. While a file tool sat on the
+ *   list bare, a run could author a commit, name the git common directory with the pre-allowed
+ *   `git rev-parse --git-common-dir`, and write that sha straight into the ref — and a loose
+ *   ref wins over `packed-refs`, so the forgery would stand for every later run. `editsIn`
+ *   anchors the file tools at the worktree, and the common directory is not under it.
+ *
+ * So only a commit the owner has pushed to the default branch can grant anything. A ref or a
+ * file that cannot be read contributes nothing rather than failing the run — the fixed list is
+ * the floor, and the agent asks.
  */
 export async function allowlistFor(
   git: Pick<Git, "showFile">,
   repoRoot: string,
   defaultBranch: string,
-): Promise<string[]> {
-  const list = [...FIXED_ALLOWLIST];
+  worktreePath: string,
+): Promise<RunAllowlist> {
+  const tools = [...FIXED_ALLOWLIST, editsIn(worktreePath)];
+  const denied = deniedTools(worktreePath);
   const narrowed = narrowedCommands();
   const base = scanBase(defaultBranch);
   for (const name of INSTRUCTION_FILES) {
@@ -321,8 +420,8 @@ export async function allowlistFor(
     for (const line of scanInstructions(text)) {
       if (narrowed.has(firstWord(line))) continue;
       const entry = `Bash(${line} *)`;
-      if (!list.includes(entry)) list.push(entry);
+      if (!tools.includes(entry)) tools.push(entry);
     }
   }
-  return list;
+  return { tools, denied };
 }

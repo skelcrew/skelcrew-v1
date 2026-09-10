@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allowlistFor, allowsTool, FIXED_ALLOWLIST } from "./allowlist";
+import { allowlistFor, allowsTool, deniedTools, editsIn, FIXED_ALLOWLIST } from "./allowlist";
 import { createGit, type Git } from "./git";
 
 /** The list, entry by entry: a change to it is a change to what an agent may do unprompted. */
@@ -11,9 +11,6 @@ test("the fixed list is exactly what the spec names, in its order", () => {
     "Read",
     "Glob",
     "Grep",
-    "Edit",
-    "Write",
-    "MultiEdit",
     "Agent",
     "TodoWrite",
     "Bash(skelcrew show *)",
@@ -59,6 +56,58 @@ test("the CLI verbs that move a card past a gate are absent", () => {
   }
 });
 
+/**
+ * The file tools carry no entry of their own: a bare `Write` reaches every path the daemon's
+ * user can write, the git common directory included, and no choice of scan base survives
+ * that. What a run gets instead is one anchored `Edit(…)` entry, which the harness reads as
+ * covering Edit, Write and MultiEdit — a path rule spelled for any of those three is accepted
+ * and never consulted.
+ */
+test("no file tool is on the fixed list bare", () => {
+  for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+    expect(FIXED_ALLOWLIST).not.toContain(tool);
+  }
+});
+
+test("a run's file-tool entry is one Edit rule anchored at its own worktree", () => {
+  expect(editsIn("/data/skelcrew/worktrees/7")).toBe("Edit(//data/skelcrew/worktrees/7/**)");
+  expect(deniedTools("/data/skelcrew/worktrees/7")).toEqual([
+    "Edit(//data/skelcrew/worktrees/7/.git)",
+    "Edit(//data/skelcrew/worktrees/7/.git/**)",
+  ]);
+});
+
+// --- what the file-tool entry reaches, and what it does not ---
+
+const WT = "/data/skelcrew/worktrees/7";
+const anchored: string[] = [...FIXED_ALLOWLIST, editsIn(WT)];
+const denied: string[] = deniedTools(WT);
+const writes = (path: string): boolean =>
+  allowsTool("Write", { file_path: path, content: "x" }, anchored, denied);
+
+test("a write inside the run's worktree is pre-allowed, whichever file tool makes it", () => {
+  expect(writes(`${WT}/src/x.ts`)).toBe(true);
+  expect(writes(`${WT}/AGENTS.md`)).toBe(true);
+  expect(allowsTool("Edit", { file_path: `${WT}/a/b/c.ts` }, anchored, denied)).toBe(true);
+  expect(allowsTool("MultiEdit", { file_path: `${WT}/a/b/c.ts` }, anchored, denied)).toBe(true);
+});
+
+test("a write to the worktree's own .git is not pre-allowed: it repoints the worktree", () => {
+  expect(writes(`${WT}/.git`)).toBe(false);
+  expect(writes(`${WT}/.git/config`)).toBe(false);
+  // A neighbour whose name merely starts the same way is not the denied path.
+  expect(writes(`${WT}/.gitignore`)).toBe(true);
+});
+
+test("a write outside the worktree is not pre-allowed, however near it sits", () => {
+  expect(writes("/etc/hosts")).toBe(false);
+  expect(writes("/repo/.git/config")).toBe(false);
+  expect(writes("/repo/.git/refs/remotes/origin/main")).toBe(false);
+  expect(writes("/repo/.git/packed-refs")).toBe(false);
+  // The worktree's path as a prefix of a longer name is a different directory.
+  expect(writes("/data/skelcrew/worktrees/70/x.ts")).toBe(false);
+});
+
 // --- what the list matches ---
 
 const bash = (command: string): [string, Record<string, unknown>] => ["Bash", { command }];
@@ -68,9 +117,6 @@ test("every entry on the list matches the call it is there for", () => {
     ["Read", { file_path: "/repo/AGENTS.md" }],
     ["Glob", { pattern: "**/*.ts" }],
     ["Grep", { pattern: "startRunner" }],
-    ["Edit", { file_path: "/repo/x.ts" }],
-    ["Write", { file_path: "/repo/x.ts", content: "x" }],
-    ["MultiEdit", { file_path: "/repo/x.ts" }],
     ["Agent", { description: "review" }],
     ["TodoWrite", { todos: [] }],
     bash("skelcrew show 1"),
@@ -243,18 +289,28 @@ async function commit(name: string, text: string): Promise<void> {
   await sh("push", "-q", "origin", DEFAULT_BRANCH);
 }
 
+/** The worktree a run in this repository would work in; the anchor of its file-tool entry. */
+function worktree(): string {
+  return join(repo, ".worktree");
+}
+
 /** The whole list a run in this repository would be spawned with. */
 async function list(): Promise<string[]> {
-  return allowlistFor(git, repo, DEFAULT_BRANCH);
+  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree())).tools;
+}
+
+/** The fixed list plus the run's own anchored file-tool entry: what the scan adds to. */
+function floor(): string[] {
+  return [...FIXED_ALLOWLIST, editsIn(worktree())];
 }
 
 /** What the scan added, in order: everything past the fixed list. */
 async function scanned(): Promise<string[]> {
-  return (await list()).slice(FIXED_ALLOWLIST.length);
+  return (await list()).slice(floor().length);
 }
 
 test("a repository with neither instruction file yields exactly the fixed list", async () => {
-  expect(await list()).toEqual([...FIXED_ALLOWLIST]);
+  expect(await list()).toEqual(floor());
 });
 
 test("a check command in a fenced block in AGENTS.md is pre-allowed", async () => {
@@ -371,9 +427,9 @@ test("a first word that is not a command word contributes nothing", async () => 
 });
 
 /**
- * Criterion 10a's second half. `Write` is on the fixed list and is not path-constrained, so
- * an agent can write a fenced block into the repository's own instructions mid-run; reading
- * the working tree would make that a standing grant for every later run.
+ * Criterion 10a's second half. A run may write its own worktree freely, the repository's own
+ * instructions included; reading the working tree would make that a standing grant for every
+ * later run.
  */
 test("an instruction file that is only in the working tree contributes nothing", async () => {
   write("AGENTS.md", "```\nbun run evil\n```\n");
@@ -399,5 +455,6 @@ test("an instruction file committed locally but not on the remote contributes no
 
 test("a default branch with no remote-tracking head contributes nothing rather than failing", async () => {
   await commit("AGENTS.md", "```\nbun run check\n```\n");
-  expect(await allowlistFor(git, repo, "no-such-branch")).toEqual([...FIXED_ALLOWLIST]);
+  const list = await allowlistFor(git, repo, "no-such-branch", worktree());
+  expect(list.tools).toEqual(floor());
 });
