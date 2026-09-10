@@ -548,8 +548,10 @@ being listed.
   --show-current` among them; the security half stands. The spec carries the same wrong sentence
   and is reported rather than edited.
 - **Minor 2.** Three known-wide places in `selfApprovedReadOnlyGit`, not two.
-- **Minor 3.** `commandsIn` skips the advertisement, the read-only-git and the prohibition
-  paragraphs, and substitutes `<id>`-style placeholders — angle brackets are redirections.
+- **Minor 3.** `commandsIn` skips the advertisement paragraph, the prohibition paragraph and
+  the new subprocess record, and substitutes `<id>`-style placeholders — angle brackets are
+  redirections. The read-only-git paragraph stays in: it is checked against the harness's own
+  behaviour, not against the list it was copied from, so it is not circular.
 - **Minor 4.** `TRANSCRIBED_FROM` pins the SDK, CLI, git and gh versions; `claude.test.ts` (the
   one file allowed to name the SDK) checks two of them against what is installed.
 - **Minor 5.** The fail-closed polarity is stated, with its one exception.
