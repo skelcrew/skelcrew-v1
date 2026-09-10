@@ -20,7 +20,7 @@ import {
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
 import { FIXED_ALLOWLIST } from "./allowlist";
-import { endRun } from "./ending";
+import { endRun, runAttention } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
@@ -137,6 +137,8 @@ export function startRunner(options: RunnerOptions): Runner {
   const baseEnv = options.env ?? process.env;
   /** Fired by `stop()`: a live run is told to stop rather than waited out. */
   const stopping = new AbortController();
+  /** The one helper every ending raises attention through; see `ending.ts`. */
+  const attention = runAttention(core, member.id);
   const dir = worktreesDir(dataDir);
   mkdirSync(dir, { recursive: true });
   // The agent's `skelcrew`: written once, before any run could need it.
@@ -219,6 +221,10 @@ export function startRunner(options: RunnerOptions): Runner {
       warn(`skelcrew runner: card ${id} not claimed: ${message(error)}`);
       return;
     }
+    // Where this run's own record starts: the `claimed` event just written. Everything past
+    // it is what happened during the run — the contracts' "recorded by this run", and the
+    // ending's reason.
+    const sinceSeq = core.getCard(id).activity.at(-1)?.seq ?? 0;
     const heartbeat = setInterval(() => {
       try {
         core.heartbeat(id, member.id);
@@ -272,11 +278,12 @@ export function startRunner(options: RunnerOptions): Runner {
       stillHeld();
       step = "update card";
       core.setRefs(id, { branch }, member.id);
+      // Narrowed here, not in the run: a phase with a playbook is a phase with a contract,
+      // and a new claimable phase without either does not compile into a run.
+      const phase = card.phase === "spec" || card.phase === "code" ? card.phase : undefined;
       const playbook =
-        agent !== undefined && (card.phase === "spec" || card.phase === "code")
-          ? agent.playbooks[card.phase]
-          : undefined;
-      if (agent === undefined || playbook === undefined) {
+        agent !== undefined && phase !== undefined ? agent.playbooks[phase] : undefined;
+      if (agent === undefined || playbook === undefined || phase === undefined) {
         // 006's handoff, kept verbatim: nothing has run in the worktree, so this is not the
         // ending of a run and does not go through `ending.ts`. Every ending does.
         core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
@@ -299,9 +306,15 @@ export function startRunner(options: RunnerOptions): Runner {
       await runPlaybook({
         core,
         member,
+        attention,
         ownerId,
         warn,
         card,
+        phase,
+        sinceSeq,
+        now,
+        git,
+        repoRoot,
         path,
         branch,
         base: base.name,
@@ -332,11 +345,13 @@ export function startRunner(options: RunnerOptions): Runner {
       // `run.ts`, so this ending goes through the same one in `ending.ts`.
       endRun({
         core,
+        attention,
         cardId: id,
         memberId: member.id,
         ownerId,
         warn,
         note: within(`${step} failed: ${message(error)}`),
+        moves: [],
         reason: "failed",
       });
     } finally {

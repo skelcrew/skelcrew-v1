@@ -49,3 +49,34 @@ test("an empty playbook is refused at load, naming the file", () => {
   writeFileSync(join(dir, "code.md"), "# code\n");
   expect(() => loadPlaybooks(dir)).toThrow(join(dir, "spec.md"));
 });
+
+// --- what the Code phase's contract requires of its playbook ---
+
+test("the Code playbook records the pull request on every run, reading an existing one back", () => {
+  const code = loadPlaybooks().code;
+  // The contract checks that *this run* recorded it, so a revision on an existing PR still
+  // has to record — which means reading the URL back off the branch.
+  expect(code).toContain("gh pr view --json url");
+  expect(code).toContain("skelcrew refs <id> --pr");
+  expect(code).toContain("every run");
+});
+
+test("the Code playbook qualifies the base branch wherever it computes a diff", () => {
+  // A bare name resolves by precedence, and a tag outranks a branch head.
+  expect(loadPlaybooks().code).toContain("refs/heads/");
+});
+
+test("the Code playbook exports a spec file only where the repository already keeps specs", () => {
+  const code = loadPlaybooks().code;
+  expect(code).toContain("docs/specs");
+  expect(code).toContain("skelcrew refs <id> --spec");
+  // The card's body is the spec; a file in the repository is a copy pushed outward.
+  expect(code).toContain("export");
+  expect(code).toContain("pull request description");
+});
+
+test("the Code playbook reuses the recorded spec path on a card returning from PR", () => {
+  const code = loadPlaybooks().code;
+  expect(code).toContain("specPath");
+  expect(code).toContain("overwrite");
+});

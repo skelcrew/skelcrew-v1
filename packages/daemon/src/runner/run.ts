@@ -8,13 +8,26 @@
  * the card is left in a state a member can act on, with the reason on it, and never with a
  * question the agent raised replaced by it. Nothing is posted after an await without the
  * claim still being this run's.
+ *
+ * A session that ended on its own is not by itself a finish: the phase's artefact contract
+ * (`contracts.ts`) decides, and only a met contract carries the move into the next phase.
+ * What kind of ending this is at all is derived from the card in `ending.ts`, never from
+ * flags kept while the run was live.
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Activity, type Card, COMMENT_MAX_BYTES, type Member } from "@skelcrew/shared";
-import type { Core } from "../core/core";
+import {
+  type Activity,
+  type Card,
+  COMMENT_MAX_BYTES,
+  type Member,
+  type Phase,
+} from "@skelcrew/shared";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
-import { endRun } from "./ending";
+import { checkContract } from "./contracts";
+import { classifyEnding, endRun, type RunAttention, type RunCore } from "./ending";
+import type { Git } from "./git";
+import type { PlaybookPhase } from "./playbooks";
 
 /** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
 export const RUN_LIMIT_MINUTES_DEFAULT = 60;
@@ -41,12 +54,24 @@ export class RunAbandoned extends Error {
 }
 
 export interface RunInput {
-  core: Core;
+  /** No `requestAttention`: every raise a run makes goes through `attention`, by construction. */
+  core: RunCore;
   member: Member;
+  /** The one helper this run raises attention through. */
+  attention: RunAttention;
   /** Who an ending hands the card to; resolved by `ending.ts`, inside its own guard. */
   ownerId(): number;
   warn: (line: string) => void;
   card: Card;
+  /** The phase claimed, narrowed to the phases a playbook and a contract exist for. */
+  phase: PlaybookPhase;
+  /** The last sequence number before the run began: what "during this run" means. */
+  sinceSeq: number;
+  /** The clock the card's claim is read against; the runner's, so the two agree. */
+  now(): number;
+  /** The target repository and its git, for the phase's artefact contract. */
+  git: Git;
+  repoRoot: string;
   /** The card's worktree, the branch it is on, and the base branch that forked from. */
   path: string;
   branch: string;
@@ -411,12 +436,12 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   // What the agent did lands before why the run ended; both are dropped by `post` if the
   // claim went away, and the abandonment is then the runner's to report.
   flushTools();
-  input.stillHeld();
 
   /** The run's last word: `ending.ts` holds what an ending does, for every run that ends. */
-  const end = (note: string, reason: string): void => {
+  const end = (note: string, moves: Phase[], reason: string): void => {
     endRun({
       core,
+      attention: input.attention,
       cardId: id,
       memberId: member.id,
       ownerId,
@@ -424,34 +449,75 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // Marked, not merely cut: the one note that can reach the cap is a driver error, and
       // a harness message amputated mid-sentence with nothing saying so misleads the owner.
       note: cutMarked(note, COMMENT_MAX_BYTES / 4),
+      moves,
       reason,
     });
   };
   const fail = (note: string): void => {
-    end(note, "failed");
+    end(note, [], "failed");
   };
 
-  if (stopping) {
-    fail("run aborted: daemon stopping");
+  /** Why the run stopped short, or undefined when the agent's session ended on its own. */
+  const cutShort = (): string | undefined => {
+    if (stopping) return "run aborted: daemon stopping";
+    if (timedOut) return `run aborted: time limit of ${describeLimit(input.limitMs)} reached`;
+    if (driverError !== undefined) return `run failed: ${driverError}`;
+    if (result === undefined) return "run failed: the agent ended without a result";
+    if (!result.ok) return `run failed: ${result.error ?? "the agent reported an error"}`;
+    return undefined;
+  };
+
+  // The contract is read-only, so it runs before the ending is settled and its git calls are
+  // just another window the card can change in. What decides is the classification below it.
+  const early = cutShort();
+  const settled =
+    early !== undefined
+      ? { met: false, note: early, moves: [] as Phase[], refs: undefined }
+      : await checkContract(input.phase, {
+          core,
+          git: input.git,
+          repoRoot: input.repoRoot,
+          worktreePath: path,
+          branch: input.branch,
+          base: input.base,
+          cardId: id,
+          memberId: member.id,
+          sinceSeq: input.sinceSeq,
+        });
+
+  const outcome = classifyEnding({
+    core,
+    cardId: id,
+    memberId: member.id,
+    phase: input.phase,
+    sinceSeq: input.sinceSeq,
+    now: input.now(),
+  });
+  switch (outcome.kind) {
+    case "self":
+      // Recorded wherever the card ended up: `endRun` comments regardless, and raises only if
+      // the card is still there to be handed over. This run's failure is not a new holder's
+      // queue to fill.
+      end(outcome.note, [], "failed");
+      return;
+    case "abandoned":
+      throw new RunAbandoned(outcome.reason);
+    case "released":
+      // The card waits on the owner rather than going straight back into the queue for the
+      // next scan to pick up a moment after they took it by hand.
+      end(
+        `run stopped: the card was released while the agent was working; the work is in ${path}`,
+        [],
+        "stopped",
+      );
+      return;
+    case "held":
+      break;
+  }
+  if (!settled.met) {
+    fail(settled.note);
     return;
   }
-  if (timedOut) {
-    fail(`run aborted: time limit of ${describeLimit(input.limitMs)} reached`);
-    return;
-  }
-  if (driverError !== undefined) {
-    fail(`run failed: ${driverError}`);
-    return;
-  }
-  if (result === undefined) {
-    fail("run failed: the agent ended without a result");
-    return;
-  }
-  if (!result.ok) {
-    fail(`run failed: ${result.error ?? "the agent reported an error"}`);
-    return;
-  }
-  // The session ended on its own. Whether it produced anything is 014's to check; this run
-  // says only what happened and hands the card back the way 006 does.
-  end(`run finished; the agent's session ended — the work is in ${path}`, "finished");
+  if (settled.refs !== undefined) core.setRefs(id, settled.refs, member.id);
+  end(settled.note, settled.moves, "finished");
 }
