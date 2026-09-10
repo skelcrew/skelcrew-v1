@@ -19,7 +19,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 6 | 009 Claims as leases | landed, PR #6 |
 | 7 | 006 Runner skeleton | landed, PR #7 |
 | — | 007 Runner runs the phase playbooks | **spiked, not merged** — PR #8 closed, split into 011–014 |
-| 8 | 011 Which refs a run set; spec export bookmark | in review, PR #9 |
+| 8 | 011 Which refs a run set; spec export bookmark | landed, PR #9 |
 | 9 | 012 Spawn an agent, show what it does | planned |
 | 10 | 013 The agent asks the owner | planned |
 | 11 | 014 A phase ends in a verified artefact | planned |
