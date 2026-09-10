@@ -85,6 +85,7 @@ interface StartOptions {
   summaryMs?: number;
   runLimitMs?: number;
   abortGraceMs?: number;
+  heartbeatMs?: number;
   now?: () => number;
 }
 
@@ -101,6 +102,7 @@ function start(options: StartOptions): Runner {
     summaryMs: options.summaryMs ?? 60_000,
     runLimitMs: options.runLimitMs ?? 60_000,
     abortGraceMs: options.abortGraceMs ?? 1000,
+    ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
   return runner;
@@ -464,39 +466,298 @@ test("the turn the run posts for the agent is not fed back to the agent", async 
   expect(received[1]).toBe("keep going");
 });
 
-// --- denial ---
+// --- asking the owner ---
 
-test("a tool outside the fixed list is denied with a reason, and the card says which", async () => {
+function asked(cardId: number): (event: Activity) => boolean {
+  return (e) => e.cardId === cardId && e.type === "attention_requested";
+}
+
+function deniedMessage(decision: ToolDecision | undefined): string {
+  expect(decision?.behavior).toBe("deny");
+  return (decision as { behavior: "deny"; message: string }).message;
+}
+
+/**
+ * One card whose agent asks for `call` and does nothing else, answered with `text` when the
+ * question reaches the card. Returns what the agent was told. The runner in flight is
+ * stopped first, so a test may use this more than once against the same core.
+ */
+async function askAndAnswer(
+  call: [string, Record<string, unknown>],
+  text: string | undefined,
+): Promise<ToolDecision> {
+  await runner?.stop();
+  runner = undefined;
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      decision = await options.canUseTool(call[0], call[1]);
+      yield { type: "text", text: "proceeding" };
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: `Asks for ${call[0]}` }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+  core.resolveAttention(card.id, text, owner.id);
+  await done;
+  return decision as ToolDecision;
+}
+
+test("a tool outside the fixed list becomes a question on the card, and the run waits for it", async () => {
   await initRepo();
   let decision: ToolDecision | undefined;
   start({
     driver: fakeDriver(async function* (options) {
-      decision = await options.canUseTool("Write", { file_path: "/repo/x.ts", content: "x" });
+      decision = await options.canUseTool("Bash", { command: "rm -rf build" });
+      yield { type: "text", text: "proceeding" };
       yield { type: "result", ok: true };
     }),
   });
-  await runCard("Writes a file");
+  const card = core.createCard({ title: "Removes a directory" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
 
-  expect(decision?.behavior).toBe("deny");
-  const message = (decision as { behavior: "deny"; message: string }).message;
-  expect(message).toContain("Write");
-  expect(message.length).toBeGreaterThan(0);
-  const denied = comments(1).find((text) => text.startsWith("denied "));
-  expect(denied).toContain("Write");
-  expect(denied).toContain("/repo/x.ts");
+  // The question, as the owner sees it: the tool, its input, and both answering commands.
+  const request = core.getCard(card.id).attention;
+  expect(request).toMatchObject({ to: owner.id, raisedBy: runnerMember.id });
+  expect(request?.note).toBe(
+    "allow Bash rm -rf build? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)",
+  );
+
+  // And the run has not proceeded: the agent is still waiting on the answer.
+  await Bun.sleep(100);
+  expect(decision).toBeUndefined();
+  expect(comments(card.id)).not.toContain("proceeding");
+
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+  expect(decision).toEqual({ behavior: "allow" });
+  expect(comments(card.id)).toContain("proceeding");
+  expect(comments(card.id)).toContain("allowed Bash: rm -rf build");
 });
 
-test("a denied Bash call names the command on the card", async () => {
+test("allow, yes and ok each let the tool run", async () => {
   await initRepo();
+  for (const word of ["allow", "yes", "ok", "Allow", " OK "]) {
+    const decision = await askAndAnswer(["Bash", { command: "git push --force" }], word);
+    expect([word, decision]).toEqual([word, { behavior: "allow" }]);
+  }
+});
+
+test("deny, no, other text and no text each deny, telling the agent what the owner wrote", async () => {
+  await initRepo();
+  for (const word of ["deny", "no", "not that file, use the worktree"]) {
+    const decision = await askAndAnswer(["Write", { file_path: "/etc/hosts", content: "x" }], word);
+    expect([word, decision?.behavior]).toEqual([word, "deny"]);
+    expect(deniedMessage(decision)).toContain(word);
+  }
+  const decision = await askAndAnswer(["Write", { file_path: "/etc/hosts", content: "x" }], undefined);
+  expect(decision.behavior).toBe("deny");
+  expect(deniedMessage(decision)).toContain("Write");
+});
+
+test("the owner's refusal is on the card as well as in the agent's answer", async () => {
+  await initRepo();
+  await askAndAnswer(["Bash", { command: "git push origin HEAD:main" }], "no, that is my gate");
+  const denied = comments(1).find((text) => text.startsWith("denied ")) as string;
+  expect(denied).toContain("git push origin HEAD:main");
+  expect(denied).toContain("no, that is my gate");
+});
+
+test("two tools asked at once are one question at a time, answered in the order asked", async () => {
+  await initRepo();
+  const decisions: ToolDecision[] = [];
   start({
     driver: fakeDriver(async function* (options) {
-      await options.canUseTool("Bash", { command: "git push origin HEAD:main" });
+      const first = options.canUseTool("Bash", { command: "git push --force" });
+      const second = options.canUseTool("Write", { file_path: "/repo/x.ts", content: "x" });
+      decisions.push(await first, await second);
       yield { type: "result", ok: true };
     }),
   });
-  await runCard("Pushes a branch");
-  const denied = comments(1).find((text) => text.startsWith("denied ")) as string;
-  expect(denied).toContain("git push origin HEAD:main");
+  const card = core.createCard({ title: "Asks twice" }, owner.id);
+  const firstAsked = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await firstAsked;
+
+  // One question on the card, and it is the first one asked.
+  expect(core.getCard(card.id).attention?.note).toContain("git push --force");
+  expect(core.listAttention()).toHaveLength(1);
+  await Bun.sleep(50);
+  expect(core.getCard(card.id).attention?.note).toContain("git push --force");
+
+  const secondAsked = untilEvent(asked(card.id));
+  core.resolveAttention(card.id, "allow", owner.id);
+  await secondAsked;
+  expect(core.getCard(card.id).attention?.note).toContain("/repo/x.ts");
+  expect(core.listAttention()).toHaveLength(1);
+  core.resolveAttention(card.id, "no", owner.id);
+  await done;
+
+  // Each answer went to the tool it was asked for.
+  expect(decisions[0]).toEqual({ behavior: "allow" });
+  expect(decisions[1]?.behavior).toBe("deny");
+  expect(deniedMessage(decisions[1])).toContain("no");
+});
+
+test("a question the agent raised itself outranks the run's; the permission request waits", async () => {
+  await initRepo();
+  const received: string[] = [];
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      const reader = options.input[Symbol.asyncIterator]();
+      received.push((await reader.next()).value as string);
+      agentAsks(1, "which base branch?");
+      decision = await options.canUseTool("Write", { file_path: "/repo/x.ts", content: "x" });
+      received.push((await reader.next()).value as string);
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Blocked and asking" }, owner.id);
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+
+  // The agent's own question stays on the card; the permission request does not replace it.
+  await Bun.sleep(100);
+  expect(core.getCard(card.id).attention?.note).toBe("which base branch?");
+  expect(decision).toBeUndefined();
+
+  // Answering it lets the permission request through.
+  const permission = untilEvent(asked(card.id));
+  core.resolveAttention(card.id, "use main", owner.id);
+  await permission;
+  expect(core.getCard(card.id).attention?.note).toContain("/repo/x.ts");
+
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+  expect(decision).toEqual({ behavior: "allow" });
+  // The answer to the agent's own question is a message to it, not a permission decision.
+  expect(received[1]).toBe("use main");
+});
+
+test("a claim whose run is waiting on a question does not lapse", async () => {
+  await initRepo();
+  let at = Date.now();
+  const now = (): number => at;
+  core.close();
+  core = openCore(":memory:", { owner: "simon", now });
+  owner = core.listMembers()[0] as Member;
+  runnerMember = core.ensureMember("runner", "agent");
+  start({
+    now,
+    heartbeatMs: 10,
+    driver: fakeDriver(async function* (options) {
+      await options.canUseTool("Bash", { command: "rm -rf build" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Waits a long time" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  const before = core.getCard(card.id).claim?.expiresAt as number;
+  at += 60_000;
+  await Bun.sleep(100);
+  const after = core.getCard(card.id).claim?.expiresAt as number;
+  expect(after).toBeGreaterThan(before);
+  expect(after).toBeGreaterThan(at);
+
+  core.resolveAttention(card.id, "deny", owner.id);
+  await done;
+});
+
+/** A run waiting on a question is a run like any other: the card moving on ends it. */
+async function waitingRun(title: string): Promise<{ cardId: number; decisions: ToolDecision[] }> {
+  const decisions: ToolDecision[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      decisions.push(await options.canUseTool("Bash", { command: "rm -rf build" }));
+      yield { type: "text", text: "proceeding" };
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title }, owner.id);
+  const question = untilEvent(asked(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+  return { cardId: card.id, decisions };
+}
+
+test("a card moved while the run waits on a question ends the run", async () => {
+  await initRepo();
+  const { cardId, decisions } = await waitingRun("Moved while waiting");
+  const abandoned = untilEvent(commentContaining(cardId, "run abandoned"));
+  core.moveCard(cardId, "pr", owner.id);
+  await abandoned;
+  await Bun.sleep(100);
+
+  const detail = core.getCard(cardId);
+  expect(detail.phase).toBe("pr");
+  expect(detail.attention).toBeNull();
+  expect(decisions[0]?.behavior).toBe("deny");
+  expect(comments(cardId)).not.toContain("proceeding");
+  expect(comments(cardId).some((text) => text.startsWith("allowed "))).toBe(false);
+});
+
+test("a card archived while the run waits on a question ends the run", async () => {
+  await initRepo();
+  const { cardId, decisions } = await waitingRun("Archived while waiting");
+  const abandoned = untilEvent(commentContaining(cardId, "run abandoned"));
+  core.archiveCard(cardId, owner.id);
+  await abandoned;
+  await Bun.sleep(100);
+
+  const detail = core.getCard(cardId);
+  expect(detail.archivedAt).not.toBeNull();
+  expect(detail.attention).toBeNull();
+  expect(decisions[0]?.behavior).toBe("deny");
+  expect(comments(cardId)).not.toContain("proceeding");
+});
+
+test("a claim released while the run waits ends the run, and a later answer changes nothing", async () => {
+  await initRepo();
+  const { cardId, decisions } = await waitingRun("Released while waiting");
+  const abandoned = untilEvent(commentContaining(cardId, "run abandoned"));
+  core.releaseCard(cardId, { reason: "taking it back" }, owner.id);
+  await abandoned;
+  await Bun.sleep(100);
+
+  // The question is left as the release left it: open, and nobody's to answer for the agent.
+  const detail = core.getCard(cardId);
+  expect(detail.claim).toBeNull();
+  expect(detail.attention?.note).toContain("rm -rf build");
+  expect(decisions[0]?.behavior).toBe("deny");
+  expect(comments(cardId)).not.toContain("proceeding");
+
+  // Answered after the run has ended, with the runner stopped so nothing re-dispatches.
+  await (runner as Runner).stop();
+  runner = undefined;
+  core.resolveAttention(cardId, "allow", owner.id);
+  expect(decisions).toHaveLength(1);
+  expect(comments(cardId).some((text) => text.startsWith("allowed "))).toBe(false);
+});
+
+test("the agent is spawned with the commands the target repository names for itself", async () => {
+  await initRepo();
+  writeFileSync(join(repo, "AGENTS.md"), "# Repo\n\n```\nbun run check\n```\n");
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      seen.push(options);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Reads the conventions");
+  expect(seen[0]?.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun *)"]);
 });
 
 // --- how a run ends ---
