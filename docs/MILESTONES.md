@@ -295,6 +295,51 @@ they know that skelcrew's entries did not yet say:
   dies or goes wrong. Rows do not need reconstructing, so the bill does not transfer: the
   findings above come to a few hundred lines between them. Worth remembering when 008 tempts a
   card into dispatching other cards.
+- **The artefact contract is the differentiation, not a hygiene detail (014).** A scan of the
+  field (2026-09-10, recorded in AGENTS.md) found roughly four hundred orchestrators and no one
+  claiming what 014 specifies: every neighbour's gate is a human pressing approve, and the
+  quality gates that exist are checks run *for* the human rather than a condition the runner
+  refuses to hand off without. "Zero commits past the base is a failed run, not a handoff" is
+  the one sentence nobody else is saying. That raises 014's stakes: relaxing it into "post the
+  attention request and let the owner judge" would leave a board over agents, which Cline gives
+  away and four hundred projects already ship.
+- **Don't grow a planner agent or a hierarchy (008, and Later).** The two closest neighbours
+  each added exactly the two things this repo has refused — Fusion a planner agent that writes
+  the spec plus a Mission → Milestone → Slice → Feature → Task tree, orca a coordinator agent
+  that dispatches and resolves gates — and each paid for it in concept count and recovery
+  machinery. When 008 makes skelcrew build skelcrew and a card wants to dispatch other cards,
+  that is this exact fork, and the answer already given (grouping deferred until 008 shows what
+  it must add) is the one the evidence supports.
+- **A playbook that restates the allowlist can lie, and nothing catches it (012).** `code.md`
+  spells out the fixed list in prose — the tools, the read-only git verbs, the four CLI verbs —
+  so the agent knows what it may do unprompted. That is a second copy of `allowlist.ts`, and
+  editing one silently falsifies the other; the failure surfaces as an unexplained denial
+  mid-run. gstack (garrytan/gstack, a pure playbook library with no runtime, read 2026-09-10)
+  hits the same problem across 23 skills and answers it by generating the docs from the source
+  and failing CI when the committed file drifts. The cheap version here needs no generator: a
+  test that reads every playbook, extracts each `skelcrew <verb>` and each tool named, and
+  asserts the verb exists as a CLI command and the tool appears in `FIXED_ALLOWLIST`. It is
+  free, model-free, milliseconds, and belongs in `bun run check`. Everything lines up today —
+  the test is to keep it that way.
+- **Playbook wording needs a test strategy, and tiering is how it coexists with the constraint
+  (012, and the playbook extraction).** Nothing currently tells us whether an edit to a playbook
+  made runs better or worse. gstack runs three tiers: free static validation on every test run,
+  a real-agent end-to-end pass and an LLM-as-judge score on the prose, the latter two gated
+  behind an env var, with results persisted per run so two runs can be diffed and flakes ranked.
+  That shape keeps *tests never spawn real coding agents* true for `bun run check` — the default
+  suite still fakes the driver — while giving playbook changes something better than taste. Tier
+  one is the bullet above and is worth building now; the rest waits until there are enough
+  playbooks for prose regressions to matter.
+- **The playbooks share an opening, and it should exist once (the playbook extraction).** Both
+  files restate the same framing — one agent on the crew, everything visible on the card, every
+  step through the CLI, nothing is a conversation. Fine at two files, drift at five. gstack
+  factors this into one injected preamble and, more usefully, specifies its *degraded* behaviour:
+  when the preamble's own runtime is missing, apply named safe defaults and carry on with the
+  task rather than stopping. A skelcrew preamble needs the same clause for a daemon that does
+  not answer. Its errors deserve the same treatment: gstack writes every error for the agent
+  rather than the reader ("not found — run `snapshot -i` to see what is available") and orca
+  hands back the literal next command, which is what makes 013's denials and 009's lost claims
+  recoverable instead of merely reported.
 
 ## 001 — Project scaffold
 
