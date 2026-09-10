@@ -4,11 +4,31 @@ The planned sequence of specs. Entries ahead of the current milestone are provis
 `/spec <NNN>` turns one into a real specification, and what a spec's implementation teaches
 gets recorded here against the milestones it affects. Never renumber; if the plan changes,
 rewrite the entry, not the number. A number identifies an entry and never changes, even when
-the build order does: entries are listed below in intended build order, so a later-numbered
-entry can precede an earlier one when it was carved out of it.
+the build order does — so **entries below are in numeric order, and the build order is the
+table**. A later-numbered entry can come earlier in the sequence when it was carved out of one.
 
-Status: 001, 002, and 003 landed (PRs #1, #2, #3, all 2026-09-08); 004 is in progress. A
-prototype spike (2026-09-07, preserved on the `prototype` branch) built the previous
+## Sequence
+
+| # | Spec | Status |
+| --- | --- | --- |
+| 1 | 001 Project scaffold | landed, PR #1 |
+| 2 | 002 Core state | landed, PR #2 |
+| 3 | 003 Client protocol | landed, PR #3 |
+| 4 | 004 CLI | landed, PR #4 |
+| 5 | 010 Attention requests | landed, PR #5 |
+| 6 | 009 Claims as leases | landed, PR #6 |
+| 7 | 006 Runner skeleton | landed, PR #7 |
+| — | 007 Runner runs the phase playbooks | **spiked, not merged** — PR #8 closed, split into 011–014 |
+| 8 | 011 Artefact refs | next |
+| 9 | 012 Spawn an agent, show what it does | planned |
+| 10 | 013 The agent asks the owner | planned |
+| 11 | 014 A phase ends in a verified artefact | planned |
+| 12 | 008 The full loop | planned, expect it to split too |
+| | 005 | dropped |
+
+## Background
+
+A prototype spike (2026-09-07, preserved on the `prototype` branch) built the previous
 architecture — separate board server, web UI, MCP endpoint, daemon — end to end and ran a
 real spec stage and develop stage against a toy repo. The project has since been renamed
 skelcrew and pivoted to the single-headless-daemon architecture (see AGENTS.md); the
@@ -247,24 +267,6 @@ to parse. No attention queue yet; 010 adds it, with the ping. Talks only to 003.
 Was "Agents join over MCP". Dropped 2026-09-08: agents use the CLI (004) as agent members.
 The number stays so earlier references resolve.
 
-## 010 — Attention requests
-
-Carved out of 002; built after 004, whose agent invocations are the first real producers. An agent
-finishing or blocking hands the card to a member with the resolving choices attached —
-approve → next phase, send back with feedback, answer a question — recorded as activity.
-Resolving one is an ordinary move or comment through the 002 interface, so nothing bypasses
-the log. The CLI gains its home view: what's waiting on you, resolvable in place, plus the
-ping — an attention request reaches the owner without polling (OS notification from a watch
-mode; the spec decides the mechanism). An agent raises and sees them through the same CLI.
-
-## 009 — Claims as leases
-
-Carved out of 002; built before 006, its first consumer. A member claims a card in a
-claimable phase atomically; the claim is a lease renewed by heartbeat; an expired lease
-returns the card to its queue as a first-class "run interrupted" event, so sleep, crash, and
-kill collapse into one visible path. Enforced in the core and exposed over 003 and the CLI
-like everything else — an agent at the CLI claims exactly as the runner does.
-
 ## 006 — Runner skeleton
 
 The execution half, behind the internal seam: watch claimable phases, claim a card on its
@@ -306,6 +308,50 @@ changes exactly what the finding names. Two not yet applied anywhere: a fix is d
 cases *next to* the reported one have been looked at — five half-fixes survived multiple rounds
 because "fixed" in a run record reads as settled — and each review round should be its own
 commit, since a squashed history cannot evidence red-before-green.
+
+## 008 — The full loop
+
+Close the loop the product exists for: Idea → Spec → Code → PR → Done. The
+owner moves an idea into Spec; the runner claims it and an agent writes the spec onto the
+card; the finish is an attention request, and approving it is the owner's move into
+Code (approval ends the human gesture: the card is queued there, the runner claims
+it and its status shows running, so position and status always reflect true state). The
+develop playbook is this repo's `/develop` made live: it commits the spec to `docs/specs/`
+as it starts, implements, then reviews the branch in a *fresh* context before the owner
+ever sees it, and verifies — review findings land as card comments, CHANGES REQUESTED loops
+back to the implementer within the run, and a bounded cycle budget (3) sends the card to
+the owner with what's unresolved instead of ping-ponging. The finish contract is a branch
+with commits and a PR; meeting it moves the card to PR, where the owner's queue only
+holds work that has survived independent review. The owner merges; the card lands in Done.
+Send back from PR is a comment plus a move to Code, which re-dispatches with
+history intact. When the default branch moves, the runner dry-run-merges each PR
+card's branch; a conflicted card auto-bounces to Code with a rebase brief and
+re-passes the in-run review before its PR updates. Includes failure and abandonment paths
+(worktree salvaged, card returned with a reason, attention request to the owner).
+Cross-member review — a different runner reviewing than the one that implemented — is
+deferred until a second runner exists. Depends on what 006 and 011–014 turn out to need —
+expect this entry to be rewritten from their findings before it is specified, and to be split
+the way 007 should have been: the in-run review loop with its cycle budget, and the
+default-branch/rebase machinery, are separable from the loop itself. When this
+lands, skelcrew can start building skelcrew.
+
+## 009 — Claims as leases
+
+Carved out of 002; built before 006, its first consumer. A member claims a card in a
+claimable phase atomically; the claim is a lease renewed by heartbeat; an expired lease
+returns the card to its queue as a first-class "run interrupted" event, so sleep, crash, and
+kill collapse into one visible path. Enforced in the core and exposed over 003 and the CLI
+like everything else — an agent at the CLI claims exactly as the runner does.
+
+## 010 — Attention requests
+
+Carved out of 002; built after 004, whose agent invocations are the first real producers. An agent
+finishing or blocking hands the card to a member with the resolving choices attached —
+approve → next phase, send back with feedback, answer a question — recorded as activity.
+Resolving one is an ordinary move or comment through the 002 interface, so nothing bypasses
+the log. The CLI gains its home view: what's waiting on you, resolvable in place, plus the
+ping — an attention request reaches the owner without polling (OS notification from a watch
+mode; the spec decides the mechanism). An agent raises and sees them through the same CLI.
 
 ## 011 — Artefact refs: the card records what it produced
 
@@ -367,32 +413,6 @@ recorded events only for the *reason* — never for the *decision*. Flags mainta
 switch were half-implemented five times over, each round finding the next unhandled case. A run
 must never write to a card whose claim it has lost, and a question the agent raised must never be
 replaced by the run's own note.
-
-## 008 — The full loop
-
-Close the loop the product exists for: Idea → Spec → Code → PR → Done. The
-owner moves an idea into Spec; the runner claims it and an agent writes the spec onto the
-card; the finish is an attention request, and approving it is the owner's move into
-Code (approval ends the human gesture: the card is queued there, the runner claims
-it and its status shows running, so position and status always reflect true state). The
-develop playbook is this repo's `/develop` made live: it commits the spec to `docs/specs/`
-as it starts, implements, then reviews the branch in a *fresh* context before the owner
-ever sees it, and verifies — review findings land as card comments, CHANGES REQUESTED loops
-back to the implementer within the run, and a bounded cycle budget (3) sends the card to
-the owner with what's unresolved instead of ping-ponging. The finish contract is a branch
-with commits and a PR; meeting it moves the card to PR, where the owner's queue only
-holds work that has survived independent review. The owner merges; the card lands in Done.
-Send back from PR is a comment plus a move to Code, which re-dispatches with
-history intact. When the default branch moves, the runner dry-run-merges each PR
-card's branch; a conflicted card auto-bounces to Code with a rebase brief and
-re-passes the in-run review before its PR updates. Includes failure and abandonment paths
-(worktree salvaged, card returned with a reason, attention request to the owner).
-Cross-member review — a different runner reviewing than the one that implemented — is
-deferred until a second runner exists. Depends on what 006 and 011–014 turn out to need —
-expect this entry to be rewritten from their findings before it is specified, and to be split
-the way 007 should have been: the in-run review loop with its cycle budget, and the
-default-branch/rebase machinery, are separable from the loop itself. When this
-lands, skelcrew can start building skelcrew.
 
 ## Later, deliberately unplanned
 
