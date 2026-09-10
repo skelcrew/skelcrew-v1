@@ -10,6 +10,12 @@
  * `selfApprovedReadOnlyGit` models the first of them for the git verbs this list stopped
  * naming, because that one is now load-bearing rather than merely recorded.
  *
+ * **Everything below governs tool calls, and a subprocess is not a tool call.** Read *What a
+ * subprocess reaches*, at the end of this comment, before reading any rule here as a boundary:
+ * one entry on this list starts a process that can do anything the daemon's user can, and it is
+ * there on purpose. Every rule that follows is worth having anyway — it decides what happens
+ * *in the ordinary course*, visibly, on the card — and none of them is a wall.
+ *
  * Eight rules shape it, each from a defect this project shipped or a review round that found
  * one:
  *
@@ -62,8 +68,14 @@
  *    `refs/heads/` and are *shared* by the main checkout and every linked worktree, so a run
  *    that can create, rename or repoint a branch changes the owner's repository rather than
  *    its own scratch copy — and can point the name its successor's base resolves from at a
- *    commit it wrote itself, instruction file included. No playbook runs `git branch`; a
- *    read-only use of it asks. `allowlistFor` closes the same hole from the other side.
+ *    commit it wrote itself, instruction file included. No playbook runs `git branch`, and every
+ *    form of it that writes a ref asks: `git branch -D`, `-m`, `-f` and `git branch <name>
+ *    <base>` each fail the harness's read-only validator, checked against the extracted table.
+ *    What does *not* ask is a read-only use — `git branch`, `--show-current`, `-a`, `-r`, `-v`,
+ *    `--list` are on the harness's own read-only tier, which runs to twenty-four git verbs and
+ *    not the six this list stopped naming. Absence from this list is not absence of the verb;
+ *    it is only the security half that rule 7 is claiming. `allowlistFor` closes the same hole
+ *    from the other side.
  * 8. **The file tools are anchored to the run's own worktree.** Choosing a ref the list cannot
  *    write is not enough while a file tool is on the list bare: a ref is a plain file, and
  *    `git rev-parse --git-common-dir` — unprompted — names the directory holding it, so a run
@@ -122,10 +134,46 @@
  *   class as the carried limitation that a run can write to another card.
  * - **`--as <member>` on the skelcrew entries** speaks as another member. `resolve` is off the
  *   list, so a run still cannot answer its own question; the same carried limitation.
+ * - **The scanned entry starts a subprocess, and nothing above governs one.** See below; it is
+ *   the largest of these by a wide margin, and the only one that makes the others moot.
  * - Nothing here sandboxes the agent: the list governs what runs **unprompted**, and everything
  *   else remains available by asking. This is a gate, not a jail — anchoring the file tools
  *   decides which writes ask, and denies only the one path whose whole purpose is to redirect
  *   the others.
+ *
+ * ## What a subprocess reaches
+ *
+ * Every rule above governs **tool calls**. A subprocess is not a tool call, and the playbooks
+ * exist to start one: the repository's own check command, which rule 6's scan pre-allows
+ * precisely so it need not ask. `bun run check` dispatches through `package.json` — a file
+ * inside the anchor, so writable unprompted — and runs `bun test`, which executes any test file
+ * the run wrote, every one of those also inside the anchor. Nothing in the permission layer sees
+ * what that process then does.
+ *
+ * This is not a defect awaiting a patch. A coding agent's work is to write code and run it;
+ * execution is the product, and a harness that could prevent it would be preventing the job.
+ * What follows is that this list is a narrower thing than it reads as, and it says so rather
+ * than claiming otherwise:
+ *
+ * - **The worktree anchor binds the file tools, not the machine.** A check subprocess writes
+ *   anything the daemon's user can write, refs and `.git/config` included. Rule 8 makes those
+ *   writes *ask when a tool makes them*; it does not make them impossible. The same goes for
+ *   rule 7's ref and for `deniedTools`.
+ * - **The verbs rule 4 withholds are obtained anyway.** The subprocess inherits `PATH` with the
+ *   shim and `SKELCREW_AS=runner` (`agentEnvironment` in `./shim`), so `skelcrew mv`, `claim`,
+ *   `release`, `archive` and `resolve` are all reachable — the run can move its own card past
+ *   the artefact check and answer its own permission question. Withholding them from the list is
+ *   worth doing (it keeps the agent from taking those actions *as itself*, visibly, in the
+ *   ordinary course) and it is not a boundary.
+ * - **Criteria 10b and 10c are true of tool calls and false of subprocesses**, which is how 013
+ *   words them. `allowsTool` and `runsUnprompted` answer "does this tool call ask", and no
+ *   assertion built on them says anything about what a process does once one has started.
+ *
+ * The rules that must survive this belong in the daemon, not in a list: the daemon knows which
+ * member is asking and which run holds the claim, and can refuse a gate-crossing move on its own
+ * authority whatever called it. That is **milestone 016**, and it is the reason this is recorded
+ * here rather than papered over. Out of scope for it and for 013: OS-level sandboxing of the
+ * subprocess, which is the only thing that would make the first bullet false.
  */
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
@@ -195,10 +243,13 @@ export function editsIn(worktreePath: string): string {
  * every tool that edits a file and `NotebookEdit` besides, but it does not block *reading* the
  * path — reading a ref was never the problem, writing one was. And the harness applies these
  * rules to the file commands it recognises inside Bash and to the targets of shell
- * redirections, but not to a subprocess that opens files itself — and the flag audit above
- * found several listed commands that do (`git commit -F`, `gh pr create -T`, `skelcrew body
- * --file`), all of them reading rather than writing. None of them writes a path it is given,
- * which is what this deny rule and the anchor above are for.
+ * redirections, but **not to a subprocess that opens files itself — and the scan puts exactly
+ * such an entry on the list, deliberately.** The repository's own check command is pre-allowed
+ * precisely so it need not ask; `bun run check` dispatches through `package.json` and runs the
+ * repository's tests, which are files the run wrote inside this anchor and so wrote unprompted.
+ * Nothing in the permission layer sees what that process then does, and this deny rule does not
+ * reach it. See *What a subprocess reaches* in the module doc above: it is the boundary of
+ * everything these two functions claim.
  */
 export function deniedTools(worktreePath: string): string[] {
   return [`Edit(${anchor(worktreePath)}/.git)`, `Edit(${anchor(worktreePath)}/.git/**)`];
@@ -270,7 +321,15 @@ function coversPath(content: string, path: string): boolean {
  * - Any other content is the exact command.
  * - Comparison is case-insensitive. The harness's is not — a divergence, recorded below.
  *
- * Five ways the model and the harness diverge, none compensated for here. The first two are
+ * **A payload that will not parse is treated as not pre-allowed**, and goes to the owner. That
+ * is the polarity of every `return false` below, and it is deliberate: the party choosing the
+ * payload is the party being gated, so a boundary that fails open is not a boundary. A `Bash`
+ * call whose `command` is not a string, a file tool's call naming no path, a redirection this
+ * cannot read — each asks. The one payload that parses and names no file and is still allowed
+ * is a call to a tool the list names bare (`Read`, `Grep`, `TodoWrite`), where there is no path
+ * for it to have named.
+ *
+ * Six ways the model and the harness diverge, none compensated for here. The first three are
  * this module's own reading of a rule; the other three are the harness allowing what this
  * module's list does not name, and are why the list is *not* the complete set of what runs
  * unprompted:
@@ -292,6 +351,10 @@ function coversPath(content: string, path: string): boolean {
  *   module does not: `git  log` with two spaces is allowed there and asks here. Narrow, and
  *   the one place a "this is allowed" assertion would be the imprecise one — there is no such
  *   assertion, and no entry or scanned line carries a double space.)
+ * - **An allow decision here needs one entry to cover every path a call resolves to**, where the
+ *   harness lets a different rule cover each of them (`PZe` looks each path up on its own and
+ *   requires all of them to land somewhere). Narrow, and identical under this list, which has
+ *   exactly one path entry. `filePaths` records the two places the path *set* is narrower.
  * - **The harness reads a wildcard rule as covering `xargs <that command>` too** — a divergence
  *   in what a *listed entry* matches. Having failed to match a wildcard allow rule against the
  *   command, it retries the pattern with `xargs ` in front whenever the pattern ends in an
@@ -490,11 +553,35 @@ export function allowsTool(
 }
 
 /**
+ * What every enumeration in this module was taken from. Containment does not age — the anchor
+ * holds whatever a flag table says — but enumeration does: `SAFE_GIT_FLAGS` transcribes a
+ * private table out of a binary this repository does not control, and the flag audit rule 2
+ * requires was performed against one git and one gh. The SDK is pinned exactly in `bun.lock`,
+ * which is the real protection; naming the version here ties the transcription to that pin, so a
+ * bump fails a test rather than moving the table underneath the list in silence.
+ */
+export const TRANSCRIBED_FROM = {
+  /** The agent SDK this package depends on; `claude.test.ts` checks it against what is installed. */
+  sdk: "0.3.266",
+  /** The `claude` binary that SDK ships and spawns, whose tables are transcribed below. */
+  cli: "2.1.266",
+  /** The git the flag audit was run against. */
+  git: "2.48.1",
+  /** The gh the flag audit was run against. */
+  gh: "2.86.0",
+} as const;
+
+/**
  * The harness's own safe-flag allowlist for the six read-only git verbs this list does not
- * name, read out of the shipped Claude Code binary the SDK spawns (`SZe`, version 2.1.266) and
- * transcribed whole. The harness self-approves a git command as read-only only when its verb is
- * a key here and every flag it carries is in that key's set; `--output` is in none of them,
- * which is what makes deleting the six entries close the hole rather than merely move it.
+ * name, read out of the shipped Claude Code binary the SDK spawns (`SZe`, the version
+ * `TRANSCRIBED_FROM.cli` names) and transcribed whole. The harness self-approves a git command
+ * as read-only only when its verb is a key here and every flag it carries is in that key's set;
+ * `--output` is in none of them, which is what makes deleting the six entries close the hole
+ * rather than merely move it.
+ *
+ * The table has more in it than these six: the harness's read-only tier runs to some two dozen
+ * git verbs. Only the six the fixed list stopped naming are transcribed, because only those are
+ * load-bearing here — see `selfApprovedReadOnlyGit`.
  */
 const SAFE_GIT_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
   (
@@ -555,16 +642,23 @@ const FLAG_WORD = /^-[A-Za-z0-9_-]/;
  * divergence `entryMatches` records, modelled for the six git verbs the fixed list stopped
  * naming, because criteria 10d and 10e are about exactly that boundary.
  *
- * It diverges from the harness in two known places, in opposite directions, and neither reaches
- * an assertion. **Narrower**: a command carrying a shell operator is refused outright rather
- * than split into parts and judged part by part, so `git status && ls` is self-approved there
- * and not here. **Wider**: `nBe`'s value rules — a `"none"` flag may not carry `=`, a
- * value-taking flag must have a value and it may not itself look like a flag — are not
- * modelled, so `git show --format` and `git status --short=x` are refused there and allowed
- * here. That second direction is the one a "this asks" assertion cannot afford, which is why
- * every such assertion here names `--output`, a flag absent from the harness's tables
- * altogether; and every "runs unprompted" assertion was run against the extracted validator
- * itself before it was written down.
+ * It diverges from the harness in three known places, and none reaches an assertion.
+ * **Narrower**: a command carrying a shell operator is refused outright rather than split into
+ * parts and judged part by part, so `git status && ls` is self-approved there and not here — as
+ * is `git status > <file>`, which the harness reads as a redirection and judges on its target.
+ * **Wider**, twice, and both are `nBe`'s value rules, which are not modelled. Its rules on a
+ * flag's own value — a `"none"` flag may not carry `=`, a value-taking flag must have a value
+ * and it may not itself look like a flag — so `git show --format` and `git status --short=x`
+ * are refused there and allowed here. And its rule on a *bundle* of one-letter flags: the
+ * harness requires each bundled letter's value type to be `"none"`, where the check below tests
+ * only membership, so `git status -sM` (`-M` takes a value) is refused there and allowed here.
+ *
+ * The wide direction is the one a "this asks" assertion cannot afford, which is why every such
+ * assertion here names `--output`, a flag absent from the harness's tables altogether; and every
+ * "runs unprompted" assertion was run against the extracted validator itself before it was
+ * written down. That table holds twenty-four git verbs, `git branch` among them; only the six
+ * the fixed list stopped naming are modelled here, so this function saying "no" means "this list
+ * does not decide it", not "the harness asks".
  */
 function selfApprovedReadOnlyGit(command: string): boolean {
   if (/[&|;<>()`$\n]/.test(command)) return false;

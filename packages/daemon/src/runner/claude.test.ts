@@ -4,10 +4,11 @@
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDriver, AgentRunOptions } from "./agent";
+import { TRANSCRIBED_FROM } from "./allowlist";
 import { buildSdkOptions, claudeDriver, drive, toEvents } from "./claude";
 
 /** The fields this driver reads; the SDK's own literals carry a great deal more. */
@@ -53,6 +54,24 @@ test("the harness SDK is named by exactly one source file, and imported by exact
     // This file, for the message literals its translation tests are written over.
     "packages/daemon/src/runner/claude.test.ts",
     "packages/daemon/src/runner/claude.ts",
+  ]);
+});
+
+/**
+ * Containment does not age; enumeration does. `allowlist.ts` transcribes a private flag table
+ * out of the `claude` binary this SDK ships and spawns, and audits git's and gh's flags by hand.
+ * The SDK is pinned exactly in `bun.lock`, which is the real protection — but nothing tied the
+ * transcription to that pin, so a bump could move the table underneath the list in silence. It
+ * fails here instead, and becomes a decision someone makes on purpose. The assertion lives in
+ * this file because this is the one place the SDK is named, per the test above.
+ */
+test("the harness the allowlist's tables were transcribed from is the one installed", () => {
+  const sdk = dirname(Bun.resolveSync("@anthropic-ai/claude-agent-sdk", import.meta.dir));
+  const version = (name: string): string =>
+    JSON.parse(readFileSync(join(sdk, name), "utf8")).version;
+  expect([version("package.json"), version("manifest.json")]).toEqual([
+    TRANSCRIBED_FROM.sdk,
+    TRANSCRIBED_FROM.cli,
   ]);
 });
 
