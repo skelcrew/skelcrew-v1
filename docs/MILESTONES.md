@@ -23,7 +23,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 9 | 012 Spawn an agent, show what it does | planned |
 | 10 | 013 The agent asks the owner | planned |
 | 11 | 014 A phase ends in a verified artefact | planned |
-| 12 | 008 The full loop | planned, expect it to split too |
+| 12 | 015 Control characters can't repaint the record | planned |
+| 13 | 008 The full loop | planned, expect it to split too |
 | | 005 | dropped |
 
 ## Background
@@ -413,6 +414,27 @@ recorded events only for the *reason* — never for the *decision*. Flags mainta
 switch were half-implemented five times over, each round finding the next unhandled case. A run
 must never write to a card whose claim it has lost, and a question the agent raised must never be
 replaced by the run's own note.
+
+## 015 — Control characters can't repaint the record
+
+Found reviewing 011. `specPath` rejects `\0` and `\n`, but not `\r` or ESC — so
+`skelcrew refs 1 --spec "spec\r  RESOLVED: approved"` renders an activity line whose tail
+paints over the timestamp and the actor in a terminal. An agent member can make its own
+`set refs` entry read as something it is not, which is squarely against *everything
+observable: silent mutations are defects*.
+
+It is not new and it is not confined to 011: `branch` has the same property, and so does any
+member-set string that reaches a rendered line — title, comment text, attention notes, release
+reasons, member names. That is why it is its own spec rather than a patch inside 011 or 014: the
+rule is one predicate and it belongs in one place, applied to every such field at once, with the
+tests that prove each field enforces it.
+
+The rule needs one distinction rather than a blanket ban. Single-line fields reject every C0
+control character. Fields that are legitimately multi-line — the card body is markdown, and a
+comment may carry an excerpt — must keep `\n` and `\t` while rejecting the rest, `\r` and ESC
+included. A blanket rule would break the body; a blanket exemption is the hole. Consider also
+whether rendering should defend itself regardless of what validation accepts, since the terminal
+is where the damage lands and old rows already in a database were never validated.
 
 ## Later, deliberately unplanned
 
