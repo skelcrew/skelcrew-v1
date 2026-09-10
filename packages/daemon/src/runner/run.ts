@@ -249,8 +249,9 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   let stopping = false;
   /** The agent moved, released, or archived its own card: the run is over, and failed. */
   let selfAction: string | undefined;
-  /** A member released the card explicitly (not a move, not a lapse): the run stops and waits. */
+  /** Who released this run's claim, when someone else did: why the run stopped, not whether. */
   let releasedBy: string | undefined;
+  /** The card left this phase, or was archived, at some point during the run. */
   let movedAway = false;
   const messages = inbox();
   messages.push(cardPrompt(card, branch, base.name));
@@ -390,23 +391,20 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // artefact before any handoff, and a card the agent moved on has skipped that gate.
       case "card_moved":
         movedAway = true;
-        // A move supersedes a release that came just before it: the card the release would
-        // have been reported on is not this card any more, so the run abandons instead.
-        releasedBy = undefined;
         if (event.actorId === member.id) selfAction ??= `moved its own card (to ${event.data.to})`;
         check();
         return;
       case "card_archived":
         movedAway = true;
-        releasedBy = undefined;
         if (event.actorId === member.id) selfAction ??= "archived its own card";
         check();
         return;
       case "released":
         if (event.actorId === member.id) {
           selfAction ??= `released its own card (${event.data.reason ?? "no reason"})`;
-        } else if (!movedAway) {
-          // An explicit release by someone else: the owner's exit ramp, not a lapse.
+        } else {
+          // Someone else let the claim go. Whether that is still what the card shows is
+          // decided at the end, from the card; this is only the name to report if it is.
           releasedBy = core.getMember(event.actorId).name;
         }
         check();
@@ -513,18 +511,43 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       warn(`skelcrew runner: card ${id}: ${note}; and could not say so: ${message(error)}`);
     }
   };
-  // The claim is gone in both of these, taken by the agent's own hand or the owner's;
-  // neither is an abandonment, because the card must not become ready again silently. The
-  // tool calls of the window that was still open land with them: what the agent did is
+  /**
+   * How the run ends, read off the card as it is now — who holds the claim, and where the
+   * card is — rather than decided by what the run remembers happening to it. The events the
+   * run saw supply the reason to report, never the outcome: an event kind this switch was
+   * never taught about can then no longer end in a write to a card that is someone else's,
+   * because the write needs the card itself to say the card is still free and still here.
+   *
+   * `stop` is the exception the card cannot be read for: the claim is gone, so nothing is
+   * released, but the card must not become ready again silently, so the run says why it
+   * stopped and leaves the card waiting on the owner.
+   */
+  type Ending = { kind: "held" } | { kind: "stop"; note: string } | { kind: "gone" };
+  const ending = ((): Ending => {
+    // The one thing the card cannot answer: what this run's own agent did. A card the agent
+    // moved, released, or archived is reported on wherever it ended up — an agent that
+    // bypassed its gate is an accountability record, and the state it left behind is its
+    // own doing, not evidence about who the card belongs to.
+    if (selfAction !== undefined) {
+      return { kind: "stop", note: `run failed: the agent ${selfAction}` };
+    }
+    if (input.lost() === undefined) return { kind: "held" };
+    const atEnd = core.getCard(id);
+    // Free, still here, and never away: nobody has taken the card over, so an explicit
+    // release — the owner's exit ramp — is reported and the card waits. Anything else, a
+    // claim by another member included, is an abandonment: one comment and nothing more.
+    const free =
+      atEnd.claim === null && atEnd.archivedAt === null && atEnd.phase === card.phase && !movedAway;
+    if (free && releasedBy !== undefined) {
+      return { kind: "stop", note: `run stopped: released by ${releasedBy}` };
+    }
+    return { kind: "gone" };
+  })();
+  // The tool calls of the window that was still open land with a stop: what the agent did is
   // visible on the card, or it happened invisibly.
-  if (selfAction !== undefined) {
+  if (ending.kind === "stop") {
     flushTools(true);
-    stopWith(`run failed: the agent ${selfAction}`);
-    return;
-  }
-  if (releasedBy !== undefined) {
-    flushTools(true);
-    stopWith(`run stopped: released by ${releasedBy}`);
+    stopWith(ending.note);
     return;
   }
 

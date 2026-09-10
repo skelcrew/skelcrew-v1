@@ -1420,3 +1420,49 @@ test("a tag shadowing the base branch does not pass a run with no commits: the r
   expect(card.refs.commits).toBeUndefined();
   expect(card.phase).toBe("code");
 });
+
+test("a claim that follows a release supersedes it: the run is abandoned and the new holder's card is left alone", async () => {
+  await initRepo();
+  const driver = endless();
+  start({ driver: driver.driver });
+  core.createCard({ title: "Taken over" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working…"));
+  core.moveCard(1, "spec", owner.id);
+  await working;
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  // The owner takes the card back and holds it: the run's stop request would land on a
+  // card that is the owner's now.
+  core.releaseCard(1, { reason: "I'll take it from here" }, owner.id);
+  core.claimCard(1, {}, owner.id);
+  await abandoned;
+  await Bun.sleep(300);
+
+  expect(driver.aborted()).toBe(true);
+  const card = core.getCard(1);
+  expect(card.claim?.by).toBe(owner.id);
+  expect(card.attention).toBeNull();
+  expect(comments(1).filter((c) => c.startsWith("run "))).toEqual([
+    `run abandoned: claim lost to member ${owner.id}; card is in spec`,
+  ]);
+});
+
+test("an archive that follows a release supersedes it too: the run is abandoned and the archived card is left alone", async () => {
+  await initRepo();
+  const driver = endless();
+  start({ driver: driver.driver });
+  core.createCard({ title: "Taken back then archived" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working…"));
+  core.moveCard(1, "spec", owner.id);
+  await working;
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  core.releaseCard(1, { reason: "I'll take it from here" }, owner.id);
+  core.archiveCard(1, owner.id);
+  await abandoned;
+  await Bun.sleep(300);
+
+  expect(driver.aborted()).toBe(true);
+  const card = core.getCard(1);
+  expect(card.archivedAt).not.toBeNull();
+  expect(card.attention).toBeNull();
+  expect(comments(1).filter((c) => c.startsWith("run "))).toEqual(["run abandoned: card archived"]);
+});
