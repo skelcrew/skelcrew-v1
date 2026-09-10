@@ -261,3 +261,118 @@ card gets `could not ask the owner about …`, and the next queued ask is raised
 ### Checks
 
 `bun run check` green: 403 tests, 0 fail.
+
+## Review round 2
+
+The plan, before any of it was written:
+
+1. **Critical** — `Bash(git branch *)` off the fixed list (spec and `code.md` prose with it),
+   and the scan's base moved from `refs/heads/<default>` — which every worktree shares — to
+   the remote-tracking `refs/remotes/origin/<default>`, which nothing on the fixed list can
+   write. Red first as criterion 10b: two consecutive runs, the first committing an
+   instruction file and repointing `main` at it.
+2. **Important** — the ending's "may this replace the open request?" predicate becomes a
+   value both `run.ts` and `runner.ts` hold, required by `RunEnding`, so no ending path can
+   omit it.
+3. **Minor 1** — the harness's `xargs <pattern>` fallback recorded as a fifth divergence.
+4. **Minor 2** — `code.md`'s pre-allowed paragraph asserted against `FIXED_ALLOWLIST` in both
+   directions, instead of the list being checked against the playbook's own restatement.
+5. **Minor 3** — `scanInstructions` tolerates CRLF.
+
+Files expected: `packages/daemon/src/runner/allowlist.ts`, `allowlist.test.ts`, `run.ts`,
+`run.test.ts`, `runner.ts`, `ending.ts`, `playbooks.test.ts`,
+`packages/daemon/playbooks/code.md`, this file.
+
+### Critical — a run could still widen its successor's allowlist
+
+Round 1 moved the scan off the working tree and onto `git show <base>:…`, but `<base>` was
+`git.defaultBranch`'s sha, resolved from `refs/heads/<name>` — a local, mutable ref shared by
+the main checkout and every linked worktree — and `Bash(git branch *)` was pre-allowed. Write
+`AGENTS.md`, `git add -A`, `git commit`, `git branch -m main trunk`, `git branch main HEAD`,
+and the next run is spawned with whatever that file says.
+
+Two fixes, neither sufficient alone.
+
+**`Bash(git branch *)` left the fixed list.** The spec had already dropped it: branch refs are
+shared, so `git branch` writes the owner's repository, not a scratch copy. No playbook runs it;
+a read-only use asks. `code.md` advertised `branch` and no longer does.
+
+**The scan's base is `refs/remotes/origin/<default branch>`.** Chosen because nothing on the
+fixed list can write a ref under `refs/remotes/`: the four commands that write those refs are
+`fetch`, `pull`, `remote` and `push`, and only `push` is listed — as `git push -u origin HEAD`,
+which pushes the worktree's HEAD and so writes the card branch's remote-tracking ref alone, and
+as a bare `git push`, which under `push.default = matching` does push the default branch but
+only at the value that branch already holds. No pre-allowed command can change that value: a
+run's commits land on its own HEAD, and `git branch` is gone. An absent or unreadable ref grants
+nothing, as before, so a repository with no origin has its check commands ask.
+
+Red first, as criterion 10b, driven through two consecutive runs against a repository whose
+origin carries `AGENTS.md`:
+
+```
+expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"])
+-   "Bash(bun run check *)",
++   "Bash(bun run evil *)",
+```
+
+The signature change — `allowlistFor(git, repoRoot, defaultBranch)` takes the branch name and
+builds the ref itself — could not manufacture that green: the test drives the runner end to
+end, and the assertion is that the *legitimate* grant survives beside the attacker's being
+refused, so a scan that silently stopped working would fail it too.
+
+### Important — the ending predicate, made impossible to forget
+
+`runner.ts`'s failed-step ending called `endRun` without `replaces`, and that is where a throw
+out of `runPlaybook` lands — including the driver iterator's `return()` throwing in the
+`finally`, which had a test already. Red:
+
+```
+expect(request?.note).toContain("the harness died on cleanup")
+Received: "allow Bash rm -rf build? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)"
+```
+
+Rather than adding `replaces: isRaisedHere` to that one call, the rule stopped being something
+a call site remembers. `ending.ts` exports `RunQuestion` — `raised(request)` / `isOpen(request)`
+around the record the core made for the run's own `requestAttention` — and `RunEnding.question`
+is **required**. The runner makes one per run, before anything can end, and hands the same value
+to `runPlaybook` and to its own ending. A path added later has nothing to leave out: there is
+one value in scope, and `tsc` asks for it.
+
+The neighbour holds unchanged: an agent-raised `skelcrew attention` question survives the
+session ending, the time limit and this same throw — three tests, none touched.
+
+### Minor 1 — a fifth harness divergence
+
+`Ode` in the shipped binary retries a wildcard allow rule as `LV("xargs " + pattern, command)`
+whenever the pattern ends in an unescaped `*` (the guard is `Rur`, which is exactly that test),
+so `Bash(git status *)` also allows `xargs git status -s` there. Recorded, with the reason it
+adds no reachable power here: the alias runs the command the entry names with words appended
+from stdin, which the entry's trailing `*` already allows, and the two entries where an alias
+would matter — `Bash(git push -u origin HEAD)` and `Bash(git push)` — carry no wildcard, so they
+get no retry.
+
+### Minor 2 — the playbook restated the list, and the test was circular
+
+`playbooks.test.ts` extracted `code.md`'s own prose and checked the list covered it. `code.md`
+now names each entry as the list names it, and the test compares the two sets both ways. Red
+before the playbook was rewritten:
+
+```
+- "git status", "git log", … "skelcrew body", "skelcrew refs",
++ "status", "log", … "body", "refs",
+```
+
+### Minor 3 — CRLF
+
+The closing-fence pattern ended `[ \t]*$`, so a `\r` made every block look unterminated and a
+CRLF repository granted nothing, silently. Lines are split with the `\r` dropped. Red:
+`expect(await scanned()).toEqual(["Bash(bun run check *)"])` received `[]`.
+
+### Files, round 2
+
+`packages/daemon/src/runner/allowlist.ts`, `allowlist.test.ts`, `ending.ts`, `run.ts`,
+`run.test.ts`, `runner.ts`, `playbooks.test.ts`, `packages/daemon/playbooks/code.md`, this file.
+
+### Checks
+
+`bun run check` green: 409 tests, 0 fail.
