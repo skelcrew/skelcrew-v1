@@ -57,8 +57,9 @@ run waits, the run stops rather than continuing against a card that has moved on
 `CLAUDE.md` shows `bun run check` in a fenced block has that command pre-allowed, so an agent
 following the repository's stated conventions is not stopped to ask permission for them.
 
-**The repository cannot widen what the fixed list narrowed.** A target repo whose instructions
-show a `git status` line must not thereby re-grant `git` as a whole.
+**A repository documenting its commands cannot accidentally widen what the fixed list narrowed.**
+A target repo whose instructions show a `git status` line must not thereby re-grant `git` as a
+whole. The qualifier is exact and is not a hedge: see *What a scan cannot be*.
 
 ## Implementation approach
 
@@ -325,7 +326,37 @@ subprocess, which is the only thing that would make the first bullet false.
 **A scanned command may not widen a command the fixed list narrows.** `skelcrew`, `git` and `gh`
 are narrowed above; a repo whose instructions show `git status` must not thereby produce
 `Bash(git *)`. This is not hypothetical — it is a defect the spike shipped and had to fix, and
-any repo documenting a git command triggers it.
+any repo documenting a git command triggers it. The check must read **every word** of the line,
+not its first: a prefix word puts the narrowed verb in position two, where a first-word check
+never looks, and `env git push origin HEAD:main`, `command gh pr merge 42` and
+`env skelcrew resolve 1 -m allow` were each verified to run unprompted through that gap. Each is
+an action the spec reserves to the owner.
+
+### What a scan cannot be
+
+Reading every word closes the gap above and does not make the scan a boundary, because nothing
+can. A repository whose fenced block is the single word `sh` yields `Bash(sh *)`, which matches
+`sh -c '<anything>'`. There is no narrowed verb to find and no character to reject: the line is a
+plain command word, and running the command the repository documents is the whole point of the
+scan.
+
+This is the same fact as *What a subprocess reaches*, reached from the other side. A repository's
+check command is arbitrary execution by construction — whether it arrives as `sh` in the entry or
+as a test file the check command runs. So:
+
+- The no-widening rule, and the *"cannot widen what the fixed list narrowed"* claim above, are
+  true of the **fixed list** and of **good-faith documentation**, which is what they were written
+  against: the defect they exist to catch is a repo that documents `git status` and accidentally
+  re-grants `git`. Read that way they are worth having and are enforced.
+- They are **not** true against an instruction file written to attack, and criteria 10b and 10c
+  inherit the same limit: their "tool calls" qualifier bounds them against the fixed list, not
+  against whatever a hostile repository pre-allows for itself.
+- What follows is the same conclusion as before. The rules that must survive a repository the
+  owner has not read belong in the daemon (milestone 016), and the pre-merge reading of a target
+  repo's instruction files is the owner's, not the runner's. The scan reading only the **base
+  commit** is what keeps that reading meaningful: what grants anything is what the owner merged.
+
+`allowlist.ts` must say this where it currently claims the opposite.
 
 ## Acceptance criteria
 
@@ -376,6 +407,10 @@ any repo documenting a git command triggers it.
 10f. The record says what a subprocess reaches. `allowlist.ts` and the Code playbook both carry
     it, naming the `skelcrew` verbs it obtains, and no artefact in this spec claims a boundary
     a subprocess does not respect.
+10h. The no-widening check reads every word of the scanned line. Specifically, fenced
+    `env git push origin HEAD:main`, `command gh pr merge 42`, `nice git push` and
+    `env skelcrew resolve 1 -m allow` each contribute nothing, and no artefact claims the scan
+    is a boundary against an instruction file written to attack.
 10g. A scanned line that would produce more than one rule contributes nothing. Specifically, a
     fenced ``bun run) Bash(git`` and a fenced ``bun run) Bash(sh`` each yield no entry, and every
     entry the scan produces parses as exactly one rule — asserted against the harness's own
