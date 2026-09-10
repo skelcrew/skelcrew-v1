@@ -42,7 +42,11 @@ export interface Git {
   worktreePrune(repoRoot: string): Promise<void>;
   /** Every path `git status --porcelain` reports in the worktree, untracked files included. */
   status(worktreePath: string): Promise<string[]>;
-  /** The shas `git rev-list <range>` lists, newest first, at most `max` of them. */
+  /**
+   * The shas `git rev-list <range>` lists, newest first, at most `max` of them. The range is
+   * passed to git as it is given, so its ends are the caller's to spell unambiguously —
+   * `refs/heads/<name>` rather than `<name>`, which git may resolve to a tag of that name.
+   */
   revList(repoRoot: string, range: string, max: number): Promise<string[]>;
 }
 

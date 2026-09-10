@@ -595,7 +595,17 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   // recording, not the URL. Without that, a run that did nothing passes on the commits and
   // the URL an earlier run earned, and the card is handed on as ready for review again.
   const recorded = since.some((e) => e.type === "refs_set" && e.data.refs.prUrl !== undefined);
-  const commits = await git.revList(input.repoRoot, `${base.name}..${branch}`, COMMITS_MAX_COUNT);
+  // Both ends of the range are the branches themselves, spelled in full: git resolves a bare
+  // name by precedence, and `refs/tags/<name>` outranks `refs/heads/<name>`, so a repository
+  // that tags a release with a branch's name would have the gate compare against the tag —
+  // and a run that committed nothing would pass on the base branch's own commits. This is
+  // how the base branch is looked up in the first place (`git.ts`'s `defaultBranch`) and how
+  // the card's branch is checked for before it is created (`runner.ts`).
+  const commits = await git.revList(
+    input.repoRoot,
+    `refs/heads/${base.name}..refs/heads/${branch}`,
+    COMMITS_MAX_COUNT,
+  );
   input.stillHeld();
   const changed = await git.status(path);
   input.stillHeld();

@@ -1398,3 +1398,25 @@ test("a move that follows a release supersedes it: the run is abandoned and the 
     "run abandoned: claim lost; card is in idea",
   ]);
 });
+
+test("a tag shadowing the base branch does not pass a run with no commits: the range is the branch's, not the tag's", async () => {
+  await initRepo();
+  // A release tagged with the base branch's own name. `refs/tags/main` outranks
+  // `refs/heads/main` when git resolves the bare name, so a range built from short names
+  // counts the base's own commits as this branch's work.
+  await sh(repo, "tag", "main");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "base work after the tag");
+  const { driver } = scripted(function* () {
+    core.setRefs(1, { prUrl: PR }, runnerMember.id);
+    yield { type: "result", ok: true };
+  });
+  start({ driver });
+  await runCard("Tagged base", "code", "failed");
+
+  const card = core.getCard(1);
+  const last = comments(1).at(-1) as string;
+  expect(last).toBe("run finished with no commits on skelcrew/1-tagged-base past main");
+  expect(card.attention).toMatchObject({ to: owner.id, note: last, moves: [] });
+  expect(card.refs.commits).toBeUndefined();
+  expect(card.phase).toBe("code");
+});
