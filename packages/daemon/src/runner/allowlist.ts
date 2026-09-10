@@ -127,6 +127,7 @@
  *   decides which writes ask, and denies only the one path whose whole purpose is to redirect
  *   the others.
  */
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Git } from "./git";
 
@@ -203,10 +204,39 @@ export function deniedTools(worktreePath: string): string[] {
   return [`Edit(${anchor(worktreePath)}/.git)`, `Edit(${anchor(worktreePath)}/.git/**)`];
 }
 
-/** The path a file tool's call is about, absolute, or undefined when it names none. */
-function filePath(input: Record<string, unknown>): string | undefined {
-  const path = input.file_path ?? input.notebook_path ?? input.path;
-  return typeof path === "string" ? resolve(path) : undefined;
+/**
+ * Every path a file tool's call is about — the one it names, and where that lands once symlinks
+ * are followed. `resolve` is *lexical*: it normalises `..` and absolutises, and never follows a
+ * link, so a target repository carrying `docs/vendor -> /etc` would make
+ * `<worktree>/docs/vendor/passwd` match the anchor on the text while the write landed in `/etc`.
+ *
+ * The harness does not decide it on the text. Its path-set builder adds every symlink hop and
+ * the path's `realpathSync` to the set it checks, and its allow lookup allows only when *every*
+ * path in that set matches a rule, while one deny match anywhere denies — so a link out of the
+ * anchor asks. Both halves were run against the shipped binary with the rules `editsIn` and
+ * `deniedTools` produce and a real link out of a real worktree.
+ *
+ * Two things this leaves narrower than the harness, neither of them a "runs unprompted" claim:
+ * only the final `realpathSync` is added, where the harness also adds each intermediate hop; and
+ * a path that does not exist yet cannot be resolved, so a new file is judged on its text alone —
+ * which is what the harness does too, its canonicalisation being a `realpathSync` that throws on
+ * a path with no file at the end of it.
+ *
+ * The consequence worth stating: under a worktree whose own path runs through a symlink, an
+ * *existing* file inside it resolves to a path the rule does not spell, and asks. The rule is
+ * written from the path the runner was given, so this is only reached when that path is itself
+ * unresolved.
+ */
+function filePaths(input: Record<string, unknown>): string[] {
+  const named = input.file_path ?? input.notebook_path ?? input.path;
+  if (typeof named !== "string") return [];
+  const lexical = resolve(named);
+  try {
+    const real = realpathSync(lexical);
+    return real === lexical ? [lexical] : [lexical, real];
+  } catch {
+    return [lexical];
+  }
 }
 
 /**
@@ -289,14 +319,29 @@ function coversPath(content: string, path: string): boolean {
  * tier can be dropped on a machine with an IT-managed one — so `canUseTool` stays
  * authoritative and no assertion here claims the list is the complete set.
  */
-function entryMatches(entry: string, tool: string, input: Record<string, unknown>): boolean {
+function entryMatches(
+  entry: string,
+  tool: string,
+  input: Record<string, unknown>,
+  behavior: "allow" | "deny" = "allow",
+): boolean {
   const parsed = ENTRY.exec(entry);
   if (parsed === null) return false;
   const [, name, content] = parsed;
   if (name === "Edit" && content !== undefined) {
     if (!EDITING_TOOLS.has(tool)) return false;
-    const path = filePath(input);
-    return path !== undefined && coversPath(content, path);
+    const paths = filePaths(input);
+    // Fail closed: a payload that names no file it can read is *not* pre-allowed. A boundary
+    // that fails open is not a boundary, and the party choosing the payload is the party
+    // being gated. The one call that is allowed on no path at all is a call to a tool the
+    // list names bare, below — a payload that parses and names no file because the tool has
+    // none to name.
+    if (paths.length === 0) return false;
+    // One deny match denies; an allow has to cover every path the call resolves to, the way
+    // the harness's own lookup does.
+    return behavior === "deny"
+      ? paths.some((path) => coversPath(content, path))
+      : paths.every((path) => coversPath(content, path));
   }
   if (name !== tool) return false;
   if (content === undefined) return true;
@@ -312,6 +357,122 @@ function entryMatches(entry: string, tool: string, input: Record<string, unknown
   return command === rule;
 }
 
+/** What a command's redirections write, and what is left of the command once they are gone. */
+interface Redirections {
+  /** The command with its redirections stripped: what a rule is matched against. */
+  command: string;
+  /** Every file a redirection writes, `/dev/null` and file-descriptor duplicates aside. */
+  targets: string[];
+  /** False when a redirection is a shape this cannot read; such a call is not pre-allowed. */
+  readable: boolean;
+}
+
+/**
+ * A redirection target the harness refuses to reason about and asks about outright: a tilde or
+ * variable expansion, a command substitution, a brace or glob, or a `..` segment that could
+ * leave the anchor through a link. `iT` in the shipped binary names each of these as its own
+ * refusal; here they collapse into "not pre-allowed", which is the same answer.
+ */
+const UNREADABLE_TARGET = /[$`~*?[\]{}]|(?:^|\/)\.\.(?:\/|$)/;
+
+/**
+ * A command's output redirections, read the way the harness reads them. `>` writes a file with
+ * no file tool anywhere in the call, so a rule matched against the command text alone would
+ * have said `git commit -m x > <common>/refs/remotes/origin/main` was pre-allowed — round 4's
+ * `--output` finding reached through a shell operator instead of a flag.
+ *
+ * The harness splits the two apart: it matches a rule against the command *without* its
+ * redirections (`jm` walks a `redirected_statement` skipping its `_redirect` children), and
+ * checks each target against the `Edit` rules on its own (`jbo`), where a deny rule denies and a
+ * target no allow rule covers becomes a question no allow rule can override. This models that;
+ * `>>`, `&>`, `>|` and a leading file descriptor are the same redirection, `2>&1` and `>&-`
+ * duplicate a descriptor rather than naming a file, and `>(…)` is process substitution, which
+ * the harness asks about whatever it is redirected into.
+ */
+function redirectionsIn(command: string): Redirections {
+  const targets: string[] = [];
+  let kept = "";
+  let quote: string | undefined;
+  let i = 0;
+  while (i < command.length) {
+    const c = command[i] as string;
+    if (quote !== undefined) {
+      kept += c;
+      if (c === quote) quote = undefined;
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      kept += c;
+      i += 1;
+      continue;
+    }
+    if (c === "\\" && i + 1 < command.length) {
+      kept += c + command[i + 1];
+      i += 2;
+      continue;
+    }
+    if (c !== ">") {
+      kept += c;
+      i += 1;
+      continue;
+    }
+    // The descriptor or `&` that belongs to this redirection went into `kept` a moment ago.
+    kept = kept.replace(/(?:&|\d+)$/, "");
+    i += 1;
+    if (command[i] === ">") i += 1;
+    if (command[i] === "|") i += 1;
+    if (command[i] === "(") return { command, targets, readable: false };
+    let duplicate = false;
+    if (command[i] === "&") {
+      duplicate = true;
+      i += 1;
+    }
+    while (command[i] === " " || command[i] === "\t") i += 1;
+    const from = i;
+    while (i < command.length && !" \t\n;|&".includes(command[i] as string)) i += 1;
+    const word = command.slice(from, i).replace(/^(['"])(.*)\1$/, "$2");
+    if (duplicate && /^(?:\d+|-)$/.test(word)) continue;
+    if (word === "") return { command, targets, readable: false };
+    if (UNREADABLE_TARGET.test(word)) return { command, targets, readable: false };
+    if (word !== "/dev/null") targets.push(word);
+  }
+  if (targets.length === 0 && kept === command) return { command, targets, readable: true };
+  return { command: kept.replace(/[ \t]+/g, " ").trim(), targets, readable: true };
+}
+
+/** Whether a redirection may write this path without asking: the `Edit` rules, on the target. */
+function redirectionAllowed(
+  target: string,
+  list: readonly string[],
+  denied: readonly string[],
+): boolean {
+  const input = { file_path: target };
+  if (denied.some((entry) => entryMatches(entry, "Edit", input, "deny"))) return false;
+  return list.some((entry) => entryMatches(entry, "Edit", input, "allow"));
+}
+
+/**
+ * The call a rule is matched against once its redirections are accounted for, or undefined when
+ * a redirection alone means the call is not pre-allowed. This is a whole-list question rather
+ * than a per-entry one — a target is checked against every `Edit` rule, not against the entry
+ * the command happens to match — which is why it sits here and not in `entryMatches`.
+ */
+function pastRedirections(
+  tool: string,
+  input: Record<string, unknown>,
+  list: readonly string[],
+  denied: readonly string[],
+): Record<string, unknown> | undefined {
+  if (tool !== "Bash" || typeof input.command !== "string") return input;
+  const found = redirectionsIn(input.command);
+  if (!found.readable) return undefined;
+  if (found.targets.length === 0) return input;
+  if (!found.targets.every((target) => redirectionAllowed(target, list, denied))) return undefined;
+  return { ...input, command: found.command };
+}
+
 /**
  * Whether the list pre-allows this call, and so never asks the run about it. A `denied` entry
  * outranks every allow entry, the way the harness's deny rules do.
@@ -322,8 +483,10 @@ export function allowsTool(
   list: readonly string[] = FIXED_ALLOWLIST,
   denied: readonly string[] = [],
 ): boolean {
-  if (denied.some((entry) => entryMatches(entry, tool, input))) return false;
-  return list.some((entry) => entryMatches(entry, tool, input));
+  if (denied.some((entry) => entryMatches(entry, tool, input, "deny"))) return false;
+  const call = pastRedirections(tool, input, list, denied);
+  if (call === undefined) return false;
+  return list.some((entry) => entryMatches(entry, tool, call));
 }
 
 /**
@@ -434,8 +597,10 @@ export function runsUnprompted(
   list: readonly string[] = FIXED_ALLOWLIST,
   denied: readonly string[] = [],
 ): boolean {
-  if (denied.some((entry) => entryMatches(entry, tool, input))) return false;
-  if (list.some((entry) => entryMatches(entry, tool, input))) return true;
+  if (denied.some((entry) => entryMatches(entry, tool, input, "deny"))) return false;
+  const call = pastRedirections(tool, input, list, denied);
+  if (call === undefined) return false;
+  if (list.some((entry) => entryMatches(entry, tool, call))) return true;
   return tool === "Bash" && typeof input.command === "string"
     ? selfApprovedReadOnlyGit(input.command)
     : false;

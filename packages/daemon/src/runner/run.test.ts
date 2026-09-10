@@ -1180,6 +1180,10 @@ test("no unprompted command writes the ref through a flag: git log --output is n
       for (const path of [forge, inside]) {
         unprompted.push([path, runs(`git log -1 --format=%H --output=${path}`)]);
       }
+      // And the same step reached through a shell operator rather than through a flag: a
+      // redirection writes a file with no file tool in the call at all.
+      unprompted.push([`> ${forge}`, runs(`git log -1 --format=%H > ${forge}`)]);
+      unprompted.push([`>> ${forge}`, runs(`git commit --allow-empty -m sha >> ${forge}`)]);
       yield { type: "result", ok: true };
     }),
   });
@@ -1192,6 +1196,8 @@ test("no unprompted command writes the ref through a flag: git log --output is n
     ["git rev-parse", true],
     [forge as string, false],
     [inside as string, false],
+    [`> ${forge}`, false],
+    [`>> ${forge}`, false],
   ]);
 });
 
@@ -1224,6 +1230,7 @@ test("no unprompted command writes the git config through a flag, so the bare pu
       );
       config = join(common, "config");
       unprompted.push([config, runs(`git log -1 --format=%B --output=${config}`)]);
+      unprompted.push([`> ${config}`, runs(`git log -1 --format=%B > ${config}`)]);
       yield { type: "result", ok: true };
     }),
   });
@@ -1235,6 +1242,7 @@ test("no unprompted command writes the git config through a flag, so the bare pu
     ["git push", true],
     ["git rev-parse --git-common-dir", true],
     [config as string, false],
+    [`> ${config}`, false],
   ]);
 });
 
