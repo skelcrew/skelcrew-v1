@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allowsTool, FIXED_ALLOWLIST } from "./allowlist";
+import { FIXED_ALLOWLIST, runsUnprompted } from "./allowlist";
 import { loadPlaybooks, PLAYBOOK_PHASES } from "./playbooks";
 
 let dir: string;
@@ -58,13 +58,19 @@ function commandsIn(playbook: string): string[] {
   return out;
 }
 
-test("every command the playbooks run is on the list, so none of them stops to ask", () => {
+/**
+ * Criterion 11, and it asks about *asking*, not about the list: a playbook's `git log` runs
+ * unprompted through the harness's own read-only check rather than through an entry, since the
+ * six read-only git verbs came off the list once `--output` proved a trailing wildcard could
+ * not exclude a write-capable flag. `runsUnprompted` is the list plus that check.
+ */
+test("every command the playbooks run goes unprompted, so none of them stops to ask", () => {
   const playbooks = loadPlaybooks();
   for (const phase of PLAYBOOK_PHASES) {
     const commands = commandsIn(playbooks[phase]);
     expect(commands.length).toBeGreaterThan(0);
     for (const command of commands) {
-      expect([phase, command, allowsTool("Bash", { command })]).toEqual([phase, command, true]);
+      expect([phase, command, runsUnprompted("Bash", { command })]).toEqual([phase, command, true]);
     }
   }
 });
@@ -103,6 +109,22 @@ test("the Code playbook says what runs unprompted and what the owner is asked fo
   expect(code).toContain("asks the owner");
   expect(code).toContain("--no-verify");
   expect(code).toContain("git push -u origin head");
+});
+
+/**
+ * The six read-only git verbs are not advertised entries and still do not ask, so the playbook
+ * has to say both — an agent told only "not on the list" plans around a stop that never comes,
+ * and one told nothing may reach for `--output` and be stopped without knowing why.
+ */
+test("the Code playbook says the read-only git verbs go through the harness's own check", () => {
+  const code = loadPlaybooks().code;
+  const at = code.indexOf("Reading the repository with git");
+  expect(at).toBeGreaterThanOrEqual(0);
+  const paragraph = code.slice(at).split("\n\n")[0] as string;
+  for (const verb of ["status", "log", "diff", "show", "merge-base", "rev-parse"]) {
+    expect(paragraph).toContain(`\`git ${verb}\``);
+  }
+  expect(paragraph).toContain("--output");
 });
 
 test("an empty playbook is refused at load, naming the file", () => {

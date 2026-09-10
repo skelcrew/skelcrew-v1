@@ -12,11 +12,17 @@ speaks as you.
 
 ## What this run may do without asking, and what it asks for
 
-Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Agent`, `TodoWrite`;
-`git status`, `git log`, `git diff`, `git show`, `git merge-base`, `git rev-parse`, `git add`,
+Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Agent`, `TodoWrite`; `git add`,
 `git commit`, `git push -u origin HEAD`, `git push`; `gh pr create`, `gh pr view`,
 `gh pr diff`, `gh pr comment`, `gh repo view`; `skelcrew show`, `skelcrew comment`,
 `skelcrew body`, `skelcrew refs`, `skelcrew attention`.
+
+Reading the repository with git — `git status`, `git log`, `git diff`, `git show`,
+`git merge-base`, `git rev-parse` — is not on that list and still does not stop to ask: the
+harness recognises those as read-only itself, flag by flag. That check is narrower than a list
+entry would be, and deliberately so, because a few of their flags are not read-only at all
+(`--output=<path>` writes any file). A flag the harness does not recognise asks like anything
+else.
 
 Editing files runs unprompted **inside this worktree**, and only there. A write anywhere else
 asks — including the repository's git directory, which is not under this worktree — and the
