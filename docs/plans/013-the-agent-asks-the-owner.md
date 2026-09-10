@@ -46,7 +46,15 @@ Spec: `docs/specs/013-the-agent-asks-the-owner.md`. Base `ac661d0`, branch
 ## Files
 
 `packages/daemon/src/runner/allowlist.ts`, `allowlist.test.ts`, `run.ts`, `run.test.ts`,
-`runner.ts`, `packages/daemon/playbooks/code.md`, this file.
+`runner.ts`, `playbooks.test.ts`, `packages/daemon/playbooks/code.md`, this file.
+
+## The case next to criterion 5
+
+Criterion 5 is the agent's question arriving *before* the run's. The case beside it is the
+agent's question arriving *after* — the core lets it replace the run's request on the card —
+and the ask must then go back in the queue and be re-raised once the agent's question is
+answered, rather than being lost. Tested as its own case, and the test fails if the requeue
+is removed.
 
 ## Verifying the matching rule against the harness
 
