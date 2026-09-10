@@ -165,8 +165,12 @@ Why each group is shaped this way:
   admitted on the grounds that `git branch -D` only touches "local branches inside a disposable
   worktree" — which is false. Branch refs live in `refs/heads/` and are **shared** by the main
   checkout and every linked worktree, so an agent renaming or repointing a branch changes the
-  owner's repository, not its own scratch copy. No playbook runs `git branch`; a read-only use
-  asks.
+  owner's repository, not its own scratch copy. No playbook runs `git branch`. A read-only use of
+  it does **not** ask, though: `git branch`, `--show-current`, `-a`, `-r`, `-v` and `--list` are
+  all on the harness's own read-only tier, which is ~24 git verbs wide and validates each call
+  flag by flag. Every mutating form — `-D`, `-m`, `-f`, and `git branch <name> <base>` — fails
+  that validator and does ask, which is the property this entry's absence needs. Not listing it
+  is what leaves that validator in charge; listing it would replace it with "any flag at all".
 - `Bash(git push)` under a repo-level `push.default = matching` can push more than the card's
   branch. Accepted, and recorded. It is only as narrow as the config that governs it:
   `remote.origin.push` outranks `push.default` and can turn a bare push into
