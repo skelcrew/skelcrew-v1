@@ -578,3 +578,57 @@ taken. Red first for each, one commit per finding, F2 first because it is the sm
   rule it teaches: wherever it recurs the cure is construction, not vigilance.
 
 `bun run check`: green, 357 tests.
+
+### Round 5
+
+Two findings (`docs/plans/007-runner-runs-playbooks-conformance-review-3.md`, committed at
+`aab1f22` as the external review record), both real against the code, both taken and now
+resolved. Red first for F1; F2 is playbook prose and has no red phase, said plainly rather
+than dressed up as one. One commit per finding.
+
+- **Finding 1 — accountability also raised attention on a card someone else had taken over.**
+  Round 4 put `selfAction` deliberately outside the card-derived ending: what this run's own
+  agent did is the one question the card cannot answer, so an agent that moved, released, or
+  archived its own card is reported wherever the card ended up. That record is right and
+  stays. What was wrong is that it was two effects and not one: `stopWith` posted the comment
+  **and** raised an attention request, so an owner who claimed the card between the agent's
+  own release and the end of the abort found the old run's failure in their queue — the same
+  stale write to a card whose claim the run has lost that the card-derived path had just been
+  built to prevent, reached through the branch that runs before the card is read.
+  **Mechanism: split the two effects, not the branch.** The comment is the record of what
+  happened, which the card is owed either way; a request is a claim on a member's queue,
+  which a run that no longer holds the card has no standing to make. `stopWith(note, raise)`
+  always comments and raises only when asked, and the `selfAction` branch reads the card for
+  the one thing it *can* answer — whose claim it is now — and raises unless another member
+  holds it. Preventing an immediate re-dispatch is what the request was for, and the new
+  holder's claim already does that. Nothing else moved: the owner's release still stops the
+  run with its comment and its request, and the archived card still gets the raise attempted,
+  refused by the core, and warned about in the runner's log, which is why that test's
+  `could not say so` warning still stands. The three plain self-action tests are unchanged
+  and pass.
+  **Red**, two tests — the twins the review asked for, one per self-action that leaves a
+  claimable card: the agent releases its own card and the owner claims it at once, and the
+  agent moves its own card out of Code and the owner claims it in Spec. Both failed on
+  `expect(received).toBeNull()` for `card.attention`, receiving
+  `{ to: 1, note: "run failed: the agent released its own card (done, I think)", moves: [],
+  raisedBy: 2 }` and the same with `"run failed: the agent moved its own card (to spec)"` —
+  the comment had already landed, so what the assertions caught is exactly the second effect.
+  Green, each card carries the failure comment, no `attention_requested` event at all, and
+  the owner's claim standing.
+- **Finding 2 — the Code playbook computed its review base from a bare name.** Stage 1 step 5
+  said `git merge-base HEAD <base branch>`, and Stages 3, 4 and 5 diff against the sha it
+  returns. That is round 4's F2 one file over: `refs/tags/<name>` outranks `refs/heads/<name>`,
+  so a repository that tags a release with its branch's name hands the reviewer and the
+  verifier the base branch's own work as this card's. Reproduced with the playbook's own
+  commands — branch `main` at A → B, the tag `main` at A, a card branch forking at B and
+  adding one file: the bare name gives A and `git diff <base>...HEAD` shows
+  `base.ts feature.ts`, qualified it gives B and shows `feature.ts`. The step now says
+  `git merge-base HEAD refs/heads/<base branch>`, says why, and says that `<base>` in every
+  diff below is that sha and never a name; Stage 4 now hands its subagent the base sha the
+  way Stage 3 already did. `git worktree add <path> <branch>` in `git.ts` stays unqualified
+  on purpose and was left alone — with the branch present git attaches `refs/heads/<branch>`
+  even when a tag shadows it, while the qualified form detaches HEAD. No test asserts this
+  prose (the playbook tests assert non-emptiness and `skelcrew attention`), and nothing here
+  was verified by spawning a model.
+
+`bun run check`: green, 359 tests.

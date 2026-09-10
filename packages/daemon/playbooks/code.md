@@ -27,8 +27,12 @@ through the `skelcrew` CLI, which is on your `PATH` and already speaks as you (`
    spec's description — if they disagree, the data wins and the spec has a bug worth
    raising (Stage 6).
 5. Run `git status`; the worktree should be clean or hold only this card's earlier work.
-   Record the base's sha for diffing: `git merge-base HEAD <base branch>`, with the base
-   branch from your first message.
+   Record the base's sha for diffing: `git merge-base HEAD refs/heads/<base branch>`, with
+   the base branch from your first message, spelled as a head. Git resolves a bare name by
+   precedence and `refs/tags/<name>` outranks `refs/heads/<name>`, so in a repository that
+   tags a release with its branch's name the bare name would give you the tag's sha and
+   every diff below would show the base branch's own work as this card's. `<base>` in those
+   diffs is the sha this returns, never a name.
 6. Commit the spec into the repository as `docs/specs/<NNN>-<name>.md` if the repository
    keeps specs there (see `docs/specs/README.md`), verbatim from the card. Do not edit it:
    the committed file says what the card says, and a spec that is wrong is raised
@@ -103,7 +107,7 @@ the card to the owner with what is unresolved (Stage 6).
 
 ## Stage 4 — Independent verification
 
-Verify in another fresh subagent, with this brief:
+Verify in another fresh subagent, with the base sha and this brief:
 
 > You are the last gate before a pull request. Read the repository's `AGENTS.md`/`CLAUDE.md`
 > for its definition of done and the spec on the card (`skelcrew show <id>`). Inspect the
