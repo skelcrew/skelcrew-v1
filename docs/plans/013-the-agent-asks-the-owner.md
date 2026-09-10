@@ -486,3 +486,44 @@ from the file-tool side — and `git log -1 --format=%B --output=<common>/config
   carry `=`, a value flag consumes the next word) are not modelled; no assertion depends on
   them, and every negative asserted here is a flag that is absent from the harness's table
   altogether.
+
+## Review round 5 — what a subprocess reaches, redirections, symlinks
+
+The spec was amended again first (`git checkout main -- docs/specs/013-the-agent-asks-the-owner.md`,
+from `b3c27cb` + `072808f`): a new section *What a subprocess reaches*, two recorded limitations,
+criteria 10b/10c rescoped to **tool calls**, and a new criterion 10f. What follows implements the
+amended spec.
+
+### The plan
+
+1. **10f — the record.** `allowlist.ts`'s rules preamble, its "what this list does not close"
+   section and `deniedTools`'s doc comment stop claiming what a subprocess respects; `code.md`
+   carries the same record in the playbook's register; milestone 016 is named as where the rules
+   that must survive it move. Pinned by a test that cross-checks the verbs the playbook names
+   against `FIXED_ALLOWLIST` rather than by matching prose.
+2. **Shell redirection.** `>`/`>>` targets are checked against the `Edit` rules before the
+   command is matched, the way `xce`/`jbo` do, and the command is matched with the redirection
+   stripped. The 10b and 10c escalation chains gain their `>` forms.
+3. **Symlinks.** The file-tool check resolves through links, because the harness does: verified
+   against the shipped binary (below). A symlink out of the worktree is asserted not pre-allowed.
+4. **Minors.** Rule 7's sentence about `git branch` (the harness's read-only tier is ~24 verbs,
+   not six); a third known-wide place in `selfApprovedReadOnlyGit`; `commandsIn` in
+   `playbooks.test.ts` stops scooping the advertisement and prohibition paragraphs; an assertion
+   that the installed SDK matches the version the flag tables were transcribed from; the
+   fail-closed polarity stated rather than implied.
+
+### Verifying the symlink question against the shipped binary
+
+`wr` (the path-set builder), `PZe` and `Hi` (the allow/deny lookup) were extracted verbatim from
+the `claude` 2.1.266 the SDK spawns and run against a real worktree containing a real symlink out
+of it. `wr` adds every symlink hop and the `realpathSync` of the path to the set it checks, and
+`PZe` allows only when **every** path in that set matches an allow rule, so:
+
+```
+allow …/wt/src/x.ts                             paths: …/wt/src/x.ts
+ask   …/wt/docs/vendor/config                   paths: …/wt/docs/vendor/config + …/repo.git/config
+ask   …/wt/base                                 paths: …/wt/base + …/repo.git/refs/remotes/origin/main
+```
+
+The harness resolves. The anchor holds, and the model is made to agree rather than the divergence
+being listed.
