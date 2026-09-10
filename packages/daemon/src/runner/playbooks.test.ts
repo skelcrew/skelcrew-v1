@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allowsTool } from "./allowlist";
+import { allowsTool, FIXED_ALLOWLIST } from "./allowlist";
 import { loadPlaybooks, PLAYBOOK_PHASES } from "./playbooks";
 
 let dir: string;
@@ -67,6 +67,35 @@ test("every command the playbooks run is on the list, so none of them stops to a
       expect([phase, command, allowsTool("Bash", { command })]).toEqual([phase, command, true]);
     }
   }
+});
+
+/** The sentence in `code.md` that tells the agent what needs no asking. */
+const PRE_ALLOWED = "Pre-allowed, so they run unprompted:";
+
+/** Every inline code span of that sentence's paragraph: what the playbook advertises. */
+function preAllowedIn(playbook: string): string[] {
+  const at = playbook.indexOf(PRE_ALLOWED);
+  expect(at).toBeGreaterThanOrEqual(0);
+  const paragraph = playbook.slice(at).split("\n\n")[0] as string;
+  return (paragraph.match(/`[^`]+`/g) ?? []).map((span) => span.replaceAll("`", ""));
+}
+
+/** An entry as a playbook names it: `Read`, `git status`, `git push -u origin HEAD`. */
+function asAdvertised(entry: string): string {
+  const bash = /^Bash\((.*)\)$/.exec(entry);
+  return bash === null ? entry : (bash[1] as string).replace(/ \*$/, "");
+}
+
+/**
+ * The playbook tells the agent what will not stop to ask, and an agent that believes a wrong
+ * list either wastes the owner's time or plans around a stop that never comes. Asserted in
+ * both directions against `FIXED_ALLOWLIST`: checking the list against the playbook's own
+ * prose, as this file used to, only proves the list covers its own restatement — and passes
+ * happily while the playbook advertises an entry that was removed.
+ */
+test("the Code playbook advertises exactly the fixed list, entry for entry", () => {
+  const advertised = preAllowedIn(loadPlaybooks().code);
+  expect(advertised.toSorted()).toEqual(FIXED_ALLOWLIST.map(asAdvertised).toSorted());
 });
 
 test("the Code playbook says what runs unprompted and what the owner is asked for", () => {

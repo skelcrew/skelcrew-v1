@@ -12,12 +12,14 @@ speaks as you.
 
 ## What this run may do without asking, and what it asks for
 
-Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Write`, `Edit` and `MultiEdit`;
-the git verbs `status`, `log`, `diff`, `show`, `merge-base`, `rev-parse`, `add` and
-`commit`; `git push -u origin HEAD` and a bare `git push`; `gh pr create`, `gh pr view`,
-`gh pr diff`, `gh pr comment` and `gh repo view`; the CLI verbs `skelcrew show`, `comment`,
-`body`, `refs` and `attention`; and the check commands this repository's own `AGENTS.md` or
-`CLAUDE.md` shows in a fenced block.
+Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Edit`, `Write`, `MultiEdit`,
+`Agent`, `TodoWrite`; `git status`, `git log`, `git diff`, `git show`, `git merge-base`,
+`git rev-parse`, `git add`, `git commit`, `git push -u origin HEAD`, `git push`;
+`gh pr create`, `gh pr view`, `gh pr diff`, `gh pr comment`, `gh repo view`; `skelcrew show`,
+`skelcrew comment`, `skelcrew body`, `skelcrew refs`, `skelcrew attention`.
+
+The check commands this repository's own AGENTS.md or CLAUDE.md shows in a fenced block run
+unprompted too, as the repository states them.
 
 **Everything else asks the owner.** The tool call stops, the question goes on the card with
 the exact commands that answer it, and the run goes on once it is answered — allowed or
