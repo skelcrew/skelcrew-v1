@@ -19,8 +19,8 @@ import {
 } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
-import { FIXED_ALLOWLIST } from "./allowlist";
-import { endRun, runAttention } from "./ending";
+import { allowlistFor } from "./allowlist";
+import { endRun, runAttention, runQuestion } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
@@ -65,6 +65,8 @@ export interface RunnerOptions {
   abortGraceMs?: number;
   /** The window a run batches tool calls into one comment over. Defaults to 30 s. */
   summaryMs?: number;
+  /** How often a live run renews its lease. Defaults to 30 s. */
+  heartbeatMs?: number;
 }
 
 export interface Runner {
@@ -134,13 +136,23 @@ export function startRunner(options: RunnerOptions): Runner {
   const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
   const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS_DEFAULT;
   const summaryMs = options.summaryMs ?? TOOL_SUMMARY_MS;
+  const heartbeatMs = options.heartbeatMs ?? RUN_HEARTBEAT_MS;
   const baseEnv = options.env ?? process.env;
   /** Fired by `stop()`: a live run is told to stop rather than waited out. */
   const stopping = new AbortController();
-  /** The one helper every ending raises attention through; see `ending.ts`. */
+  /** The one helper every raise a run makes goes through; see `ending.ts`. */
   const attention = runAttention(core, member.id);
-  const dir = worktreesDir(dataDir);
-  mkdirSync(dir, { recursive: true });
+  const worktrees = worktreesDir(dataDir);
+  mkdirSync(worktrees, { recursive: true });
+  /**
+   * Spelled the way the filesystem spells it, because a run's cwd and the file-tool rules
+   * anchored at it have to agree: `resolveDataDir` absolutises `SKELCREW_DIR` lexically, so a
+   * data directory reached through a link (`/tmp` and `/var` on macOS) otherwise leaves the two
+   * spelled differently — where the harness maps one spelling to the other when it looks a
+   * write up against an allow rule and does not when it looks the same write up against a deny
+   * rule. See `anchor` in `./allowlist`. This is also the spelling git prints back.
+   */
+  const dir = realpath(worktrees);
   // The agent's `skelcrew`: written once, before any run could need it.
   if (agent !== undefined) writeShim(dataDir);
 
@@ -231,7 +243,7 @@ export function startRunner(options: RunnerOptions): Runner {
       } catch (error) {
         warn(`skelcrew runner: heartbeat on card ${id} failed: ${message(error)}`);
       }
-    }, RUN_HEARTBEAT_MS);
+    }, heartbeatMs);
     const path = worktreePath(id);
     const branch = branchName(id, card.title);
     /**
@@ -264,6 +276,12 @@ export function startRunner(options: RunnerOptions): Runner {
         warn(`skelcrew runner: card ${id}: run abandoned; and could not say so: ${message(inner)}`);
       }
     };
+    /**
+     * This run's own permission question, made here so that the run and every ending share
+     * one value: the run records what it asked, and an ending — `run.ts`'s or the failed
+     * step below — replaces that request and leaves any other standing (`ending.ts`).
+     */
+    const question = runQuestion();
     let step = "resolve base branch";
     try {
       const base = await git.defaultBranch(repoRoot);
@@ -295,11 +313,22 @@ export function startRunner(options: RunnerOptions): Runner {
         core.releaseCard(id, { reason: "no playbook" }, member.id);
         return;
       }
+      step = "read the allowlist";
+      // Read from the remote-tracking head of the default branch — a ref no *tool call* on
+      // the fixed list can write — so an instruction file a run writes, commits, or points a
+      // branch at grants nothing to it or to the next run. The file tools are anchored at
+      // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
+      // call and is not bound by any of it, and neither is a command the target repository's
+      // own instructions pre-allow for it; see *What a subprocess reaches* and
+      // `narrowedCommands` in `./allowlist`. What keeps the base commit meaningful is that
+      // the owner merged it.
+      const allowlist = await allowlistFor(git, repoRoot, base.name, path);
+      stillHeld();
       step = "open run log";
       const logPath = createRunLog(dataDir, id, now());
       core.comment(
         id,
-        `worktree ready at ${path} on ${branch} (from ${base.name}); run log at ${logPath}`,
+        `worktree ready at ${path} on ${branch} (from ${base.name}); ${allowlist.scanned}; run log at ${logPath}`,
         member.id,
       );
       step = "run playbook";
@@ -321,7 +350,9 @@ export function startRunner(options: RunnerOptions): Runner {
         driver: agent.driver,
         playbook,
         env: agentEnvironment(baseEnv, dataDir),
-        allowedTools: [...FIXED_ALLOWLIST],
+        allowedTools: allowlist.tools,
+        deniedTools: allowlist.denied,
+        question,
         logPath,
         limitMs: runLimitMs,
         graceMs: abortGraceMs,
@@ -353,6 +384,7 @@ export function startRunner(options: RunnerOptions): Runner {
         note: within(`${step} failed: ${message(error)}`),
         moves: [],
         reason: "failed",
+        question,
       });
     } finally {
       clearInterval(heartbeat);

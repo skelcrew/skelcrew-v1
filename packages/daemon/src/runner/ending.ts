@@ -4,13 +4,30 @@
  * the conventions do not hold — see `docs/plans/007-spike-retrospective.md` §3, where the same
  * two rules were half-implemented five times between them.
  *
- * **Every raise goes through `runAttention`.** The rule cannot be phrased as "do not replace
- * another member's request": the agent raises `skelcrew attention` as the `runner` member too,
- * so `raisedBy` cannot tell its question from the run's own note. Only the run knows which
- * request is its own, from what the core recorded when it raised it — which is why this lives
- * at the runner boundary and not in the core. `run.ts` and this module see the core as
- * `RunCore`, which has no `requestAttention` at all, so a future ending path that tried to
- * raise around the helper would not compile.
+ * **Every raise goes through `runAttention`.** The reason a run ended is always posted as a
+ * comment; the request is raised only when nothing the run may not replace is already waiting
+ * on the owner. A card carries one attention record, and the playbooks tell a blocked agent to
+ * escalate with `skelcrew attention` and stop, so an ending that raised its own over the
+ * agent's would leave the owner's queue showing a generic "the session ended" note on the one
+ * card with a real question on it. `run.ts` and this module see the core as `RunCore`, which
+ * has no `requestAttention` at all, so a call site that tried to raise around the helper would
+ * not compile.
+ *
+ * **Which request the run may replace is recorded, not inferred.** No identity check is
+ * involved or possible: the agent raises attention as the `runner` member too, so `raisedBy`
+ * cannot tell its question from the run's own. The one request the rule does not protect is
+ * the run's *own* permission question: a run that ends while waiting on the owner leaves a
+ * question nothing will ever answer — `skelcrew resolve -m allow` then allows no tool, it only
+ * clears the request — and the ending's reason would never reach the owner's queue. Which
+ * request that is cannot be inferred here, so a run records it in a `RunQuestion` as it asks,
+ * and every raise and every ending is handed that same value.
+ *
+ * `RunEnding.question` and `RunEnding.attention` are both **required**, and the runner makes
+ * one of each per run before anything can end: `run.ts` and `runner.ts` share them rather than
+ * each remembering the rule. An ending path added later cannot leave either out — there is
+ * nothing to leave out, only values already in scope to pass. Half-implementing this rule has
+ * been a review finding round after round, each time on the next path that lacked it; a
+ * required parameter is what ends that.
  *
  * **The ending is derived from the card's state at completion** (`classifyEnding`), not from
  * flags an event handler accumulates as events arrive: a handler must remember to update them
@@ -24,12 +41,12 @@
  * self-action, a stop on an explicit release — and `runner.ts`'s failed step, which is where a
  * throw out of a run that had already escalated lands.
  *
- * One call site raises attention without this guard: 006's no-playbook handoff
- * (`runner.ts`), which is not an ending — no agent has run in the worktree when it fires.
- * Note what that exemption rests on: *nothing has run*, not *nothing can be waiting*. Three
- * awaits in git sit between the claim and that point, so an owner who raises their own request
- * in that window would have it replaced. Anything added to that path that could follow an
- * agent — or any use of it after work has happened — adopts the guard here rather than
+ * One call site raises attention without this guard: 006's `no playbook for <phase> yet`
+ * handoff in `runner.ts`, which is not an ending — no agent has run in the worktree when it
+ * fires. Note what that exemption rests on: *nothing has run*, not *nothing can be waiting*.
+ * Three awaits in git sit between the claim and that point, so an owner who raises their own
+ * request in that window would have it replaced. Anything added to that path that could follow
+ * an agent — or any use of it after work has happened — adopts the guard here rather than
  * inheriting the exemption as settled.
  */
 import type { Activity, Attention, Phase } from "@skelcrew/shared";
@@ -42,32 +59,61 @@ import type { Core } from "../core/core";
  */
 export type RunCore = Omit<Core, "requestAttention">;
 
-export interface RunAttention {
-  /**
-   * Raises this run's request, and answers whether it did. Refused — and nothing written —
-   * when a request the run did not raise itself is open (the agent's own question, which the
-   * owner must answer before anything else makes sense), when the card is archived, or when
-   * another member holds it.
-   */
-  raise(cardId: number, request: { to: number; note: string; moves: Phase[] }): boolean;
+/**
+ * The run's own permission question, while it is the card's open request. Only the run can
+ * know which request that is: the agent's `skelcrew attention` runs as the same `runner`
+ * member, so `raisedBy` cannot tell the two apart, and what the core recorded for the run's
+ * own call is the only mark. Held as a value so that the run and every ending read the same
+ * one — an ending is never asked to remember a rule.
+ */
+export interface RunQuestion {
+  /** What the core recorded for the run's own `requestAttention`, or nothing once it is gone. */
+  raised(request: Attention | undefined): void;
+  /** Whether the card's open request is that one, and so the ending's to replace. */
+  isOpen(request: Attention): boolean;
 }
 
-/** What a run's own request looks like when it comes back off the card. */
-function fingerprint(attention: Attention): string {
-  return `${attention.raisedBy}:${attention.raisedAt}:${attention.note}`;
+export function runQuestion(): RunQuestion {
+  let own: Attention | undefined;
+  return {
+    raised(request) {
+      own = request;
+    },
+    isOpen(request) {
+      return (
+        own !== undefined &&
+        request.to === own.to &&
+        request.note === own.note &&
+        request.raisedBy === own.raisedBy &&
+        request.raisedAt === own.raisedAt
+      );
+    },
+  };
+}
+
+export interface RunAttention {
+  /**
+   * Raises a request for this run, and returns what the core recorded — or nothing when the
+   * raise was refused and the card was left exactly as it was. It is refused when an open
+   * request is not this run's own question (the agent's, which the owner must answer before
+   * anything else makes sense), when the card is archived, and when another member holds it:
+   * this run's ending is not a new holder's queue to fill.
+   */
+  raise(
+    cardId: number,
+    request: { to: number; note: string; moves: Phase[] },
+    question: RunQuestion,
+  ): Attention | undefined;
 }
 
 export function runAttention(core: Core, memberId: number): RunAttention {
-  const mine = new Set<string>();
   return {
-    raise(cardId, request) {
+    raise(cardId, request, question) {
       const card = core.getCard(cardId);
-      if (card.archivedAt !== null) return false;
-      if (card.claim !== null && card.claim.by !== memberId) return false;
-      if (card.attention !== null && !mine.has(fingerprint(card.attention))) return false;
-      const after = core.requestAttention(cardId, request, memberId);
-      if (after.attention !== null) mine.add(fingerprint(after.attention));
-      return true;
+      if (card.archivedAt !== null) return undefined;
+      if (card.claim !== null && card.claim.by !== memberId) return undefined;
+      if (card.attention !== null && !question.isOpen(card.attention)) return undefined;
+      return core.requestAttention(cardId, request, memberId).attention ?? undefined;
     },
   };
 }
@@ -182,6 +228,12 @@ export interface RunEnding {
   moves: Phase[];
   /** The release reason, when this run's own request was the one raised. */
   reason: string;
+  /**
+   * This run's own permission question, the one open request an ending may replace: nothing
+   * answers it once the run is over. Every other open request stands and the ending is a
+   * comment alone, which is the rule above.
+   */
+  question: RunQuestion;
 }
 
 function message(error: unknown): string {
@@ -199,11 +251,12 @@ export function endRun({
   note,
   moves,
   reason,
+  question,
 }: RunEnding): void {
   let raised = false;
   try {
     core.comment(cardId, note, memberId);
-    raised = attention.raise(cardId, { to: ownerId(), note, moves });
+    raised = attention.raise(cardId, { to: ownerId(), note, moves }, question) !== undefined;
   } catch (error) {
     warn(`skelcrew runner: card ${cardId}: ${note}; and could not say so: ${message(error)}`);
   }

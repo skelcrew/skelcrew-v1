@@ -128,6 +128,10 @@ export function buildSdkOptions(options: AgentRunOptions): {
     cwd: options.cwd,
     env: options.env,
     allowedTools: options.allowedTools,
+    // The harness turns these into deny rules, which it consults before any allow rule and
+    // before `canUseTool`. They are the only thing that can refuse a path the anchored
+    // `Edit(…)` entry covers — the worktree's own `.git`, which repoints the worktree.
+    disallowedTools: options.disallowedTools,
     canUseTool,
     abortController,
     permissionMode: "default",

@@ -2,19 +2,17 @@
 
 ## The base this was built on
 
-The spec's *Current behavior* says "after 012 and 013". **013 is not on `main`** — it is
-unmerged on `worktree-agent-asks-the-owner`. The base for this run is `main` at `30f2821`,
-which has 011 and 012. Two consequences, both recorded rather than worked around:
+014 was first built on `main` at `30f2821`, which had 011 and 012 but **not** 013 — 013 was
+merged on the remote and had not been pulled into the local `main` the worktree was cut from.
+The work was committed as `32e0a0f` and `origin/main` (carrying 013) was then merged into the
+branch; *Composing the two constructions* below is that resolution. Everything above it
+describes the first pass, and two of its notes are now obsolete: the allowlist no longer denies
+every writing tool, so a real Code run can meet the Code contract, and `RunEnding.question`
+does exist to build on.
 
-- There is no `RunEnding.question` to build the attention construction on; the construction is
-  built here from scratch (below).
-- The fixed allowlist still denies every writing tool, so a *real* Code run cannot satisfy the
-  Code contract today. The contract and its tests are still built and tested against the
-  scripted driver, which is what the spec's *Tests* section asks for. 013 landing is what makes
-  a real Code run able to meet it. Changing the allowlist is out of scope for 014.
-
-The spec also says `git.ts` "can list commits in a range". It cannot — `Git` has no such
-method, so one is added here.
+The spec also says `git.ts` "can list commits in a range". It cannot — neither 011 nor 013
+added such a method, so `commitsBetween` is added here. (013 added `showFile`, which does not
+overlap it.)
 
 ## The steps
 
@@ -24,9 +22,9 @@ method, so one is added here.
    - `RunCore = Omit<Core, "requestAttention">` — the type run.ts and ending.ts see. A future
      ending path that raises attention directly does not compile.
    - `runAttention(core, memberId)` — the one helper every raise goes through. It refuses to
-     replace a request it did not raise itself (matched against what the core recorded when it
-     raised it), refuses on an archived card, and refuses when another member holds the claim.
-     Returns whether it raised.
+     replace a request that is not this run's own, refuses on an archived card, and refuses
+     when another member holds the claim. (In the first pass it matched "this run's own"
+     against a private set; after the merge it takes 013's `RunQuestion` — see below.)
    - `classifyEnding(...)` — the ending derived from the card's state at completion:
      self-action first (from the events, because the card cannot report it), then held, then
      released, then abandoned.
@@ -76,8 +74,44 @@ Three rounds, in `packages/daemon/src/runner/contracts.test.ts` and `playbooks.t
 3. **The playbook** (4 cases). Failed on `refs/heads/`, `docs/specs`, `specPath` and
    `gh pr view --json url`, none of which `code.md` contained.
 
-## Two places the spec did not match the tree
+## A spec defect, reported and not edited
 
-- The spec is written as though 013 had landed; it has not (see the top of this file).
-- Criterion 4 says "all four conditions" where the Code contract has three, as *Desired
-  behavior*, *The contracts* and criterion 5 all say. Implemented as three.
+Criterion 4 says "all four conditions" where the Code contract has three — as *Desired
+behavior* ("commits on its branch past the base, left the worktree clean, and recorded the pull
+request URL"), *The contracts* ("**Code**: three conditions") and criterion 5 (which lists
+exactly three) all say. Implemented as three. The spec is left as written.
+
+## Composing the two constructions (the 013 merge)
+
+013 and 014 answer the same recurring finding — *a rule enforced by convention at each call
+site will be half-implemented* — at two different layers, and both layers are kept.
+
+**013 answers "which request may this run replace?"** with a recorded value rather than an
+inference: `RunQuestion` holds what the core wrote for the run's *own* permission question, and
+`RunEnding.question` is required so a new ending path has nothing to leave out. That is a
+better answer than 014's first pass, which matched the open request against a private set of
+everything the run had raised: 013's is scoped to the one request that is genuinely dead once
+the run is over, and it says why. 014's set is gone.
+
+**014 answers "can a call site raise at all without going through the rule?"** with a type:
+`RunCore = Omit<Core, "requestAttention">` is what `run.ts` and `ending.ts` see, so a direct
+raise does not compile.
+
+Composed: `runAttention.raise(cardId, request, question)` is the only way to raise, and it takes
+013's `RunQuestion` as the answer to which open request it may replace. Both call sites in
+`run.ts` go through it — 013's `raiseNext`, which raises the permission question and records
+what came back, and 014's `endRun`. `RunEnding` requires `attention`, `question` and `moves`.
+The helper also refuses on an archived card and on another member's claim, which is 014's
+criterion 12.
+
+### The one behaviour the merge had to change
+
+013's `a claim released while the run waits ends the run` asserted an abandonment, and that the
+run's permission question was left open. 014 criterion 10 says an explicit release that nothing
+supersedes **stops** the run with a comment and a request, so the card waits rather than being
+picked up again. The two rules meet on that path, and 013's own rule then applies to the open
+request: it is the run's own dead question, so the ending replaces it — leaving it would put a
+`resolve -m allow` that allows no tool on the owner's queue, which is the thing 013 exists to
+prevent. The test now asserts the stop, the replacement, and that the question still stands in
+the card's activity where it was raised. Its other assertions — the pending call denied, no
+"proceeding", a later answer changing nothing — are unchanged.

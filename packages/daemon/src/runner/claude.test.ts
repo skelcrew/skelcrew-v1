@@ -4,10 +4,11 @@
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentDriver, AgentRunOptions } from "./agent";
+import { TRANSCRIBED_FROM } from "./allowlist";
 import { buildSdkOptions, claudeDriver, drive, toEvents } from "./claude";
 
 /** The fields this driver reads; the SDK's own literals carry a great deal more. */
@@ -53,6 +54,24 @@ test("the harness SDK is named by exactly one source file, and imported by exact
     // This file, for the message literals its translation tests are written over.
     "packages/daemon/src/runner/claude.test.ts",
     "packages/daemon/src/runner/claude.ts",
+  ]);
+});
+
+/**
+ * Containment does not age; enumeration does. `allowlist.ts` transcribes a private flag table
+ * out of the `claude` binary this SDK ships and spawns, and audits git's and gh's flags by hand.
+ * The SDK is pinned exactly in `bun.lock`, which is the real protection — but nothing tied the
+ * transcription to that pin, so a bump could move the table underneath the list in silence. It
+ * fails here instead, and becomes a decision someone makes on purpose. The assertion lives in
+ * this file because this is the one place the SDK is named, per the test above.
+ */
+test("the harness the allowlist's tables were transcribed from is the one installed", () => {
+  const sdk = dirname(Bun.resolveSync("@anthropic-ai/claude-agent-sdk", import.meta.dir));
+  const version = (name: string): string =>
+    JSON.parse(readFileSync(join(sdk, name), "utf8")).version;
+  expect([version("package.json"), version("manifest.json")]).toEqual([
+    TRANSCRIBED_FROM.sdk,
+    TRANSCRIBED_FROM.cli,
   ]);
 });
 
@@ -170,7 +189,8 @@ function runOptions(): AgentRunOptions {
     cwd: "/repo/worktree",
     env: { PATH: "/data/bin:/usr/bin", HOME: "/home/owner" },
     systemPrompt: "# Playbook: Spec",
-    allowedTools: ["Read", "Bash(git log *)"],
+    allowedTools: ["Read", "Bash(git log *)", "Edit(//repo/worktree/**)"],
+    disallowedTools: ["Edit(//repo/worktree/.git)", "Edit(//repo/worktree/.git/**)"],
     canUseTool: () => Promise.resolve({ behavior: "deny", message: "no" }),
     input: noInput(),
     log: () => {},
@@ -188,6 +208,20 @@ test("the run's permissions are the fixed list and canUseTool, and nothing a set
   // `git push` by committing a file, with no denial and nothing on the card. `[]` is the
   // SDK's own "disable filesystem settings", which is what makes the list a list.
   expect(sdkOptions.settingSources).toEqual([]);
-  expect(sdkOptions.allowedTools).toEqual(["Read", "Bash(git log *)"]);
+  expect(sdkOptions.allowedTools).toEqual(["Read", "Bash(git log *)", "Edit(//repo/worktree/**)"]);
   expect(sdkOptions.permissionMode).toBe("default");
+});
+
+/**
+ * The run's deny rules have to reach the harness, not merely be computed. `canUseTool` is
+ * never consulted for a call an allow entry matches, so a deny that the driver drops is no
+ * deny at all — and the one path this denies, the worktree's own `.git` file, sits inside the
+ * allow entry's anchor.
+ */
+test("the run's deny rules reach the harness alongside the list", () => {
+  const { sdkOptions } = buildSdkOptions(runOptions());
+  expect(sdkOptions.disallowedTools).toEqual([
+    "Edit(//repo/worktree/.git)",
+    "Edit(//repo/worktree/.git/**)",
+  ]);
 });
