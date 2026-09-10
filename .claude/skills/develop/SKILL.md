@@ -3,7 +3,7 @@ name: develop
 description: Implement an approved specification end to end — isolated worktree, implementer subagent, independent review loop, independent verification, then a GitHub pull request. Stops at the PR; never merges. Takes a spec number such as 004, or a full path such as docs/specs/004-card-due-reminders.md.
 argument-hint: <NNN> | docs/specs/<NNN>-<spec-name>.md
 disable-model-invocation: true
-allowed-tools: Read, Grep, Glob, Write, Edit, EnterWorktree, Agent, Bash(git status*), Bash(git diff*), Bash(git log*), Bash(git branch*), Bash(git add*), Bash(git commit*), Bash(git push*), Bash(git rev-parse*), Bash(git worktree*), Bash(gh pr create*), Bash(gh pr view*), Bash(gh repo view*), Bash(npm *), Bash(npx *), Bash(node *), Bash(bun *), Bash(bunx *)
+allowed-tools: Read, Grep, Glob, Write, Edit, EnterWorktree, Agent, Bash(git add *), Bash(git commit *), Bash(git push -u origin HEAD), Bash(git push), Bash(git worktree add *), Bash(git worktree remove *), Bash(gh pr create *), Bash(gh pr view *), Bash(gh repo view *), Bash(bun install), Bash(bun run check), Bash(bun run lint), Bash(bun run typecheck), Bash(bun run test), Bash(bun run fix), Bash(bun test *)
 ---
 
 # Develop an approved specification

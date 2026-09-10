@@ -462,6 +462,96 @@ they know that skelcrew's entries did not yet say:
   write and the crash does not. Worth deciding deliberately rather than discovering: either the
   transcript is authoritative enough to rebuild the card's activity from, or a run's events need
   somewhere to land when the daemon is not there to receive them.
+- **Many machines wants a shared daemon, not synced daemons (Later — teams).** Teams are the
+  intended destination, and the instinct when a team appears is a backend that keeps each
+  member's harness in sync. Split what would be synced first. Comments, activity and run records
+  are append-only and sync cleanly. Phase, claim and attention are mutable and contended — and
+  claims are leases, which need a single authority: two laptops that both believe card 7 is
+  unclaimed produce two agents implementing it in two worktrees, which is not a conflict anyone
+  resolves later. The cheaper shape is the one already designed: one daemon holds the state,
+  clients stay thin over 003, and runners connect to a daemon they do not live inside — which is
+  what the internal coordination/execution seam was for. The split lands well, too: cards go to
+  the shared daemon, execution stays on each member's own machine, so their agent auth and their
+  checkouts never leave it and *skelcrew never calls a model* survives the move. **Never storing
+  repository contents** is what makes a shared daemon acceptable to a company at all — cards
+  carry branch names, shas, PR links and excerpts, not code — so a constraint written for other
+  reasons is what clears the security review. The trap to refuse is a card with two homes: a
+  personal daemon and a team daemon that exchange work is federation, which is a large share of
+  what orca's concept count bought. One card, one home; someone who wants both runs two boards.
+  Sync is the right answer only if working offline is a requirement, and that wants evidence
+  before it wants a design.
+- **The activity feed is already the memory layer, and the boundary is publication (008, Later).**
+  Making the record queryable — asking what was decided, whether something was tried, why it was
+  done this way — is a natural extension of *the card's activity feed is the run record*, and
+  skelcrew would be building it from a better substrate than anyone else: entries that passed a
+  gate or produced a verified artefact, rather than chat transcripts. But it can quietly undo
+  *a phase handoff is a context boundary*, which is the constraint that separates this from Gas
+  Town, where agents query their predecessors' sessions. The line that keeps both: **build it
+  from what an agent published, never from what a run thought.** The card's comments, decisions,
+  spec and refs are already public and already meant to be read — 012's playbook opens by reading
+  them. A run's transcript is not, and mining transcripts is inheriting context under another
+  name. Order, cheapest first: decisions as their own typed entry (the spec playbook already asks
+  for reasoning in *Implementation approach*, where it is prose buried in a card body and answers
+  the one question git cannot); then learnings, captured unconditionally with an explicit "none
+  this session" rather than a conditional step nobody runs; then per-repo knowledge feeding the
+  next run, which is where it starts compounding and starts shaping behaviour rather than
+  recording it. Playbooks that rewrite themselves come last and not before the eval tiers exist,
+  because a self-modifying prompt with no measurement degrades slowly and invisibly. The failure
+  mode to watch is a second source of truth: the memory *is* the card record, and the work is
+  making it queryable — the moment it becomes a store with its own lifecycle, a hard constraint
+  is gone.
+
+Findings from Hermes Agent (NousResearch/hermes-agent, read 2026-09-10), the most developed
+self-improvement loop in the field and the one neighbour built around agents that learn. Its
+defaults are the opposite of skelcrew's — it writes freely and offers a gate — which is what
+makes it useful to read:
+
+- **A learning entry is a lesson, not a log (008, Later).** Hermes' rule for what an
+  agent-written skill may contain: a generalisable rule plus one clause of *why* — the mechanism
+  — attached to the step it affects, stated once. Incident narration, PR and issue numbers,
+  dates and quoted chat are explicitly not skill content, because "the rule has to stand without
+  the story behind it". It also refuses to restate anything already loaded every turn (the
+  repo's own instructions, tool schemas). An advisory linter enforces the shape with two rules
+  named after the failures that produced them — `incident-log-shape` for a body dense in issue
+  numbers, `references-sprawl` past sixty reference files — and both warn rather than block.
+  Worth holding against this file: a milestone finding *should* carry spec numbers and dates,
+  because it is a project record. A learning is a different artefact and must not look like one,
+  or it decays into a diary nothing reads.
+- **Memory is capped, and a write over the cap fails rather than compacts (008, Later).** Hermes
+  bounds its always-in-context memory hard — roughly 2,200 characters of agent notes and 1,375
+  of user profile — and, when a write would exceed it, the tool returns an error instead of
+  summarising or dropping the oldest entry. The agent must consolidate or delete in the same
+  turn before retrying, and the prompt header shows how full the store is so it can see the
+  ceiling coming. This is the answer to the obvious failure of any memory layer here, which is
+  unbounded growth: a cap that errors forces curation, a cap that compacts only hides the
+  growth. It also splits the stores by job — small durable facts that must always be in context,
+  against longer procedures that load only when relevant — which is the rule for deciding what
+  a learning is versus what belongs in a playbook.
+- **A proposed learning is an artefact for a gate, and that is already built (010/013).** Hermes
+  can stage every agent-written skill change instead of committing it: a pending list, a full
+  diff, approve or reject, surviving restarts, for "small models that misjudge what they
+  learned, secure environments, or just wanting eyes on the self-improvement loop". It is off by
+  default there. Here it is not a setting but the thesis — a playbook or learning change is a
+  machine-produced artefact, and artefacts reaching a human gate is what skelcrew is — so the
+  loop needs no review surface of its own: it is an attention request carrying approve and
+  reject, which 010 already defines and 013 already answers. That is also the differentiator
+  worth naming, because everyone else is building a loop where the agent decides what it
+  learned, and this one would have the agent *propose* what it learned.
+- **Two writers to one memory corrupt it, and skelcrew runs concurrently by design (008).**
+  Hermes warns not to point two agent processes at one memory home, because "two writers sharing
+  one home will compound each other's entries into state neither of them (nor you) authored",
+  and scopes memory per profile to prevent it. Concurrent runs are normal here, so any learning
+  an agent writes goes through the daemon, which serialises and records it, and never straight
+  to a file two runs might hold open. The same rule the cards already follow, for the same
+  reason.
+- **Repo-owned, harness-owned and agent-owned must be enforced, not just documented (the
+  playbook extraction).** Hermes keeps a project's own skill directories read-only to its
+  curator and lands every agent-created skill in the agent's own directory, so an agent can
+  improve what it knows and cannot edit what the project committed. That is the three-layer
+  split already recorded here, with the boundary made real: the target repository's `AGENTS.md`
+  is never agent-writable, skelcrew's playbooks are daemon-owned and injected, and per-repo
+  learnings are the only layer a run may write. An agent that can edit the instructions it is
+  judged against has no gate at all.
 
 ## 001 — Project scaffold
 
@@ -720,6 +810,43 @@ comment may carry an excerpt — must keep `\n` and `\t` while rejecting the res
 included. A blanket rule would break the body; a blanket exemption is the hole. Consider also
 whether rendering should defend itself regardless of what validation accepts, since the terminal
 is where the damage lands and old rows already in a database were never validated.
+
+## 016 — The gate is the daemon's, not the allowlist's
+
+Found in review round 5 of 013, and it retires an assumption 013 was built on. The allowlist
+governs **tool calls**. A subprocess is not a tool call, and the phase playbooks exist to run
+one: the repository's own check command. `bun run check` dispatches through `package.json` and
+runs `bun test`, which executes any test file the run wrote in its worktree — every one of those
+files inside the `Edit(//<worktree>/**)` anchor, and therefore written unprompted. Nothing in the
+permission layer sees what the subprocess then does.
+
+That is not a defect to patch. A coding agent's job is to write code and run it; execution is the
+product. What follows is that the allowlist was never the boundary it was read as, and three
+things 013 protects by omission are not protected at all. The subprocess inherits `PATH` with the
+shim and `SKELCREW_AS=runner` (`runner/shim.ts`), so it can run the very verbs rule 4 withholds —
+`skelcrew mv`, `claim`, `release`, `archive`, `resolve` — moving its own card past the runner's
+artefact check and answering its own permission question. It can also write anything on disk the
+daemon's user can, the worktree anchor notwithstanding. 013 records all of this rather than
+claiming otherwise; closing it is this milestone.
+
+The fix is to move the rules that matter from a list the agent might evade into the daemon, which
+it cannot. The daemon knows which member a request comes from and which run holds the claim, so
+it can refuse on its own authority: a run's own member may not move its card into a phase behind
+a human-only gate, may not resolve an attention request it raised, and may not release or archive
+its own card mid-run. Enforced there, the rule survives arbitrary code execution, a rewritten
+`PATH`, and a shim called directly — none of which the allowlist survives.
+
+Two things to settle when specifying it. First, the identity the shim carries is currently an
+environment variable the subprocess can rewrite, so the daemon must derive the deciding facts
+from its own state (who holds the claim on this card) rather than from what the caller asserts.
+Second, this overlaps 014's artefact contracts: 014 checks that the artefact exists before a
+phase advances, and this checks that the mover is allowed to move it. They are the same gate seen
+from two sides, and the spec should say which check runs first and what each one's failure looks
+like on the card.
+
+Out of scope for it, and worth saying so: OS-level sandboxing of the subprocess. That is the only
+thing that would stop a check command writing outside the worktree, and it is a different
+milestone with a different cost.
 
 ## Later, deliberately unplanned
 

@@ -2,8 +2,9 @@
  * One run: a coding agent in the card's worktree with the phase's playbook and the card,
  * streamed back to the card as excerpts — every assistant turn a comment, tool calls
  * batched, the full stream in a log under the data directory — and answered from the card:
- * comments by other members reach the agent as user messages, and a tool outside the fixed
- * allowlist is denied with a reason the card also shows. The run ends when the session ends,
+ * comments by other members reach the agent as user messages, and a tool the list does not
+ * pre-allow becomes a question to the owner, one at a time, whose answer the agent is told
+ * and whose outcome the card shows. The run ends when the session ends,
  * when the time limit fires, when the daemon stops, or when the claim is lost; in every case
  * the card is left in a state a member can act on, with the reason on it, and never with a
  * question the agent raised replaced by it. Nothing is posted after an await without the
@@ -14,7 +15,7 @@ import { join } from "node:path";
 import { type Activity, type Card, COMMENT_MAX_BYTES, type Member } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
-import { endRun } from "./ending";
+import { endRun, type RunQuestion } from "./ending";
 
 /** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
 export const RUN_LIMIT_MINUTES_DEFAULT = 60;
@@ -31,6 +32,8 @@ const COMMAND_IN_SUMMARY_MAX = 60;
 const SUMMARY_MAX_BYTES = COMMENT_MAX_BYTES / 4;
 const ELLIPSIS = "…";
 const RUNS_DIR_NAME = "runs";
+/** The words that allow a tool. Anything else the owner writes — or writes nothing — denies. */
+const ALLOWING_ANSWERS = new Set(["allow", "yes", "ok"]);
 
 /** The run's claim went away: the card is someone else's now, and nothing more is posted. */
 export class RunAbandoned extends Error {
@@ -55,6 +58,8 @@ export interface RunInput {
   playbook: string;
   env: Record<string, string>;
   allowedTools: string[];
+  /** Paths no file tool may touch, however `allowedTools` reads: deny outranks allow. */
+  deniedTools: string[];
   /** This run's log, already created by `createRunLog`; appended to, never truncated. */
   logPath: string;
   limitMs: number;
@@ -64,6 +69,12 @@ export interface RunInput {
   summaryMs: number;
   /** Fires when the daemon is stopping: the run is told to stop and ends as such. */
   stop: AbortSignal;
+  /**
+   * Where this run records its own permission question, so that every ending — the ones
+   * below and the runner's, for a throw that gets past them — replaces that request and no
+   * other. The runner owns it: see `ending.ts`.
+   */
+  question: RunQuestion;
   /** Throws `RunAbandoned` when the claim is no longer this run's, live. */
   stillHeld(): void;
   /** Why the claim is no longer this run's, or undefined while it is. */
@@ -144,6 +155,19 @@ function cutBytes(text: string, budget: number): string {
   return text.slice(0, cut);
 }
 
+/**
+ * `text` with every line prefixed `> `, an empty one becoming `>`. What this is for is the
+ * question's payload: the agent chooses that text, so unquoted it can be laid out to read as
+ * the frame around it, and a blank line in it manufactures the separator the CLI's queue view
+ * splits real requests on. Quoted, no line of it is either.
+ */
+function quoted(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => (line.length === 0 ? ">" : `> ${line}`))
+    .join("\n");
+}
+
 /** `text` within `budget` bytes, marked when there was more of it. */
 function cutMarked(text: string, budget: number): string {
   if (Buffer.byteLength(text, "utf8") <= budget) return text;
@@ -162,13 +186,22 @@ function oneLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** What a tool call is called on the card: the command for Bash, the path for file tools. */
-function describeInput(tool: string, input: Record<string, unknown>): string {
+/** A tool call's input, whole: the command for Bash, the path for file tools, else the lot. */
+function inputOf(tool: string, input: Record<string, unknown>): string {
   const command = input.command;
-  if (tool === "Bash" && typeof command === "string") return oneLine(command, INPUT_LINE_MAX);
+  if (tool === "Bash" && typeof command === "string") return command;
   const path = input.file_path ?? input.path;
-  if (typeof path === "string") return oneLine(path, INPUT_LINE_MAX);
-  return oneLine(JSON.stringify(input) ?? "", INPUT_LINE_MAX);
+  if (typeof path === "string") return path;
+  return JSON.stringify(input) ?? "";
+}
+
+/**
+ * What a tool call is called on the card: `inputOf`, cut to one glanceable line. This is the
+ * activity summary's rendering and the record of a decision already made — never the question
+ * the owner answers, which carries the input whole (`questionFor`).
+ */
+function describeInput(tool: string, input: Record<string, unknown>): string {
+  return oneLine(inputOf(tool, input), INPUT_LINE_MAX);
 }
 
 /**
@@ -291,10 +324,189 @@ export async function runPlaybook(input: RunInput): Promise<void> {
    * here can fail with the buffer removed. It stays because the spec names the mechanism and
    * because it leaves this side's ordering independent of the core's — but the guarantee it
    * doubles is the core's.
+   *
+   * One thing about it is *not* belt and braces: `answerTo` splices the owner's answer out of
+   * this list rather than reading it, which is what stops that comment also reaching the agent
+   * as a message. The buffer is where that consumption happens, so removing it, or turning the
+   * splice into a lookup, changes behaviour rather than only ordering.
    */
   const held: Comment[] = [];
   const flushHeld = (): void => {
     for (const comment of held.splice(0)) messages.push(comment.data.text);
+  };
+
+  // --- tools the list does not pre-allow: asked, one at a time ---
+
+  /** One tool call waiting on the owner: what was asked, and how the agent is told. */
+  interface Ask {
+    tool: string;
+    input: Record<string, unknown>;
+    settle: (decision: ToolDecision) => void;
+  }
+
+  /** Asked and not yet on the card, oldest first. */
+  const queued: Ask[] = [];
+  /** The ask the card's open request is for. */
+  let asking: Ask | undefined;
+  /**
+   * The request the core recorded for this run's own question, while it is still the card's:
+   * cleared when it is answered or replaced, and *not* when the ask it belongs to is settled,
+   * because a run ending with its question still open is exactly when the ending needs to
+   * know which request is its own to replace. The runner holds the same value, so its endings
+   * read what this run recorded (`ending.ts`).
+   */
+  const question = input.question;
+
+  /** What the tool is called on the card, in the question and in the answer's record. */
+  const describeCall = (pending: Ask): string =>
+    `${pending.tool}: ${describeInput(pending.tool, pending.input)}`;
+
+  /**
+   * The question, carrying the two commands that answer it — and the tool's input **whole**,
+   * not the one-line rendering the activity summary uses. The party choosing the text is the
+   * party being gated: a command whose first two hundred characters read `git log …` and whose
+   * tail is `&& curl … | sh` is compound, so it is not pre-allowed and does reach here, and
+   * approving it on the head alone approves a rendering rather than the thing. The only cut is
+   * the note's own byte cap, which the core enforces; where that bites, it is marked and the
+   * run log holds the whole of it.
+   *
+   * **The frame comes first and the payload is quoted**, for the same reason read the other
+   * way round. Interpolated raw, the agent's own text laid the note out: an input beginning
+   * `ls? (skelcrew resolve 1 -m allow | …)` and continuing, past a blank line, with what looks
+   * like another card's request produced a note whose first line was a complete, benign
+   * question and whose tail read as a second request — the CLI's queue view prints the note
+   * verbatim and separates real requests with exactly one blank line. So both resolving
+   * commands sit on the first line, the input goes last under its own label, and `quoted`
+   * leaves no line of it that can be either. Same class as milestone 015, where control
+   * characters repaint a rendered line rather than laying out a fake one; 015 is not this.
+   */
+  const questionFor = (pending: Ask): string => {
+    const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\ninput:\n`;
+    const raw = inputOf(pending.tool, pending.input);
+    const text = quoted(raw);
+    const fixed = Buffer.byteLength(frame, "utf8");
+    if (fixed + Buffer.byteLength(text, "utf8") <= COMMENT_MAX_BYTES) return `${frame}${text}`;
+    const bytes = Buffer.byteLength(raw, "utf8");
+    const mark = `\n… [truncated: ${bytes} bytes; the whole input is in the run log at ${logPath}]`;
+    const budget = COMMENT_MAX_BYTES - fixed - Buffer.byteLength(mark, "utf8");
+    // The cut's own trailing newline would meet the marker's leading one and make the blank
+    // line the quoting exists to prevent.
+    return `${frame}${cutBytes(text, budget).replace(/\n+$/, "")}${mark}`;
+  };
+
+  /** Told to the agent when the run is over before the owner has answered. */
+  const over = (pending: Ask): void => {
+    pending.settle({
+      behavior: "deny",
+      message: `The run ended before the owner answered, so ${pending.tool} did not run.`,
+    });
+  };
+
+  /**
+   * Raises the oldest queued ask, if the card is free to carry it. A question the agent
+   * asked itself is the owner's to answer first and is never replaced; the ask waits, and
+   * comes back here when that question is resolved. Called from the ask and from inside the
+   * `attention_resolved` dispatch, where the core queues the nested mutation so the next
+   * question lands with the previous answer.
+   */
+  const raiseNext = (): void => {
+    const next = queued[0];
+    if (asking !== undefined || next === undefined) return;
+    if (input.lost() !== undefined) return;
+    try {
+      if (core.getCard(id).attention !== null) return;
+      const card = core.requestAttention(id, { to: ownerId(), note: questionFor(next) }, member.id);
+      queued.shift();
+      asking = next;
+      question.raised(card.attention ?? undefined);
+    } catch (error) {
+      const failure = message(error);
+      warn(`skelcrew runner: card ${id}: could not ask about ${next.tool}: ${failure}`);
+      // Nothing retries a request the core refused: an ask left queued would wait for an
+      // `attention_resolved` that cannot arrive, and the agent would block until the run's
+      // limit fired with a line in the daemon's log as the only trace. It is denied instead,
+      // naming the failure, and the card says so.
+      queued.shift();
+      next.settle({
+        behavior: "deny",
+        message: `${next.tool} could not be put to the owner: ${failure}`,
+      });
+      post(
+        cutMarked(
+          `could not ask the owner about ${describeCall(next)}: ${failure}`,
+          COMMENT_MAX_BYTES / 4,
+        ),
+      );
+      raiseNext();
+    }
+  };
+
+  const ask = (tool: string, toolInput: Record<string, unknown>): Promise<ToolDecision> =>
+    new Promise<ToolDecision>((resolve) => {
+      const pending: Ask = { tool, input: toolInput, settle: resolve };
+      if (abort.signal.aborted) {
+        over(pending);
+        return;
+      }
+      queued.push(pending);
+      raiseNext();
+    });
+
+  /** Nothing is left waiting on an answer that is not coming. `question` outlives this: see it. */
+  const settleAll = (): void => {
+    const pending = asking === undefined ? [] : [asking];
+    asking = undefined;
+    for (const outstanding of [...pending, ...queued.splice(0)]) over(outstanding);
+  };
+  abort.signal.addEventListener("abort", settleAll, { once: true });
+
+  /**
+   * The owner's answer: the comment `resolveAttention` recorded immediately before the
+   * resolution, by the same actor. It is consumed here as the decision and so is *not* also
+   * forwarded to the agent, which would otherwise read its own answer twice.
+   */
+  const answerTo = (resolution: Activity): string | undefined => {
+    const at = held.findIndex(
+      (comment) => comment.seq === resolution.seq - 1 && comment.actorId === resolution.actorId,
+    );
+    if (at === -1) return undefined;
+    return (held.splice(at, 1)[0] as Comment).data.text;
+  };
+
+  /**
+   * `allow`, `yes` and `ok` allow; anything else, and nothing at all, denies. A resolution
+   * of a question that is not this run's — the agent's own — decides nothing and leaves its
+   * comment to reach the agent as a message; either way the next queued ask can be raised,
+   * and is, from inside this dispatch.
+   */
+  const answered = (resolution: Activity): void => {
+    const pending = asking;
+    if (pending === undefined) {
+      raiseNext();
+      return;
+    }
+    const text = answerTo(resolution);
+    asking = undefined;
+    question.raised(undefined);
+    if (text !== undefined && ALLOWING_ANSWERS.has(text.trim().toLowerCase())) {
+      pending.settle({ behavior: "allow" });
+      post(`allowed ${describeCall(pending)}`);
+    } else {
+      pending.settle({
+        behavior: "deny",
+        message:
+          text === undefined
+            ? `The owner did not allow ${pending.tool}, and said nothing about why. Do not retry it: work with what is allowed, or say what you needed with skelcrew attention ${id} "<what you needed>".`
+            : `The owner did not allow ${pending.tool}: ${text}`,
+      });
+      post(
+        cutMarked(
+          `denied ${describeCall(pending)}${text === undefined ? "" : ` — ${text}`}`,
+          COMMENT_MAX_BYTES / 4,
+        ),
+      );
+    }
+    raiseNext();
   };
 
   const onEvent = (event: Activity): void => {
@@ -305,6 +517,21 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         if (event.actorId === member.id) return;
         held.push(event);
         if (held.length === 1) queueMicrotask(flushHeld);
+        return;
+      case "attention_requested":
+        // Raised over this run's question — by the agent, most likely. The card's request is
+        // not the run's any more, so the ask goes back in the queue and waits its turn.
+        if (asking !== undefined && !question.isOpen(event.data)) {
+          queued.unshift(asking);
+          asking = undefined;
+          question.raised(undefined);
+        }
+        return;
+      case "attention_resolved":
+        // Only an answer is an answer: a move or an archive clears the request on its way to
+        // ending the run, and `check` is what notices that.
+        if (event.data.how === "answered") answered(event);
+        else check();
         return;
       case "card_moved":
       case "card_archived":
@@ -353,15 +580,8 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         env: input.env,
         systemPrompt: input.playbook,
         allowedTools: input.allowedTools,
-        canUseTool: (tool, toolInput) => {
-          // 013 routes this to the owner; here the answer is always no, and visibly so.
-          post(`denied ${tool}: ${describeInput(tool, toolInput)}`);
-          const decision: ToolDecision = {
-            behavior: "deny",
-            message: `${tool} is not pre-allowed for this run, and there is no way to ask for it yet. Work with what is allowed, or raise the block with skelcrew attention ${id} "<what you needed>".`,
-          };
-          return Promise.resolve(decision);
-        },
+        disallowedTools: input.deniedTools,
+        canUseTool: ask,
         input: messages,
         log: (entry) => appendLog(logPath, entry),
         signal: abort.signal,
@@ -425,6 +645,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // a harness message amputated mid-sentence with nothing saying so misleads the owner.
       note: cutMarked(note, COMMENT_MAX_BYTES / 4),
       reason,
+      // The one open request an ending may replace is this run's own question, which nothing
+      // will answer now: the owner's queue must show why the run ended, not a resolve command
+      // that allows no tool. A question the agent raised is left exactly where it is.
+      question,
     });
   };
   const fail = (note: string): void => {

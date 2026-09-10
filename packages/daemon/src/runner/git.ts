@@ -31,6 +31,13 @@ export interface Git {
   defaultBranch(repoRoot: string): Promise<{ name: string; sha: string }>;
   /** The sha a ref resolves to, or undefined when it does not exist. */
   revParse(repoRoot: string, ref: string): Promise<string | undefined>;
+  /**
+   * `git show <ref>:<path>`: the file's contents as they are in that commit, from the
+   * repository root, or undefined when the path is not in it. A ref that cannot be read is
+   * undefined too — git reports both as the same exit — so a caller reading a commit for
+   * information, rather than for the work, need not tell them apart.
+   */
+  showFile(repoRoot: string, ref: string, path: string): Promise<string | undefined>;
   /** `git branch <name> <base>`. */
   createBranch(repoRoot: string, name: string, base: string): Promise<void>;
   /** `git worktree add <path> <branch>`, for an existing branch. */
@@ -160,6 +167,11 @@ export function createGit(options: { env?: Record<string, string | undefined> } 
     },
 
     revParse,
+
+    async showFile(repoRoot, ref, path) {
+      const { code, stdout } = await exec(repoRoot, ["show", `${ref}:${path}`]);
+      return code === 0 ? stdout : undefined;
+    },
 
     async createBranch(repoRoot, name, base) {
       await run(repoRoot, ["branch", name, base]);
