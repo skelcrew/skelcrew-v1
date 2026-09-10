@@ -29,6 +29,7 @@ import {
   type Phase,
   type PhaseDef,
   PR_URL_MAX_BYTES,
+  SPEC_PATH_MAX_BYTES,
   TITLE_MAX_BYTES,
 } from "@skelcrew/shared";
 import { openDb, SCHEMA_VERSION } from "./db";
@@ -121,7 +122,8 @@ interface ActivityRow {
 }
 
 const COMMIT_SHA = /^[0-9a-f]{7,40}$/;
-const REF_KEYS = new Set<keyof CardRefs>(["branch", "commits", "prUrl"]);
+/** In `CardRefs` declaration order: what a `refs_set` event records as the keys it set. */
+const REF_KEYS = new Set<keyof CardRefs>(["branch", "specPath", "commits", "prUrl"]);
 
 function toMember(row: MemberRow): Member {
   return { id: row.id, name: row.name, kind: row.kind, createdAt: row.created_at };
@@ -191,6 +193,17 @@ function isShaList(value: unknown): value is string[] {
   return true;
 }
 
+/**
+ * A path inside the target repository, as given. Rejects an absolute path, a `..` segment, a
+ * leading `./`, a trailing `/`, and any NUL or newline; nothing here is normalised, resolved
+ * against a filesystem, or read. Whether the file exists is the runner's business.
+ */
+function isRepoRelativePath(value: string): boolean {
+  if (value.startsWith("/") || value.startsWith("./") || value.endsWith("/")) return false;
+  if (value.includes("\0") || value.includes("\n")) return false;
+  return !value.split("/").includes("..");
+}
+
 function isHttpsUrl(value: string): boolean {
   try {
     return new URL(value).protocol === "https:";
@@ -219,6 +232,18 @@ function validateRefs(refs: unknown): CardRefs {
           throw new CoreError("invalid", `ref branch exceeds ${BRANCH_MAX_BYTES} bytes`);
         }
         patch.branch = value;
+        break;
+      case "specPath":
+        if (typeof value !== "string" || value.length === 0 || !isRepoRelativePath(value)) {
+          throw new CoreError(
+            "invalid",
+            "ref specPath must be a non-empty path inside the repository, relative to its root",
+          );
+        }
+        if (byteLength(value) > SPEC_PATH_MAX_BYTES) {
+          throw new CoreError("invalid", `ref specPath exceeds ${SPEC_PATH_MAX_BYTES} bytes`);
+        }
+        patch.specPath = value;
         break;
       case "commits":
         if (!isShaList(value)) {
@@ -604,9 +629,12 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
       return mutate((log) => {
         getMember(actorId);
         const card = readMutableCard(id);
-        const merged: CardRefs = { ...card.refs, ...validateRefs(refs) };
+        const patch = validateRefs(refs);
+        const merged: CardRefs = { ...card.refs, ...patch };
+        // The keys of the validated patch, so the record can never name one the core rejected.
+        const set = [...REF_KEYS].filter((key) => patch[key] !== undefined);
         updateRefs.run(JSON.stringify(merged), now(), id);
-        log(id, actorId, { type: "refs_set", data: { refs: merged } });
+        log(id, actorId, { type: "refs_set", data: { refs: merged, set } });
         return readCard(id);
       });
     },

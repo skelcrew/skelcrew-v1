@@ -10,6 +10,7 @@ import {
   COMMITS_MAX_COUNT,
   MEMBER_NAME_MAX_BYTES,
   PR_URL_MAX_BYTES,
+  SPEC_PATH_MAX_BYTES,
   TITLE_MAX_BYTES,
 } from "@skelcrew/shared";
 import { type Core, openCore } from "./core";
@@ -412,8 +413,102 @@ describe("references", () => {
     expect(refsSet).toHaveLength(3);
     expect(refsSet[1]?.data).toEqual({
       refs: { branch: "feat/x", prUrl: "https://github.com/o/r/pull/1" },
+      set: ["prUrl"],
     });
     expect(core.getCard(card.id).refs).toEqual(third.refs);
+  });
+
+  test("setRefs stores a repo-relative spec path verbatim and merges it with the rest", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    core.setRefs(card.id, { branch: "feat/x" }, agent.id);
+    core.setRefs(card.id, { prUrl: "https://github.com/o/r/pull/1" }, agent.id);
+
+    const withSpec = core.setRefs(
+      card.id,
+      { specPath: "docs/specs/011-card-records-its-artefacts.md" },
+      agent.id,
+    );
+    expect(withSpec.refs).toEqual({
+      branch: "feat/x",
+      prUrl: "https://github.com/o/r/pull/1",
+      specPath: "docs/specs/011-card-records-its-artefacts.md",
+    });
+    expect(core.getCard(card.id).refs).toEqual(withSpec.refs);
+  });
+
+  test("a specPath over SPEC_PATH_MAX_BYTES is invalid and changes nothing", () => {
+    expect(SPEC_PATH_MAX_BYTES).toBe(256);
+    const card = core.createCard({ title: "x" }, owner.id);
+    const prefix = "docs/specs/";
+    const longest = prefix + "s".repeat(SPEC_PATH_MAX_BYTES - prefix.length);
+
+    expect(core.setRefs(card.id, { specPath: longest }, owner.id).refs.specPath).toBe(longest);
+    const before = core.getCard(card.id);
+    const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
+
+    expectCoreError(() => core.setRefs(card.id, { specPath: `${longest}s` }, owner.id), "invalid");
+    // Bytes, not characters: 128 two-byte characters fit, 129 do not.
+    core.setRefs(card.id, { specPath: "é".repeat(SPEC_PATH_MAX_BYTES / 2) }, owner.id);
+    expectCoreError(
+      () => core.setRefs(card.id, { specPath: "é".repeat(SPEC_PATH_MAX_BYTES / 2 + 1) }, owner.id),
+      "invalid",
+    );
+
+    expect(core.getCard(card.id).refs.specPath).toBe("é".repeat(SPEC_PATH_MAX_BYTES / 2));
+    expect(core.activitySince(seqBefore)).toHaveLength(1);
+    expect(before.activity).toHaveLength(2);
+  });
+
+  test("the refs_set event records the keys the call set, in CardRefs order", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    core.setRefs(
+      card.id,
+      { branch: "feat/x", commits: ["abcdef0"], specPath: "docs/specs/011-x.md" },
+      agent.id,
+    );
+
+    core.setRefs(card.id, { prUrl: "https://github.com/o/r/pull/1" }, agent.id);
+    const refsSet = events(card.id, "refs_set");
+    expect(refsSet[1]?.data).toEqual({
+      refs: {
+        branch: "feat/x",
+        specPath: "docs/specs/011-x.md",
+        commits: ["abcdef0"],
+        prUrl: "https://github.com/o/r/pull/1",
+      },
+      set: ["prUrl"],
+    });
+
+    // Declaration order, whatever order the caller wrote the patch in.
+    core.setRefs(
+      card.id,
+      {
+        prUrl: "https://github.com/o/r/pull/2",
+        commits: ["abcdef0"],
+        specPath: "docs/specs/011-x.md",
+        branch: "feat/x",
+      },
+      agent.id,
+    );
+    expect(events(card.id, "refs_set")[2]?.data).toMatchObject({
+      set: ["branch", "specPath", "commits", "prUrl"],
+    });
+  });
+
+  test("a key the core did not set is not in the record", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    core.setRefs(card.id, { branch: "feat/x", prUrl: undefined }, agent.id);
+    expect(events(card.id, "refs_set")[0]?.data).toEqual({
+      refs: { branch: "feat/x" },
+      set: ["branch"],
+    });
+
+    // A patch that sets nothing changed nothing, and says so.
+    core.setRefs(card.id, {}, agent.id);
+    expect(events(card.id, "refs_set")[1]?.data).toEqual({
+      refs: { branch: "feat/x" },
+      set: [],
+    });
   });
 
   test("a commit list over COMMITS_MAX_COUNT is invalid and changes nothing", () => {
@@ -502,6 +597,15 @@ describe("references", () => {
     ["empty branch", { branch: "" }],
     ["branch over 256 bytes", { branch: "b".repeat(257) }],
     ["branch not a string", { branch: 42 }],
+    ["empty specPath", { specPath: "" }],
+    ["specPath over 256 bytes", { specPath: `docs/${"s".repeat(252)}` }],
+    ["absolute specPath", { specPath: "/etc/passwd" }],
+    ["specPath escaping the repository", { specPath: "docs/../../etc/passwd" }],
+    ["specPath with a leading ./", { specPath: "./docs/specs/011-x.md" }],
+    ["specPath with a trailing /", { specPath: "docs/specs/" }],
+    ["specPath with a newline", { specPath: "docs/specs/011-x.md\nrm -rf /" }],
+    ["specPath with a NUL", { specPath: "docs/specs/011-x.md\0.png" }],
+    ["specPath not a string", { specPath: 42 }],
     ["unknown key", { issue: "https://github.com/o/r/issues/1" }],
     ["not an object", "feat/x"],
     ["null", null],

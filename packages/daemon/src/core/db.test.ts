@@ -272,3 +272,33 @@ test("claims survive close and reopen", () => {
     second.close();
   }
 });
+
+test("a refs_set row written before 011 reads back with no record of the keys it set", () => {
+  const first = openCore(path, { owner: "simon" });
+  const owner = first.listMembers()[0];
+  if (!owner) throw new Error("no owner");
+  const card = first.createCard({ title: "old" }, owner.id);
+  first.close();
+  const versionBefore = userVersion(path);
+  expect(versionBefore).toBe(SCHEMA_VERSION);
+
+  // The pre-011 event, verbatim: the merged refs and nothing else.
+  const raw = new Database(path);
+  raw.exec(
+    `INSERT INTO activity (card_id, actor_id, type, data, created_at) VALUES (${card.id}, ${owner.id}, 'refs_set', '{"refs":{"branch":"feat/x","prUrl":"https://github.com/o/r/pull/1"}}', 3)`,
+  );
+  raw.close();
+
+  const second = openCore(path, { owner: "simon" });
+  try {
+    const event = second.getCard(card.id).activity.at(-1);
+    expect(event?.type).toBe("refs_set");
+    expect(event?.data).toEqual({
+      refs: { branch: "feat/x", prUrl: "https://github.com/o/r/pull/1" },
+    });
+  } finally {
+    second.close();
+  }
+  // No migration: the file opens at the version it was written at.
+  expect(userVersion(path)).toBe(versionBefore);
+});
