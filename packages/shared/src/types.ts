@@ -12,6 +12,8 @@ export interface Member {
 /** References into the target repository. Never contents. */
 export interface CardRefs {
   branch?: string;
+  /** Where the spec lives in the target repository: a path relative to its root. */
+  specPath?: string;
   commits?: string[];
   prUrl?: string;
 }
@@ -81,6 +83,8 @@ export const BRANCH_MAX_BYTES = 256;
 export const COMMITS_MAX_COUNT = 256;
 /** Largest PR URL in a card's refs, in UTF-8 bytes. A URL is a reference, never a payload. */
 export const PR_URL_MAX_BYTES = 256;
+/** Largest spec path in a card's refs, in UTF-8 bytes. A path is a reference, never contents. */
+export const SPEC_PATH_MAX_BYTES = 256;
 /** A claim's lease when no TTL is given, in seconds. */
 export const CLAIM_TTL_DEFAULT_SECONDS = 120;
 /** The shortest lease a claim may ask for; a smaller TTL is raised to this. */
@@ -95,7 +99,12 @@ export type ActivityEvent =
   | { type: "move_rejected"; data: { from: Phase; to: Phase; reason: string } }
   | { type: "body_set"; data: { bytes: number } }
   | { type: "comment"; data: { text: string } }
-  | { type: "refs_set"; data: { refs: CardRefs } }
+  /**
+   * The card's refs after the call, and the keys the call itself set — in `CardRefs`
+   * declaration order, empty when it set nothing. `set` is absent on events recorded before
+   * 011, which captured only the merged result: absent means unknown, never "nothing".
+   */
+  | { type: "refs_set"; data: { refs: CardRefs; set?: (keyof CardRefs)[] } }
   | { type: "card_archived"; data: Record<string, never> }
   /** The same fields as `Card.attention`, so an event can be matched to the open request. */
   | { type: "attention_requested"; data: Attention }

@@ -55,5 +55,6 @@ export {
   type MemberKind,
   type OpenAttention,
   PR_URL_MAX_BYTES,
+  SPEC_PATH_MAX_BYTES,
   TITLE_MAX_BYTES,
 } from "./types";

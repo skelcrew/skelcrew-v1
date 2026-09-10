@@ -475,6 +475,25 @@ test("refs sets branch, pr, and commits; no flag is a usage error; a bad url is 
   expect(core.getCard(1).refs.prUrl).toBe("https://github.com/o/r/pull/1");
 });
 
+test("refs --spec records the spec path on the card, in show, and in the activity", async () => {
+  core.createCard({ title: "r" }, member("simon").id);
+  await ok(["refs", "1", "--branch", "skelcrew/1-artefact-refs"]);
+
+  const run = await ok(["refs", "1", "--spec", "docs/specs/011-x.md"]);
+  expect(run.stdout).toContain("spec=docs/specs/011-x.md");
+  expect(core.getCard(1).refs.specPath).toBe("docs/specs/011-x.md");
+
+  const shown = (await ok(["show", "1"])).stdout;
+  expect(shown).toContain("spec:    docs/specs/011-x.md");
+  // The activity names what this call set, not the branch the card already carried.
+  const activity = shown.split("\n").filter((l) => l.includes("set refs"));
+  expect(activity).toHaveLength(2);
+  expect(activity[1]).toEndWith("set refs spec=docs/specs/011-x.md");
+
+  const stderr = await failed(2, ["refs", "1"]);
+  expect(stderr).toContain("at least one of --branch, --spec, --pr, --commit is required");
+});
+
 test("archive hides the card from ls, ls --all marks it, and show still works", async () => {
   core.createCard({ title: "keep" }, member("simon").id);
   core.createCard({ title: "gone" }, member("simon").id);

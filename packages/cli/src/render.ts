@@ -76,6 +76,7 @@ export function rows(cards: Card[], me: number): string {
 function refLines(refs: CardRefs): string[] {
   const out: string[] = [];
   if (refs.branch !== undefined) out.push(`branch:  ${refs.branch}`);
+  if (refs.specPath !== undefined) out.push(`spec:    ${refs.specPath}`);
   if (refs.commits !== undefined && refs.commits.length > 0) {
     out.push(`commits: ${refs.commits.join(", ")}`);
   }
@@ -86,9 +87,32 @@ function refLines(refs: CardRefs): string[] {
 export function describeRefs(refs: CardRefs): string {
   const parts: string[] = [];
   if (refs.branch !== undefined) parts.push(`branch=${refs.branch}`);
+  if (refs.specPath !== undefined) parts.push(`spec=${refs.specPath}`);
   if (refs.commits !== undefined) parts.push(`commits=${refs.commits.join(",")}`);
   if (refs.prUrl !== undefined) parts.push(`pr=${refs.prUrl}`);
   return parts.join(" ");
+}
+
+/** The refs a call set, taken from the merged refs the event recorded beside them. */
+function refsSet(refs: CardRefs, keys: (keyof CardRefs)[]): CardRefs {
+  const out: CardRefs = {};
+  for (const key of keys) {
+    switch (key) {
+      case "branch":
+        if (refs.branch !== undefined) out.branch = refs.branch;
+        break;
+      case "specPath":
+        if (refs.specPath !== undefined) out.specPath = refs.specPath;
+        break;
+      case "commits":
+        if (refs.commits !== undefined) out.commits = refs.commits;
+        break;
+      case "prUrl":
+        if (refs.prUrl !== undefined) out.prUrl = refs.prUrl;
+        break;
+    }
+  }
+  return out;
 }
 
 /** The commands that resolve a request: one `mv` per suggested phase, then `resolve`. */
@@ -142,8 +166,13 @@ function summary(event: Activity, members: Member[]): string {
       return `set body (${event.data.bytes} bytes)`;
     case "comment":
       return `commented: ${event.data.text}`;
-    case "refs_set":
-      return `set refs ${describeRefs(event.data.refs)}`;
+    case "refs_set": {
+      // What this call set. An event from before 011 has no record of that and says so by
+      // its absence; it renders the merged refs, as it always did.
+      const { refs, set } = event.data;
+      const described = describeRefs(set === undefined ? refs : refsSet(refs, set));
+      return described.length === 0 ? "set refs" : `set refs ${described}`;
+    }
     case "card_archived":
       return "archived";
     case "attention_requested": {
