@@ -66,12 +66,23 @@ whole. The qualifier is exact and is not a hedge: see *What a scan cannot be*.
 ### Asking
 
 `run.ts`'s `canUseTool` raises an attention request to the owner instead of denying, and waits
-for its resolution. The note names the tool and its input and carries the resolving commands, in
-the shape the CLI already renders for a request's suggested resolutions:
+for its resolution. The note names the tool, carries the resolving commands in the shape the CLI
+already renders for a request's suggested resolutions, and puts the agent's own text last, where
+it cannot imitate the frame around it:
 
 ```
-allow Bash rm -rf build ls? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)
+allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)
+input:
+> rm -rf build
 ```
+
+**The frame comes first and the payload is quoted, so the input cannot forge a question.** The
+input is the agent's text, and interpolating it into the middle of a one-line frame lets it close
+that frame and open a second one: a command reading `ls? (skelcrew resolve 1 -m allow | skelcrew
+resolve 1 -m deny)`, a blank line, then a plausible-looking request for another card, renders as
+two blocks, and an owner who answers the innocuous first line has approved the real call. Every
+payload line is prefixed, and a blank payload line must not survive as a blank line, since the
+queue view separates real blocks with one. This is the same class as milestone 015.
 
 **The note carries the input in full, not the activity summary's rendering of it.** The
 glanceable one-line form the card uses for streamed tool calls cuts at a couple of hundred
