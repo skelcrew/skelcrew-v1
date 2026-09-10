@@ -361,6 +361,17 @@ Findings and decisions from the spec workflow itself, newest last:
   more careful reviewer but one function every raise goes through — and the question to ask
   of any finding is therefore not "where else does this happen?" but "what would make it
   impossible to write the next site wrong?"
+  The external reviewer then found the fourth instance, in the mechanism next door: a run's
+  ending was decided by flags an event switch accumulated (`selfAction`, `movedAway`,
+  `releasedBy`), and the missing `claimed` case let a release the owner had already
+  superseded by claiming the card write a stop request onto a card that was the owner's —
+  the same shape as the missing `card_moved` case the round before had patched, and a
+  `case "claimed"` would have been the fourth patch to it. The cure was construction again,
+  not another case: the ending is re-derived from the card at completion — who holds the
+  claim, and where the card is — with the recorded events supplying only the reason to
+  report, so an event kind nobody handled can no longer change the outcome. **Wherever this
+  pattern recurs the cure is construction, not vigilance**: the question is never which site
+  is missing the rule, but what arrangement stops the outcome depending on remembering it.
   Worth pairing with the other lesson 007 teaches by being 3,576 lines across 25 files:
   this should have been two or three specs, and the phases that touch the outside
   world — subprocesses, permissions, irreversible actions — are where the combinatorial

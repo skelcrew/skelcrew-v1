@@ -490,3 +490,91 @@ the red-before-green order is in the branch history and not only in this file.
   machinery 007 defers.
 
 `bun run check`: green, 354 tests.
+
+### Round 4
+
+Two findings (`docs/plans/007-runner-runs-playbooks-conformance-review-2.md`, committed here
+as the external review record), both implementation defects, both real against the code, both
+taken. Red first for each, one commit per finding, F2 first because it is the smaller.
+
+- **Finding 2 — a tag named after the base branch let a Code run with no work pass the
+  artefact contract.** The gate built its range from short names,
+  `revList(repoRoot, "<base>..<branch>", …)`, and git resolves a bare name by precedence:
+  `refs/tags/<name>` outranks `refs/heads/<name>`. In a repository that tags a release with
+  its branch's name — the tag `main` a commit behind the branch `main` —
+  `rev-list main..skelcrew/1-x` counts the base branch's own commits as this branch's work
+  (git says `warning: refname 'main' is ambiguous` and carries on), so a run that committed
+  nothing was handed on with `ready for review: <url>`, moves `["pr"]` and release `finished`.
+  That is precisely the spike finding this milestone exists to close — "the daemon posted
+  ready for review on a branch with no commits" — reachable in any repo that tags releases
+  after their branch.
+  **Mechanism chosen: qualify both ends of the range, not resolve both to shas.**
+  `refs/heads/<base>..refs/heads/<branch>` is what `defaultBranch` already uses to find the
+  base (`git.ts`) and what `runner.ts` already uses to ask whether the card's branch exists,
+  so the gate stops being the one place that discards that protection; and it keeps the
+  range's meaning unchanged (the base branch's current head, not the sha the branch forked
+  from, so work merged into the base during the run still does not count as this run's).
+  Both ends, because a tag colliding with the card's branch name must not shift that side
+  either. Resolving each end through `revParse` was the alternative: it gives the same answer
+  and costs two more git calls and a second failure mode to report. The rest of the runner was
+  checked for the same class: `revList` was the only bare name. `git worktree add <path>
+  <branch>` looks ambiguous and is not — with the branch present git attaches
+  `refs/heads/<branch>` even when a tag shadows it, while the qualified form detaches HEAD, so
+  qualifying there would have broken it (checked against git 2.48.1 in a scratch repository,
+  both ways). `git.ts` now says on `revList` that the ends of the range are the caller's to
+  spell unambiguously.
+  **Red**: a Code card in a repository where `git tag main` sits one commit behind branch
+  `main`, with a driver that records a PR and commits nothing, never released `failed` —
+  `no matching event within 2000 ms; saw 1:card_created 1:card_moved 1:claimed 1:refs_set
+  1:comment 1:refs_set 1:refs_set 1:attention_requested 1:released` — the second `refs_set`
+  is the runner writing commits onto the refs and the request is the handoff. Green, it fails
+  with `run finished with no commits on skelcrew/1-tagged-base past main`. The repository
+  shape is the test, not a unit test of range forwarding: `run.test.ts`'s no-commits case and
+  `git.test.ts`'s range case both use unambiguous names and cannot see this.
+- **Finding 1 — a new claim did not supersede the release it followed.** The event switch
+  kept three flags (`selfAction`, `movedAway`, `releasedBy`) and the completion path chose
+  from them. There was no `claimed` case, so an owner who released a running card and
+  immediately claimed it — both calls legitimate, no move involved — left `releasedBy` set,
+  and the old run posted `run stopped: released by simon` plus an attention request onto a
+  card the owner now holds. The spec carries "a run must never write to a card whose claim it
+  has lost" forward from 006.
+  **Mechanism chosen: re-derive the ending from the card, not another case in the switch.**
+  `case "claimed"` would have been the fourth incremental patch to this mechanism — round 3
+  had just added the `card_moved`/`card_archived` clears for the same shape — and the fifth
+  event kind would have been forgotten the same way; this is the "enforced by convention at
+  each site" failure the attention helper was introduced to cure, one mechanism over. So the
+  flags no longer decide anything. At completion the run reads the card and asks who holds
+  the claim and where the card is: **the claim still this run's** is the contract path;
+  **free, unarchived, still in this phase and never away during the run** is the owner's exit
+  ramp, reported as `run stopped: released by <name>` so the card waits rather than being
+  re-dispatched at once; **anything else** — a claim by another member, a move, an archive, a
+  lapse — is an abandonment, the runner's one comment and nothing more. The recorded events
+  supply the *reason* (`releasedBy` is now only the name to report, with the supersession
+  clears gone from `card_moved` and `card_archived`), never the *decision*. The structural
+  point is the inversion: the write now needs the card itself to say the card is free and
+  still here, so an event kind nobody taught this switch about can no longer end in a stale
+  write — it can only fall through to the safe outcome.
+  **`selfAction` is deliberately outside the derivation**, as this record has it above: what
+  this run's own agent did is the one question the card cannot answer, because the state the
+  card is in is the agent's own doing rather than evidence about who owns it. An agent that
+  moved, released, or archived its own card is still reported on wherever the card ended up —
+  the accountability record round 2 designed and round 3 kept. `movedAway` survives too, but
+  no longer as supersession: it says the card left this phase at some point during the run,
+  which the card's current phase cannot show for a card moved away and back, and it can only
+  ever suppress a write, never cause one.
+  **Red**: with the owner releasing and immediately claiming mid-run, `no matching event
+  within 2000 ms; saw … 1:released 1:claimed 1:comment 1:attention_requested` — the run wrote
+  its stop and its request onto the owner's card instead of abandoning. Green, the same test
+  sees `run abandoned: claim lost to member 1; card is in spec`, the owner's claim standing
+  and no attention request. Everything the old behaviour got right still holds and its tests
+  are unchanged: the plain owner release still stops the run with its comment and request
+  ("the owner releasing a running card…"), release-then-move still abandons, a lapse still
+  abandons and re-queues, the agent's own hand still fails the run on all three of its paths,
+  and the pending tool-summary window still lands on the stop paths ("the last window of tool
+  activity…"). Release-then-archive was added beside them and passes before and after the
+  change: it pins behaviour the re-derivation had to preserve, and is written up as a
+  preservation test rather than dressed up as a red one.
+  `docs/MILESTONES.md` records this as the fourth instance of the half-fix pattern and the
+  rule it teaches: wherever it recurs the cure is construction, not vigilance.
+
+`bun run check`: green, 357 tests.
