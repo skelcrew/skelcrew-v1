@@ -290,11 +290,16 @@ function scanBase(defaultBranch: string): string {
  * worktree, so a run able to create or move a branch could point the name its successor reads
  * at a commit it authored. Nothing under `refs/remotes/` is writable by anything on the list:
  * only `git fetch`, `git pull`, `git remote` and `git push` write those refs, of which only
- * `push` is listed, and only as `git push -u origin HEAD` and a bare `git push` — which update
- * the remote-tracking ref of a branch that is pushed, never of one that is not. The run's own
- * branch is `skelcrew/<id>-…`, created by the runner. So only a commit the owner has pushed to
- * the default branch can grant anything. A ref or a file that cannot be read contributes
- * nothing rather than failing the run — the fixed list is the floor, and the agent asks.
+ * `push` is listed, and only as `git push -u origin HEAD` and a bare `git push`. The first
+ * pushes the worktree's HEAD — the card branch `skelcrew/<id>-…`, named by the runner — and so
+ * writes that branch's remote-tracking ref and no other. The second, under a repo-level
+ * `push.default = matching`, pushes every local branch with a counterpart on the remote, the
+ * default branch included; but it pushes each at the value it already holds, and no
+ * pre-allowed command can change that value: a run's commits land on its own HEAD, and
+ * `git branch` is off the list precisely so nothing else can move a `refs/heads/` entry. So
+ * only a commit the owner has pushed to the default branch can grant anything. A ref or a file
+ * that cannot be read contributes nothing rather than failing the run — the fixed list is the
+ * floor, and the agent asks.
  */
 export async function allowlistFor(
   git: Pick<Git, "showFile">,

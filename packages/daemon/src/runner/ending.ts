@@ -21,17 +21,17 @@
  * `RunEnding.question` is **required**, and the runner makes one per run before anything can
  * end: `run.ts` and `runner.ts` share it rather than each remembering the rule. An ending path
  * added later cannot leave it out — there is nothing to leave out, only a value already in
- * scope to pass. This half-rule has been the finding of three review rounds across two specs;
- * a required parameter is what stops the next path from repeating it.
+ * scope to pass. Half-implementing this rule has been a review finding round after round,
+ * each time on the next path that lacked it; a required parameter is what ends that.
  *
  * Every way a run can end goes through here: `run.ts`'s endings — the agent's session ending,
  * the time limit, the daemon stopping, a driver error, no result, an error result — and
  * `runner.ts`'s failed step, which is where a throw out of a run that had already escalated
  * lands.
  *
- * One call site raises attention without this guard: 006's no-playbook handoff
- * (`runner.ts:283`), which is not an ending — no agent has run in the worktree when it fires.
- * Note what that exemption rests on: *nothing has run*, not *nothing can be waiting*. Three
+ * One call site raises attention without this guard: 006's `no playbook for <phase> yet`
+ * handoff in `runner.ts`, which is not an ending — no agent has run in the worktree when it
+ * fires. Note what that exemption rests on: *nothing has run*, not *nothing can be waiting*. Three
  * awaits in git sit between the claim and that point, so an owner who raises their own request
  * in that window would have it replaced. Anything added to that path that could follow an
  * agent — or any use of it after work has happened — adopts the guard here rather than
