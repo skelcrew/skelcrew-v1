@@ -95,11 +95,12 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  *   model narrower than the harness, which is the direction a "this is not allowed" assertion
  *   cannot afford.
  * - Any other content is the exact command.
- * - Comparison is case-insensitive, as the harness's is.
+ * - Comparison is case-insensitive. The harness's is not — a divergence, recorded below.
  *
- * Three ways the model and the harness diverge, none compensated for here. The first is this
- * module erring wide; the other two are the harness allowing what this module's list does
- * not name, and are why the list is *not* the complete set of what runs unprompted:
+ * Four ways the model and the harness diverge, none compensated for here. The first two are
+ * this module's own reading of a rule; the other two are the harness allowing what this
+ * module's list does not name, and are why the list is *not* the complete set of what runs
+ * unprompted:
  *
  * - **The model is looser about compound commands.** The harness parses a command into its
  *   compound structure: a subshell or command group is asked about outright ("this command
@@ -110,6 +111,14 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  *   while a plain prefix comparison says it is; and a scanned entry that happens to contain
  *   `&&` grants nothing its parts do not already grant. The model erring wide only makes the
  *   assertions above stricter about what the list may hold.
+ * - **The model ignores case where the harness does not.** The harness's comparator for a
+ *   wildcard rule passes its regex's case-insensitive flag as `false`, and an exact rule is
+ *   compared to the command with `===`, unlowered; this module lowercases both sides, so it
+ *   calls `GIT PUSH` allowed where the harness would ask. Wide again, and harmless for the
+ *   same reason. (The same call normalizes runs of spaces and tabs on both sides, which this
+ *   module does not: `git  log` with two spaces is allowed there and asks here. Narrow, and
+ *   the one place a "this is allowed" assertion would be the imprecise one — there is no such
+ *   assertion, and no entry or scanned line carries a double space.)
  * - **The harness self-approves read-only Bash commands the list never names** — a divergence
  *   in what a *listed tool's arguments* may be. Rather than asking about a command in its own
  *   fixed read-only set — `ls`, `cat`, `head`, `wc`, `grep`, `find` without `-exec` and the
