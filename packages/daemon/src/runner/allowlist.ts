@@ -195,7 +195,10 @@ export function scanInstructions(text: string): string[] {
     i = end;
     if (first === undefined) continue;
     if (!SHELL_INFO_STRINGS.has(info.trim().split(/\s+/)[0]?.toLowerCase() ?? "")) continue;
-    const token = first.replace(/^\s*\$ /, "").trim().split(/\s+/)[0];
+    const token = first
+      .replace(/^\s*\$ /, "")
+      .trim()
+      .split(/\s+/)[0];
     if (token === undefined || !COMMAND_WORD.test(token)) continue;
     out.push(token);
   }

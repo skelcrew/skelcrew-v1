@@ -2,8 +2,9 @@
  * One run: a coding agent in the card's worktree with the phase's playbook and the card,
  * streamed back to the card as excerpts — every assistant turn a comment, tool calls
  * batched, the full stream in a log under the data directory — and answered from the card:
- * comments by other members reach the agent as user messages, and a tool outside the fixed
- * allowlist is denied with a reason the card also shows. The run ends when the session ends,
+ * comments by other members reach the agent as user messages, and a tool the list does not
+ * pre-allow becomes a question to the owner, one at a time, whose answer the agent is told
+ * and whose outcome the card shows. The run ends when the session ends,
  * when the time limit fires, when the daemon stops, or when the claim is lost; in every case
  * the card is left in a state a member can act on, with the reason on it, and never with a
  * question the agent raised replaced by it. Nothing is posted after an await without the
@@ -11,7 +12,13 @@
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Activity, type Card, COMMENT_MAX_BYTES, type Member } from "@skelcrew/shared";
+import {
+  type Activity,
+  type Attention,
+  type Card,
+  COMMENT_MAX_BYTES,
+  type Member,
+} from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
 import { endRun } from "./ending";
@@ -31,6 +38,8 @@ const COMMAND_IN_SUMMARY_MAX = 60;
 const SUMMARY_MAX_BYTES = COMMENT_MAX_BYTES / 4;
 const ELLIPSIS = "…";
 const RUNS_DIR_NAME = "runs";
+/** The words that allow a tool. Anything else the owner writes — or writes nothing — denies. */
+const ALLOWING_ANSWERS = new Set(["allow", "yes", "ok"]);
 
 /** The run's claim went away: the card is someone else's now, and nothing more is posted. */
 export class RunAbandoned extends Error {
@@ -297,6 +306,140 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     for (const comment of held.splice(0)) messages.push(comment.data.text);
   };
 
+  // --- tools the list does not pre-allow: asked, one at a time ---
+
+  /** One tool call waiting on the owner: what was asked, and how the agent is told. */
+  interface Ask {
+    tool: string;
+    input: Record<string, unknown>;
+    settle: (decision: ToolDecision) => void;
+  }
+
+  /** Asked and not yet on the card, oldest first. */
+  const queued: Ask[] = [];
+  /** The ask the card's open request is for, and the request the core recorded for it. */
+  let asking: Ask | undefined;
+  let raised: Attention | undefined;
+
+  /** What the tool is called on the card, in the question and in the answer's record. */
+  const describeCall = (pending: Ask): string =>
+    `${pending.tool}: ${describeInput(pending.tool, pending.input)}`;
+
+  /** The question, carrying the two commands that answer it. */
+  const questionFor = (pending: Ask): string =>
+    `allow ${pending.tool} ${describeInput(pending.tool, pending.input)}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)`;
+
+  /**
+   * Whether an open request is the one this run raised. Member identity cannot answer it:
+   * the agent runs as the `runner` member too, so its own `skelcrew attention` question has
+   * the same `raisedBy`. What the core recorded for this run's own call is the only mark.
+   */
+  const isRaisedHere = (request: Attention): boolean =>
+    raised !== undefined &&
+    request.to === raised.to &&
+    request.note === raised.note &&
+    request.raisedBy === raised.raisedBy &&
+    request.raisedAt === raised.raisedAt;
+
+  /** Told to the agent when the run is over before the owner has answered. */
+  const over = (pending: Ask): void => {
+    pending.settle({
+      behavior: "deny",
+      message: `The run ended before the owner answered, so ${pending.tool} did not run.`,
+    });
+  };
+
+  /**
+   * Raises the oldest queued ask, if the card is free to carry it. A question the agent
+   * asked itself is the owner's to answer first and is never replaced; the ask waits, and
+   * comes back here when that question is resolved. Called from the ask and from inside the
+   * `attention_resolved` dispatch, where the core queues the nested mutation so the next
+   * question lands with the previous answer.
+   */
+  const raiseNext = (): void => {
+    const next = queued[0];
+    if (asking !== undefined || next === undefined) return;
+    if (input.lost() !== undefined) return;
+    try {
+      if (core.getCard(id).attention !== null) return;
+      const card = core.requestAttention(id, { to: ownerId(), note: questionFor(next) }, member.id);
+      queued.shift();
+      asking = next;
+      raised = card.attention ?? undefined;
+    } catch (error) {
+      warn(`skelcrew runner: card ${id}: could not ask about ${next.tool}: ${message(error)}`);
+    }
+  };
+
+  const ask = (tool: string, toolInput: Record<string, unknown>): Promise<ToolDecision> =>
+    new Promise<ToolDecision>((resolve) => {
+      const pending: Ask = { tool, input: toolInput, settle: resolve };
+      if (abort.signal.aborted) {
+        over(pending);
+        return;
+      }
+      queued.push(pending);
+      raiseNext();
+    });
+
+  /** Nothing is left waiting on an answer that is not coming. */
+  const settleAll = (): void => {
+    const pending = asking === undefined ? [] : [asking];
+    asking = undefined;
+    raised = undefined;
+    for (const outstanding of [...pending, ...queued.splice(0)]) over(outstanding);
+  };
+  abort.signal.addEventListener("abort", settleAll, { once: true });
+
+  /**
+   * The owner's answer: the comment `resolveAttention` recorded immediately before the
+   * resolution, by the same actor. It is consumed here as the decision and so is *not* also
+   * forwarded to the agent, which would otherwise read its own answer twice.
+   */
+  const answerTo = (resolution: Activity): string | undefined => {
+    const at = held.findIndex(
+      (comment) => comment.seq === resolution.seq - 1 && comment.actorId === resolution.actorId,
+    );
+    if (at === -1) return undefined;
+    return (held.splice(at, 1)[0] as Comment).data.text;
+  };
+
+  /**
+   * `allow`, `yes` and `ok` allow; anything else, and nothing at all, denies. A resolution
+   * of a question that is not this run's — the agent's own — decides nothing and leaves its
+   * comment to reach the agent as a message; either way the next queued ask can be raised,
+   * and is, from inside this dispatch.
+   */
+  const answered = (resolution: Activity): void => {
+    const pending = asking;
+    if (pending === undefined) {
+      raiseNext();
+      return;
+    }
+    const text = answerTo(resolution);
+    asking = undefined;
+    raised = undefined;
+    if (text !== undefined && ALLOWING_ANSWERS.has(text.trim().toLowerCase())) {
+      pending.settle({ behavior: "allow" });
+      post(`allowed ${describeCall(pending)}`);
+    } else {
+      pending.settle({
+        behavior: "deny",
+        message:
+          text === undefined
+            ? `The owner did not allow ${pending.tool}, and said nothing about why. Do not retry it: work with what is allowed, or say what you needed with skelcrew attention ${id} "<what you needed>".`
+            : `The owner did not allow ${pending.tool}: ${text}`,
+      });
+      post(
+        cutMarked(
+          `denied ${describeCall(pending)}${text === undefined ? "" : ` — ${text}`}`,
+          COMMENT_MAX_BYTES / 4,
+        ),
+      );
+    }
+    raiseNext();
+  };
+
   const onEvent = (event: Activity): void => {
     if (event.cardId !== id) return;
     switch (event.type) {
@@ -305,6 +448,21 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         if (event.actorId === member.id) return;
         held.push(event);
         if (held.length === 1) queueMicrotask(flushHeld);
+        return;
+      case "attention_requested":
+        // Raised over this run's question — by the agent, most likely. The card's request is
+        // not the run's any more, so the ask goes back in the queue and waits its turn.
+        if (asking !== undefined && !isRaisedHere(event.data)) {
+          queued.unshift(asking);
+          asking = undefined;
+          raised = undefined;
+        }
+        return;
+      case "attention_resolved":
+        // Only an answer is an answer: a move or an archive clears the request on its way to
+        // ending the run, and `check` is what notices that.
+        if (event.data.how === "answered") answered(event);
+        else check();
         return;
       case "card_moved":
       case "card_archived":
@@ -353,15 +511,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         env: input.env,
         systemPrompt: input.playbook,
         allowedTools: input.allowedTools,
-        canUseTool: (tool, toolInput) => {
-          // 013 routes this to the owner; here the answer is always no, and visibly so.
-          post(`denied ${tool}: ${describeInput(tool, toolInput)}`);
-          const decision: ToolDecision = {
-            behavior: "deny",
-            message: `${tool} is not pre-allowed for this run, and there is no way to ask for it yet. Work with what is allowed, or raise the block with skelcrew attention ${id} "<what you needed>".`,
-          };
-          return Promise.resolve(decision);
-        },
+        canUseTool: ask,
         input: messages,
         log: (entry) => appendLog(logPath, entry),
         signal: abort.signal,

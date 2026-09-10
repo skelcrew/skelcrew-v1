@@ -19,7 +19,7 @@ import {
 } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
-import { FIXED_ALLOWLIST } from "./allowlist";
+import { allowlistFor } from "./allowlist";
 import { endRun } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
@@ -65,6 +65,8 @@ export interface RunnerOptions {
   abortGraceMs?: number;
   /** The window a run batches tool calls into one comment over. Defaults to 30 s. */
   summaryMs?: number;
+  /** How often a live run renews its lease. Defaults to 30 s. */
+  heartbeatMs?: number;
 }
 
 export interface Runner {
@@ -134,6 +136,7 @@ export function startRunner(options: RunnerOptions): Runner {
   const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
   const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS_DEFAULT;
   const summaryMs = options.summaryMs ?? TOOL_SUMMARY_MS;
+  const heartbeatMs = options.heartbeatMs ?? RUN_HEARTBEAT_MS;
   const baseEnv = options.env ?? process.env;
   /** Fired by `stop()`: a live run is told to stop rather than waited out. */
   const stopping = new AbortController();
@@ -225,7 +228,7 @@ export function startRunner(options: RunnerOptions): Runner {
       } catch (error) {
         warn(`skelcrew runner: heartbeat on card ${id} failed: ${message(error)}`);
       }
-    }, RUN_HEARTBEAT_MS);
+    }, heartbeatMs);
     const path = worktreePath(id);
     const branch = branchName(id, card.title);
     /**
@@ -308,7 +311,7 @@ export function startRunner(options: RunnerOptions): Runner {
         driver: agent.driver,
         playbook,
         env: agentEnvironment(baseEnv, dataDir),
-        allowedTools: [...FIXED_ALLOWLIST],
+        allowedTools: allowlistFor(repoRoot),
         logPath,
         limitMs: runLimitMs,
         graceMs: abortGraceMs,

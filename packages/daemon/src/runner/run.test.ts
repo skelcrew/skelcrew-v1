@@ -556,7 +556,10 @@ test("deny, no, other text and no text each deny, telling the agent what the own
     expect([word, decision?.behavior]).toEqual([word, "deny"]);
     expect(deniedMessage(decision)).toContain(word);
   }
-  const decision = await askAndAnswer(["Write", { file_path: "/etc/hosts", content: "x" }], undefined);
+  const decision = await askAndAnswer(
+    ["Write", { file_path: "/etc/hosts", content: "x" }],
+    undefined,
+  );
   expect(decision.behavior).toBe("deny");
   expect(deniedMessage(decision)).toContain("Write");
 });
