@@ -12,12 +12,17 @@
  * because the runner claims only a card whose attention is `null`, so anything open at the end
  * of a run was raised during it.
  *
- * The one request the rule does not protect is the run's *own* permission question, and the
- * caller says so with `replaces`: a run that ends while waiting on the owner leaves a question
- * nothing will ever answer — `skelcrew resolve -m allow` then allows no tool, it only clears
- * the request — and the ending's reason would never reach the owner's queue. The caller
- * decides, because only the run holds the record the core made for its own call; this module
- * still refuses to guess. Anything it is not told about stands.
+ * The one request the rule does not protect is the run's *own* permission question: a run that
+ * ends while waiting on the owner leaves a question nothing will ever answer — `skelcrew
+ * resolve -m allow` then allows no tool, it only clears the request — and the ending's reason
+ * would never reach the owner's queue. Which request that is cannot be inferred here, so a run
+ * records it in a `RunQuestion` as it asks, and every ending is handed that same value.
+ *
+ * `RunEnding.question` is **required**, and the runner makes one per run before anything can
+ * end: `run.ts` and `runner.ts` share it rather than each remembering the rule. An ending path
+ * added later cannot leave it out — there is nothing to leave out, only a value already in
+ * scope to pass. This half-rule has been the finding of three review rounds across two specs;
+ * a required parameter is what stops the next path from repeating it.
  *
  * Every way a run can end goes through here: `run.ts`'s endings — the agent's session ending,
  * the time limit, the daemon stopping, a driver error, no result, an error result — and
@@ -35,6 +40,38 @@
 import type { Attention } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 
+/**
+ * The run's own permission question, while it is the card's open request. Only the run can
+ * know which request that is: the agent's `skelcrew attention` runs as the same `runner`
+ * member, so `raisedBy` cannot tell the two apart, and what the core recorded for the run's
+ * own call is the only mark. Held as a value so that the run and every ending read the same
+ * one — an ending is never asked to remember a rule.
+ */
+export interface RunQuestion {
+  /** What the core recorded for the run's own `requestAttention`, or nothing once it is gone. */
+  raised(request: Attention | undefined): void;
+  /** Whether the card's open request is that one, and so the ending's to replace. */
+  isOpen(request: Attention): boolean;
+}
+
+export function runQuestion(): RunQuestion {
+  let own: Attention | undefined;
+  return {
+    raised(request) {
+      own = request;
+    },
+    isOpen(request) {
+      return (
+        own !== undefined &&
+        request.to === own.to &&
+        request.note === own.note &&
+        request.raisedBy === own.raisedBy &&
+        request.raisedAt === own.raisedAt
+      );
+    },
+  };
+}
+
 export interface RunEnding {
   core: Core;
   cardId: number;
@@ -51,13 +88,11 @@ export interface RunEnding {
   /** The release reason. */
   reason: string;
   /**
-   * Whether an open request is one the ending may replace: the run's own permission
-   * question, which nothing answers once the run is over. Left out — or answering `false` —
-   * the request stands and the ending is a comment alone, which is the rule above. Only the
-   * run can decide this, because only it holds the record the core made for its own call;
-   * `raisedBy` cannot tell the agent's question from the run's.
+   * This run's own permission question, the one open request an ending may replace: nothing
+   * answers it once the run is over. Every other open request stands and the ending is a
+   * comment alone, which is the rule above.
    */
-  replaces?: (open: Attention) => boolean;
+  question: RunQuestion;
 }
 
 function message(error: unknown): string {
@@ -73,12 +108,12 @@ export function endRun({
   warn,
   note,
   reason,
-  replaces,
+  question,
 }: RunEnding): void {
   try {
     core.comment(cardId, note, memberId);
     const open = core.getCard(cardId).attention;
-    if (open === null || replaces?.(open) === true) {
+    if (open === null || question.isOpen(open)) {
       core.requestAttention(cardId, { to: ownerId(), note }, memberId);
     }
   } catch (error) {

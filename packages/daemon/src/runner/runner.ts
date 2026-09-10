@@ -20,7 +20,7 @@ import {
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
 import { allowlistFor } from "./allowlist";
-import { endRun } from "./ending";
+import { endRun, runQuestion } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
@@ -261,6 +261,12 @@ export function startRunner(options: RunnerOptions): Runner {
         warn(`skelcrew runner: card ${id}: run abandoned; and could not say so: ${message(inner)}`);
       }
     };
+    /**
+     * This run's own permission question, made here so that the run and every ending share
+     * one value: the run records what it asked, and an ending — `run.ts`'s or the failed
+     * step below — replaces that request and leaves any other standing (`ending.ts`).
+     */
+    const question = runQuestion();
     let step = "resolve base branch";
     try {
       const base = await git.defaultBranch(repoRoot);
@@ -318,6 +324,7 @@ export function startRunner(options: RunnerOptions): Runner {
         playbook,
         env: agentEnvironment(baseEnv, dataDir),
         allowedTools,
+        question,
         logPath,
         limitMs: runLimitMs,
         graceMs: abortGraceMs,
@@ -347,6 +354,7 @@ export function startRunner(options: RunnerOptions): Runner {
         warn,
         note: within(`${step} failed: ${message(error)}`),
         reason: "failed",
+        question,
       });
     } finally {
       clearInterval(heartbeat);

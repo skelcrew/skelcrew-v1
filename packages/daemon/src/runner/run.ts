@@ -12,16 +12,10 @@
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  type Activity,
-  type Attention,
-  type Card,
-  COMMENT_MAX_BYTES,
-  type Member,
-} from "@skelcrew/shared";
+import { type Activity, type Card, COMMENT_MAX_BYTES, type Member } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
-import { endRun } from "./ending";
+import { endRun, type RunQuestion } from "./ending";
 
 /** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
 export const RUN_LIMIT_MINUTES_DEFAULT = 60;
@@ -73,6 +67,12 @@ export interface RunInput {
   summaryMs: number;
   /** Fires when the daemon is stopping: the run is told to stop and ends as such. */
   stop: AbortSignal;
+  /**
+   * Where this run records its own permission question, so that every ending — the ones
+   * below and the runner's, for a throw that gets past them — replaces that request and no
+   * other. The runner owns it: see `ending.ts`.
+   */
+  question: RunQuestion;
   /** Throws `RunAbandoned` when the claim is no longer this run's, live. */
   stillHeld(): void;
   /** Why the claim is no longer this run's, or undefined while it is. */
@@ -323,9 +323,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
    * The request the core recorded for this run's own question, while it is still the card's:
    * cleared when it is answered or replaced, and *not* when the ask it belongs to is settled,
    * because a run ending with its question still open is exactly when the ending needs to
-   * know which request is its own to replace.
+   * know which request is its own to replace. The runner holds the same value, so its endings
+   * read what this run recorded (`ending.ts`).
    */
-  let raised: Attention | undefined;
+  const question = input.question;
 
   /** What the tool is called on the card, in the question and in the answer's record. */
   const describeCall = (pending: Ask): string =>
@@ -334,18 +335,6 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   /** The question, carrying the two commands that answer it. */
   const questionFor = (pending: Ask): string =>
     `allow ${pending.tool} ${describeInput(pending.tool, pending.input)}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)`;
-
-  /**
-   * Whether an open request is the one this run raised. Member identity cannot answer it:
-   * the agent runs as the `runner` member too, so its own `skelcrew attention` question has
-   * the same `raisedBy`. What the core recorded for this run's own call is the only mark.
-   */
-  const isRaisedHere = (request: Attention): boolean =>
-    raised !== undefined &&
-    request.to === raised.to &&
-    request.note === raised.note &&
-    request.raisedBy === raised.raisedBy &&
-    request.raisedAt === raised.raisedAt;
 
   /** Told to the agent when the run is over before the owner has answered. */
   const over = (pending: Ask): void => {
@@ -371,7 +360,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       const card = core.requestAttention(id, { to: ownerId(), note: questionFor(next) }, member.id);
       queued.shift();
       asking = next;
-      raised = card.attention ?? undefined;
+      question.raised(card.attention ?? undefined);
     } catch (error) {
       const failure = message(error);
       warn(`skelcrew runner: card ${id}: could not ask about ${next.tool}: ${failure}`);
@@ -405,7 +394,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       raiseNext();
     });
 
-  /** Nothing is left waiting on an answer that is not coming. `raised` outlives this: see it. */
+  /** Nothing is left waiting on an answer that is not coming. `question` outlives this: see it. */
   const settleAll = (): void => {
     const pending = asking === undefined ? [] : [asking];
     asking = undefined;
@@ -440,7 +429,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     }
     const text = answerTo(resolution);
     asking = undefined;
-    raised = undefined;
+    question.raised(undefined);
     if (text !== undefined && ALLOWING_ANSWERS.has(text.trim().toLowerCase())) {
       pending.settle({ behavior: "allow" });
       post(`allowed ${describeCall(pending)}`);
@@ -474,10 +463,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       case "attention_requested":
         // Raised over this run's question — by the agent, most likely. The card's request is
         // not the run's any more, so the ask goes back in the queue and waits its turn.
-        if (asking !== undefined && !isRaisedHere(event.data)) {
+        if (asking !== undefined && !question.isOpen(event.data)) {
           queued.unshift(asking);
           asking = undefined;
-          raised = undefined;
+          question.raised(undefined);
         }
         return;
       case "attention_resolved":
@@ -600,7 +589,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // The one open request an ending may replace is this run's own question, which nothing
       // will answer now: the owner's queue must show why the run ended, not a resolve command
       // that allows no tool. A question the agent raised is left exactly where it is.
-      replaces: isRaisedHere,
+      question,
     });
   };
   const fail = (note: string): void => {

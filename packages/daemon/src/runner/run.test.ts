@@ -1115,20 +1115,22 @@ test("an aborted run does not replace the agent's question either", async () => 
   expect(comments(1).at(-1)).toContain("time limit");
 });
 
-test("a throw out of the run does not replace the agent's question either", async () => {
-  await initRepo();
-  // A driver whose iterator throws when the run closes it: a throw out of the run itself,
-  // past every ending the run handles, so the runner's failed-step handler is what ends the
-  // card. It must hand the card over by the same rule.
-  const brokenDriver: AgentDriver = {
-    run: () => ({
+/**
+ * A driver whose iterator throws when the run closes it: a throw out of the run itself, past
+ * every ending `run.ts` handles, so the runner's failed-step handler is what ends the card.
+ * It must hand the card over by the same rule. `first` is what happens before the run sees
+ * the one event, which is where these tests put a question on the card.
+ */
+function dyingDriver(first: (options: AgentRunOptions) => void): AgentDriver {
+  return {
+    run: (options) => ({
       [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
         let sent = false;
         return {
           next(): Promise<IteratorResult<AgentEvent>> {
             if (sent) return Promise.resolve({ done: true, value: undefined });
             sent = true;
-            agentAsks(1, "the spec contradicts CLAUDE.md");
+            first(options);
             return Promise.resolve({ done: false, value: { type: "result", ok: true } });
           },
           return(): never {
@@ -1138,10 +1140,34 @@ test("a throw out of the run does not replace the agent's question either", asyn
       },
     }),
   };
-  start({ driver: brokenDriver });
+}
+
+test("a throw out of the run does not replace the agent's question either", async () => {
+  await initRepo();
+  start({ driver: dyingDriver(() => agentAsks(1, "the spec contradicts CLAUDE.md")) });
   await runCard("Blocked, then broken");
 
   expect(core.getCard(1).attention?.note).toBe("the spec contradicts CLAUDE.md");
+  expect(comments(1).at(-1)).toContain("the harness died on cleanup");
+});
+
+/**
+ * The same throw, over the run's *own* question: the ending the runner posts must reach the
+ * owner's queue here too. Left standing, the card shows `skelcrew resolve 1 -m allow` — which
+ * allows no tool once the run is gone — and nothing says the run died.
+ */
+test("a throw out of the run replaces the run's own question with the reason it ended", async () => {
+  await initRepo();
+  start({
+    driver: dyingDriver((options) => {
+      void options.canUseTool("Bash", { command: "rm -rf build" });
+    }),
+  });
+  await runCard("Asked, then broken");
+
+  const request = core.getCard(1).attention;
+  expect(request?.note).toContain("the harness died on cleanup");
+  expect(request?.note).not.toContain("skelcrew resolve");
   expect(comments(1).at(-1)).toContain("the harness died on cleanup");
 });
 
