@@ -63,6 +63,16 @@ state a member can act on, with the reason on the card. When the agent's session
 the card is handed to the owner the way 006 hands it back today: a comment, an attention
 request, and a release. Verifying that the agent produced anything is 014.
 
+**An ending never replaces a question the agent raised.** The playbooks tell an agent that is
+blocked to escalate with `skelcrew attention` and stop, and under this spec — where nothing may
+be written — that is a Code run's *expected* productive ending, not an edge case. A card carries
+one attention record, so a run that raises its own over the agent's would leave the owner's
+queue showing a generic "the session ended" note on the one card with a real question on it. So
+the ending's comment is always posted, and its request is raised only when nothing is already
+waiting. No identity check is involved or possible: the agent raises attention as the `runner`
+member too, so `raisedBy` cannot distinguish them. It does not need to — the runner only claims
+a card whose attention is `null`, so anything open at the end of a run was raised during it.
+
 **The daemon still calls no model.** It spawns a subprocess under the owner's own harness login
 and holds no credentials. `SKELCREW_AGENT` selects which driver: `claude` to spawn a real
 agent, `none` to keep 006's behaviour exactly. An unrecognised value stops the daemon at
@@ -232,6 +242,9 @@ rather than silent.
     local `.claude/settings.json` cannot widen what the run may do without asking. Asserted on
     the options the driver builds, which is the one part of the real driver testable without
     spawning anything.
+16. An agent that raises a question with `skelcrew attention` and then ends its session still has
+    that question as the card's open request afterwards, and the run's ending comment is on the
+    card beside it. A run that raises no question ends exactly as criterion 2 describes.
 12. `SKELCREW_AGENT=none` reproduces 006's behaviour exactly: the existing `runner.test.ts`
     suite passes unmodified, including its `no playbook` assertions. An unrecognised value
     stops the daemon at startup with a message naming the variable.
