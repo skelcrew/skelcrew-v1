@@ -165,8 +165,12 @@ Why each group is shaped this way:
   admitted on the grounds that `git branch -D` only touches "local branches inside a disposable
   worktree" — which is false. Branch refs live in `refs/heads/` and are **shared** by the main
   checkout and every linked worktree, so an agent renaming or repointing a branch changes the
-  owner's repository, not its own scratch copy. No playbook runs `git branch`; a read-only use
-  asks.
+  owner's repository, not its own scratch copy. No playbook runs `git branch`. A read-only use of
+  it does **not** ask, though: `git branch`, `--show-current`, `-a`, `-r`, `-v` and `--list` are
+  all on the harness's own read-only tier, which is ~24 git verbs wide and validates each call
+  flag by flag. Every mutating form — `-D`, `-m`, `-f`, and `git branch <name> <base>` — fails
+  that validator and does ask, which is the property this entry's absence needs. Not listing it
+  is what leaves that validator in charge; listing it would replace it with "any flag at all".
 - `Bash(git push)` under a repo-level `push.default = matching` can push more than the card's
   branch. Accepted, and recorded. It is only as narrow as the config that governs it:
   `remote.origin.push` outranks `push.default` and can turn a bare push into
@@ -215,6 +219,24 @@ yields `Bash(bun * *)`, which matches `bun -e '<any code>'`, and `make *` yields
 
 A scanned line must also look like a command: if its first word is not a plain command word
 (letters, digits, `.`, `_`, `/`, `-`), the block contributes nothing.
+
+**And a scanned line is one rule, never two.** Sanitising against the *pattern* compiler is not
+enough, because the entry has a syntax of its own: entries are split on whitespace outside
+parentheses, so a line carrying a `)` closes `Bash(` early and the rest of the line opens a
+second rule whose closing `*)` this code supplies. A fenced
+
+```
+bun run) Bash(git
+```
+
+becomes the entry `Bash(bun run) Bash(git *)`, which the harness reads as `Bash(bun run)` **and**
+`Bash(git *)` — the grant this spec refuses, obtained by a repository, with `git` placed in a
+later word so a first-word check never sees it. `bun run) Bash(sh` yields `Bash(sh *)`: arbitrary
+unprompted execution. The scan must therefore accept only a conservative character set for the
+whole line, rejecting every character that carries meaning in rule syntax — parentheses first —
+rather than blocklisting the ones an attack has already been written for. The invariant to assert
+is the one that fails loudly whatever the character set misses: **each entry the scan produces
+must parse as exactly one rule.**
 
 **The scan reads the instruction files as of the run's base commit, not the working tree.**
 An agent can write a fenced block into the repository's own `AGENTS.md` inside its worktree — a
@@ -354,6 +376,10 @@ any repo documenting a git command triggers it.
 10f. The record says what a subprocess reaches. `allowlist.ts` and the Code playbook both carry
     it, naming the `skelcrew` verbs it obtains, and no artefact in this spec claims a boundary
     a subprocess does not respect.
+10g. A scanned line that would produce more than one rule contributes nothing. Specifically, a
+    fenced ``bun run) Bash(git`` and a fenced ``bun run) Bash(sh`` each yield no entry, and every
+    entry the scan produces parses as exactly one rule — asserted against the harness's own
+    splitting, not against this repository's model of an entry.
 10a. A fenced block whose line contains an unescaped `*`, `?` or `[` contributes nothing: a repo
     containing `bun *` does not pre-allow `bun -e '…'`. A fenced block written into the working
     tree during a run, or present only as an uncommitted change, contributes nothing to that run
