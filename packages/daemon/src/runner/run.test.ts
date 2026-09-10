@@ -82,6 +82,8 @@ function fakeDriver(script: (options: AgentRunOptions) => AsyncGenerator<AgentEv
 
 interface StartOptions {
   driver: AgentDriver;
+  /** The core the runner is given, when a test needs one of its calls to fail. */
+  core?: Core;
   summaryMs?: number;
   runLimitMs?: number;
   abortGraceMs?: number;
@@ -91,7 +93,7 @@ interface StartOptions {
 
 function start(options: StartOptions): Runner {
   runner = startRunner({
-    core,
+    core: options.core ?? core,
     dataDir,
     repoRoot: repo,
     git,
@@ -614,6 +616,37 @@ test("two tools asked at once are one question at a time, answered in the order 
   expect(decisions[0]).toEqual({ behavior: "allow" });
   expect(decisions[1]?.behavior).toBe("deny");
   expect(deniedMessage(decisions[1])).toBe("The owner did not allow Write: no");
+});
+
+/**
+ * Nothing retries a request the core refused, so an ask left queued would block the agent
+ * until the run's limit fired, with a line in the daemon's log as the only trace. It is
+ * denied instead, and the card says why.
+ */
+test("a question the core refuses denies the tool rather than leaving the agent waiting", async () => {
+  await initRepo();
+  let decision: ToolDecision | undefined;
+  const refuses: Core = {
+    ...core,
+    requestAttention() {
+      throw new Error("attention is down");
+    },
+  };
+  start({
+    core: refuses,
+    runLimitMs: 1000,
+    driver: fakeDriver(async function* (options) {
+      decision = await options.canUseTool("Bash", { command: "rm -rf build" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Cannot be asked");
+
+  expect(decision?.behavior).toBe("deny");
+  expect(deniedMessage(decision)).toContain("attention is down");
+  expect(comments(1).some((text) => text.startsWith("could not ask the owner"))).toBe(true);
+  // The run got on with it rather than burning its limit waiting on an answer nobody sends.
+  expect(comments(1).some((text) => text.includes("time limit"))).toBe(false);
 });
 
 test("a question the agent raised itself outranks the run's; the permission request waits", async () => {

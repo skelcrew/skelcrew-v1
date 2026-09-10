@@ -373,7 +373,24 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       asking = next;
       raised = card.attention ?? undefined;
     } catch (error) {
-      warn(`skelcrew runner: card ${id}: could not ask about ${next.tool}: ${message(error)}`);
+      const failure = message(error);
+      warn(`skelcrew runner: card ${id}: could not ask about ${next.tool}: ${failure}`);
+      // Nothing retries a request the core refused: an ask left queued would wait for an
+      // `attention_resolved` that cannot arrive, and the agent would block until the run's
+      // limit fired with a line in the daemon's log as the only trace. It is denied instead,
+      // naming the failure, and the card says so.
+      queued.shift();
+      next.settle({
+        behavior: "deny",
+        message: `${next.tool} could not be put to the owner: ${failure}`,
+      });
+      post(
+        cutMarked(
+          `could not ask the owner about ${describeCall(next)}: ${failure}`,
+          COMMENT_MAX_BYTES / 4,
+        ),
+      );
+      raiseNext();
     }
   };
 
