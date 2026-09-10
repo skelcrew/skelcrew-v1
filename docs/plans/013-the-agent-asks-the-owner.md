@@ -68,3 +68,59 @@ Findings are in the report; the load-bearing ones:
   criterion 8 asks.
 - `Bash(gh repo view*)`, with no space before the `*`, compiles to `^gh repo view.*$`
   instead: a prefix with no separator. Implemented verbatim as the spec names it, and reported.
+
+## Spec review
+
+The spec was amended after the six commits above, on two points, and the amendments are
+implemented here.
+
+**1. The scan grants the command line, not its first word.** Taking the first token meant a
+repo showing `bun run check` produced `Bash(bun *)` — which matches `bun -e '<any code>'`, and
+the same for `node -e`, `python -c`, `npm` and `make`. That is the wildcard-before-the-
+subcommand shape the fixed list refuses for `git`, on the one entry a *target repository*
+controls. `scanInstructions` now returns the line whole and `allowlistFor` grants
+`Bash(bun run check *)`. Criterion 9's new clause — `bun -e '…'` still asks — is its own test,
+and every scan test was re-checked against the line shape.
+
+**2. `Bash(gh repo view *)`.** The missing space was a typo in the spec, now corrected there.
+` *` compiles to `^gh repo view( .*)?$`; `view*` compiles to `^gh repo view.*$`, a prefix with
+no separator that also covers `gh repo viewer`. The list test pins the corrected shape and a
+negative case pins `gh repo viewer`. `entryAllows` still models the no-space shape although no
+entry now has it: reading such an entry as an exact command would make the model *narrower*
+than the harness, the one direction a "this is not allowed" assertion cannot afford.
+
+**What the no-widening rule means under the line form.** The rule now reads the *first word* of
+the scanned line and drops the line whole if that word is one the fixed list narrows
+(`git`, `gh`, `skelcrew`). Three consequences, all tested:
+
+- `git status` in a repo's instructions still contributes nothing, so no `Bash(git *)` — the
+  criterion 10 case, unchanged in outcome.
+- Dropping the line whole is now doing more work than before, not less: under a line grant, a
+  repo documenting `git push --force` would otherwise be handed back exactly the form the fixed
+  list withholds, and `gh pr merge` likewise. The alternative — granting a narrowed command's
+  line when the fixed list happens not to cover it — is a repository editing its own boundary,
+  so the line is dropped and the agent asks.
+- `git status && rm -rf /` needs no special handling: its first word is `git`, so it is dropped
+  like every other `git` line. For a line whose first word is *not* narrowed
+  (`bun run check && rm -rf /`), the harness's own decomposition covers it: read out of the
+  shipped binary, a subshell or command group is asked about outright, and a list or pipeline
+  is split into its parts and matched part by part — allowed only if every part is — while a
+  whole compound command matches a rule only when the rule's content is that command exactly.
+  A scanned entry containing `&&` therefore grants nothing its parts do not already grant. The
+  module's model of the harness is looser here (a plain prefix comparison), and that is
+  recorded in `allowlist.ts` as the model erring wide; no scan-time filter was added, because
+  the spec asks for none and the harness's check is the one that governs.
+
+**Three points raised in the report, answered.**
+
+- **The seq-1 answer rule.** The implementation looks for the answering comment only in the
+  current dispatch's held-comments buffer, which is narrower than the spec's literal words
+  ("the comment whose sequence number is immediately before the resolution"). Confirmed as the
+  intended reading and kept: it is not a divergence, and a reviewer should not read it as one.
+- **A run that ends with its own permission request still open** leaves the request open. That
+  belongs to 014 (artefact contracts and run endings), which needs to pick it up: the owner
+  currently sees an unanswered question beside the run's ending comment, and answering it
+  re-dispatches the card.
+- **`Write`, `Edit` and `MultiEdit` are unbounded by path** — per the spec, which lists them
+  bare, and sandboxing is out of scope. Recorded in `allowlist.ts`'s module doc rather than
+  changed.
