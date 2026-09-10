@@ -376,3 +376,64 @@ CRLF repository granted nothing, silently. Lines are split with the `\r` dropped
 ### Checks
 
 `bun run check` green: 409 tests, 0 fail.
+
+## Review round 3
+
+The spec was amended again first (`git checkout main -- docs/specs/013-the-agent-asks-the-owner.md`,
+from `331b98b`): the fixed list's file-tool entry is now anchored, criteria 10b/10c and 2 gained
+clauses, and "Choosing the ref is not enough on its own" was added. What follows implements the
+amended spec.
+
+Five findings, one commit each.
+
+1. **Critical 1 + Critical 2 — the file tools are anchored to the run's worktree.** `Edit`,
+   `Write` and `MultiEdit` come off `FIXED_ALLOWLIST`; one per-run entry
+   `Edit(//<abs worktree>/**)` replaces them, with `Edit(//<wt>/.git)` and
+   `Edit(//<wt>/.git/**)` delivered as deny rules through the SDK's `disallowedTools`. Files
+   touched: `allowlist.ts`, `runner.ts`, `run.ts`, `agent.ts`, `claude.ts`, `playbooks/code.md`.
+2. **Important 3 — the permission question carries the input in full**, cut only at the note's
+   own byte cap, marked, naming the run log. `INPUT_LINE_MAX` stays as it is for the activity
+   summary. `run.ts`.
+3. **Minor 4 — a test that the owner's answer is not also delivered to the agent**, and a line
+   in the held-comments doc comment recording that `answerTo` depends on the splice. `run.ts`,
+   `run.test.ts`.
+4. **Minor 5 — the run-start comment says what the scan added, or why it read nothing.**
+   `allowlist.ts` returns that clause with the list; `runner.ts` puts it on the card.
+
+### Decisions the spec left open
+
+- **The rule is spelled `Edit(/<absolute path>/**)`.** The spec writes `Edit(//<worktree>/**)`;
+  read literally with `<worktree>` an absolute path that is three slashes. `//` is the harness's
+  "absolute from the filesystem root" prefix, so the rule for `/a/b` is `//a/b/**`, which is
+  `"/" + path`. (Both forms in fact reach the same pattern — `uBe` slices one slash and `Vn`
+  collapses the rest — but the two-slash form is the documented one.)
+- **The deny rules travel as `disallowedTools`.** That is the only seam the SDK exposes for
+  deny rules; the CLI turns them into `alwaysDenyRules.cliArg`, which is what the file check
+  consults first.
+- **`allowlistFor` returns `{ tools, denied, scanned }`** rather than an array, so the run's
+  deny rules and the clause the card shows come from the one place that knows them.
+
+### Verifying the new rules against the shipped binary
+
+The spec's file-permission facts were given as verified, but the *resulting rules* were checked
+against the harness the way earlier rounds checked the Bash matcher. The permission path was read
+out of the `claude` binary `@anthropic-ai/claude-agent-sdk@0.3.266` spawns and run verbatim:
+`Hi(path, ctx, "edit", behavior)` (the rule lookup), `PZe` (the allow check `uA` ends in), `Gr`,
+`lh`, `Vke`/`uBe`, `Vn`, `Mi`, `zr`, `Ka`, and the binary's own bundled `ignore` module. What it
+confirms, on the exact strings `editsIn`/`deniedTools` produce:
+
+- a write anywhere under the worktree is allowed; `<wt>/.git` and `<wt>/.git/**` are denied; a
+  ref, `packed-refs` and `config` under the git common directory, `~/.claude/settings.json`, and
+  a sibling directory whose name merely starts with the worktree's path all reach `ask`;
+- `Write(<path>)` as an allow rule leaves the edit check with nothing — only `Edit(path)` and
+  `Read(path)` rules are consulted (`_He` warns exactly that, naming `Write`, `NotebookEdit`,
+  `MultiEdit` → `Edit` and `Glob` → `Read`);
+- as an *allow* rule a single-segment `dir/**` does not match at depth, while as a *deny* rule it
+  does — the asymmetry is `Hi`'s `E.has(V + "/**") && (V.includes("/") || o !== "allow")`;
+- `--disallowedTools` becomes `alwaysDenyRules.cliArg` in the CLI's own option handling, which is
+  the list `uA` consults *before* any allow rule and before `canUseTool`;
+- the entries survive the CLI's own `--allowedTools` splitter (`td`), which splits on commas and
+  on spaces outside parentheses — so a worktree path containing either is still one entry.
+
+The rule is written `Edit(//<abs>/**)`, two slashes: `//` is the harness's "absolute from the
+filesystem root" prefix. The spec's `Edit(//<worktree>/**)` read literally would be three.
