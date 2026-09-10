@@ -551,17 +551,24 @@ test("allow, yes and ok each let the tool run", async () => {
 
 test("deny, no, other text and no text each deny, telling the agent what the owner wrote", async () => {
   await initRepo();
+  // The whole message, not a substring of it: `toContain("no")` would pass against the
+  // no-text refusal below, which contains "not" and "nothing" and says nothing about "no".
   for (const word of ["deny", "no", "not that file, use the worktree"]) {
     const decision = await askAndAnswer(["Write", { file_path: "/etc/hosts", content: "x" }], word);
     expect([word, decision?.behavior]).toEqual([word, "deny"]);
-    expect(deniedMessage(decision)).toContain(word);
+    expect([word, deniedMessage(decision)]).toEqual([
+      word,
+      `The owner did not allow Write: ${word}`,
+    ]);
   }
   const decision = await askAndAnswer(
     ["Write", { file_path: "/etc/hosts", content: "x" }],
     undefined,
   );
   expect(decision.behavior).toBe("deny");
-  expect(deniedMessage(decision)).toContain("Write");
+  expect(deniedMessage(decision)).toStartWith(
+    "The owner did not allow Write, and said nothing about why.",
+  );
 });
 
 test("the owner's refusal is on the card as well as in the agent's answer", async () => {
@@ -606,7 +613,7 @@ test("two tools asked at once are one question at a time, answered in the order 
   // Each answer went to the tool it was asked for.
   expect(decisions[0]).toEqual({ behavior: "allow" });
   expect(decisions[1]?.behavior).toBe("deny");
-  expect(deniedMessage(decisions[1])).toContain("no");
+  expect(deniedMessage(decisions[1])).toBe("The owner did not allow Write: no");
 });
 
 test("a question the agent raised itself outranks the run's; the permission request waits", async () => {
