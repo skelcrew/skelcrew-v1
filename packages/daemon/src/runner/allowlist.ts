@@ -24,7 +24,12 @@
  *    artefact check, or answer its own question. They ask.
  * 3. **`push` is allowed only in the exact form the playbook runs**, and its bare follow-up,
  *    so any other refspec — and any force push — asks.
- * 4. **A scanned command may not widen a command the fixed list narrows.** See `scan` below.
+ * 4. **The scan grants the command line it found, not its first word, and may not widen a
+ *    command the fixed list narrows.** `bun run check` yields `Bash(bun run check *)`, never
+ *    `Bash(bun *)` — which would match `bun -e '<any code>'`, and the same holds for `node -e`,
+ *    `python -c`, `npm` and `make`. This entry is derived from a file the *target repository*
+ *    controls, so the widest form of it is the widest thing a repository can grant itself.
+ *    See `allowlistFor` below.
  *
  * What the list deliberately does not close, recorded rather than discovered:
  * `Bash(git commit *)` permits `--no-verify`, which skips the target repository's hooks (the
@@ -93,10 +98,14 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  * not name, and are why the list is *not* the complete set of what runs unprompted:
  *
  * - **The model is looser about compound commands.** The harness parses a command into its
- *   compound structure and asks about anything using shell operators ("this command uses
- *   shell operators that require approval for safety"), so `git status && <anything>` is not
- *   covered by `Bash(git status *)` there, while a plain prefix comparison says it is. The
- *   model erring wide only makes the assertions above stricter about what the list may hold.
+ *   compound structure: a subshell or command group is asked about outright ("this command
+ *   uses shell operators that require approval for safety"), and a list or pipeline is split
+ *   into its parts, each matched against the rules on its own — allowed only if every part
+ *   is. A whole compound command matches a rule only when the rule's content is that command
+ *   exactly. So `git status && <anything>` is not covered by `Bash(git status *)` there,
+ *   while a plain prefix comparison says it is; and a scanned entry that happens to contain
+ *   `&&` grants nothing its parts do not already grant. The model erring wide only makes the
+ *   assertions above stricter about what the list may hold.
  * - **The harness self-approves read-only Bash commands the list never names** — a divergence
  *   in what a *listed tool's arguments* may be. Rather than asking about a command in its own
  *   fixed read-only set — `ls`, `cat`, `head`, `wc`, `grep`, `find` without `-exec` and the
@@ -148,12 +157,21 @@ const FENCE_OPEN = /^ {0,3}(`{3,})[ \t]*([^`]*)$/;
 /** A command word: anything else in the first position is not a command and is skipped. */
 const COMMAND_WORD = /^[A-Za-z0-9._/-]+$/;
 
+/** The first word of a scanned line, which is what the no-widening rule is read against. */
+function firstWord(line: string): string {
+  return line.split(/\s+/)[0] ?? "";
+}
+
 /**
  * The commands the fixed list narrows: the first word of every `Bash(…)` entry. A scanned
- * command that is one of these contributes nothing, because `Bash(git *)` would undo the
- * narrowing above — and any repository documenting a `git status` line triggers it. Derived
- * from the list rather than written out, so a verb narrowed later is protected by the same
- * rule without anyone remembering to add it here.
+ * line whose first word is one of these contributes nothing, because the fixed list decides
+ * what `git`, `gh` and `skelcrew` may do and a scanned line may only ever add to that — any
+ * repository documenting a `git status` line triggers this, and one documenting
+ * `git push --force` would otherwise grant exactly the form rule 3 withholds. Reading the
+ * line's first word rather than the whole line is what keeps the rule working now that the
+ * grant is of the line: `git status && rm -rf /` is dropped for its `git`, like every other
+ * `git` line. Derived from the list rather than written out, so a verb narrowed later is
+ * protected by the same rule without anyone remembering to add it here.
  */
 function narrowedCommands(): Set<string> {
   const out = new Set<string>();
@@ -169,10 +187,11 @@ function narrowedCommands(): Set<string> {
 }
 
 /**
- * The commands a repository's instruction file names for itself: the first token of the
- * first line of each fenced shell block, with a leading `$ ` stripped. A block in another
- * language is skipped whole, and a fence that is never closed contributes nothing — the
- * direction that cannot widen the boundary.
+ * The command lines a repository's instruction file names for itself: the first line of each
+ * fenced shell block, whole, with a leading `$ ` stripped. Whole, because the grant is of the
+ * line and not of its first word — `bun run check`, not `bun`. A block in another language is
+ * skipped, a line whose first word is not a command word is skipped, and a fence that is
+ * never closed contributes nothing — the direction that cannot widen the boundary.
  */
 export function scanInstructions(text: string): string[] {
   const out: string[] = [];
@@ -195,19 +214,16 @@ export function scanInstructions(text: string): string[] {
     i = end;
     if (first === undefined) continue;
     if (!SHELL_INFO_STRINGS.has(info.trim().split(/\s+/)[0]?.toLowerCase() ?? "")) continue;
-    const token = first
-      .replace(/^\s*\$ /, "")
-      .trim()
-      .split(/\s+/)[0];
-    if (token === undefined || !COMMAND_WORD.test(token)) continue;
-    out.push(token);
+    const line = first.replace(/^\s*\$ /, "").trim();
+    if (!COMMAND_WORD.test(firstWord(line))) continue;
+    out.push(line);
   }
   return out;
 }
 
 /**
- * What a run in `repoRoot` may do without asking: the fixed list, plus `Bash(<command> *)`
- * for each command the repository's own `AGENTS.md`/`CLAUDE.md` shows in a fenced shell
+ * What a run in `repoRoot` may do without asking: the fixed list, plus `Bash(<line> *)` for
+ * each command line the repository's own `AGENTS.md`/`CLAUDE.md` shows in a fenced shell
  * block — so an agent following the repository's stated conventions is not stopped to ask
  * permission for its check commands. A repository with neither file gets the fixed list
  * exactly, and nothing scanned may widen a command the fixed list narrows.
@@ -222,9 +238,9 @@ export function allowlistFor(repoRoot: string): string[] {
     } catch {
       continue;
     }
-    for (const command of scanInstructions(text)) {
-      if (narrowed.has(command)) continue;
-      const entry = `Bash(${command} *)`;
+    for (const line of scanInstructions(text)) {
+      if (narrowed.has(firstWord(line))) continue;
+      const entry = `Bash(${line} *)`;
       if (!list.includes(entry)) list.push(entry);
     }
   }

@@ -187,21 +187,31 @@ test("a repository with neither instruction file yields exactly the fixed list",
 
 test("a check command in a fenced block in AGENTS.md is pre-allowed", () => {
   write("AGENTS.md", "# Repo\n\nRun this:\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun *)"]);
+  expect(scanned()).toEqual(["Bash(bun run check *)"]);
   // The repository's own check command runs unprompted; the fixed list alone would ask.
   expect(allowsTool("Bash", { command: "bun run check" }, allowlistFor(repo))).toBe(true);
   expect(allowsTool(...bash("bun run check"))).toBe(false);
 });
 
+test("the scan grants the line it found, not its first word: `bun -e` still asks", () => {
+  write("AGENTS.md", "```\nbun run check\n```\n");
+  expect(allowlistFor(repo)).not.toContain("Bash(bun *)");
+  // `Bash(bun *)` would pre-allow arbitrary execution from a file the target repo controls.
+  expect(allowsTool("Bash", { command: "bun -e 'console.log(1)'" }, allowlistFor(repo))).toBe(
+    false,
+  );
+  expect(allowsTool("Bash", { command: "bun run checkout" }, allowlistFor(repo))).toBe(false);
+});
+
 test("CLAUDE.md is scanned too, and a shell info string and a leading $ are read", () => {
   write("CLAUDE.md", "```bash\n$ make test\n```\n\n```console\npnpm lint\n```\n");
-  expect(scanned()).toEqual(["Bash(make *)", "Bash(pnpm *)"]);
+  expect(scanned()).toEqual(["Bash(make test *)", "Bash(pnpm lint *)"]);
 });
 
 test("both instruction files contribute, once each", () => {
   write("AGENTS.md", "```sh\nbun run check\n```\n");
   write("CLAUDE.md", "```\nbun run check\n```\n\n```zsh\ncargo test\n```\n");
-  expect(scanned()).toEqual(["Bash(bun *)", "Bash(cargo *)"]);
+  expect(scanned()).toEqual(["Bash(bun run check *)", "Bash(cargo test *)"]);
 });
 
 test("a fenced block in another language contributes nothing", () => {
@@ -220,28 +230,38 @@ test("a fence that is never closed contributes nothing", () => {
  */
 test("a scanned command may not widen git, which the fixed list narrows verb by verb", () => {
   write("AGENTS.md", "```\ngit status\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun *)"]);
+  expect(scanned()).toEqual(["Bash(bun run check *)"]);
   expect(allowlistFor(repo)).not.toContain("Bash(git *)");
   expect(allowsTool("Bash", { command: "git -c core.pager=x log" }, allowlistFor(repo))).toBe(
     false,
   );
 });
 
+/**
+ * The rule reads the line's first word, so a documented `git` line contributes nothing
+ * whatever follows it — including the push forms the fixed list is careful to leave off.
+ */
+test("a scanned git line the fixed list does not cover is dropped whole, not granted", () => {
+  write("AGENTS.md", "```\ngit push --force\n```\n\n```\ngit status && rm -rf /\n```\n");
+  expect(scanned()).toEqual([]);
+  expect(allowsTool("Bash", { command: "git push --force" }, allowlistFor(repo))).toBe(false);
+});
+
 test("a scanned command may not widen gh", () => {
   write("AGENTS.md", "```\ngh pr view\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun *)"]);
+  expect(scanned()).toEqual(["Bash(bun run check *)"]);
   expect(allowlistFor(repo)).not.toContain("Bash(gh *)");
   expect(allowsTool("Bash", { command: "gh pr merge 42" }, allowlistFor(repo))).toBe(false);
 });
 
 test("a scanned command may not widen skelcrew", () => {
   write("CLAUDE.md", "```\nskelcrew show 1\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun *)"]);
+  expect(scanned()).toEqual(["Bash(bun run check *)"]);
   expect(allowlistFor(repo)).not.toContain("Bash(skelcrew *)");
   expect(allowsTool("Bash", { command: "skelcrew mv 1 code" }, allowlistFor(repo))).toBe(false);
 });
 
-test("a first token that is not a command word contributes nothing", () => {
+test("a first word that is not a command word contributes nothing", () => {
   write("AGENTS.md", "```\n* not a command\n```\n\n```\n\n```\n\n```\nbun run check\n```\n");
-  expect(scanned()).toEqual(["Bash(bun *)"]);
+  expect(scanned()).toEqual(["Bash(bun run check *)"]);
 });

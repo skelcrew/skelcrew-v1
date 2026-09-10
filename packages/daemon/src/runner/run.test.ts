@@ -800,7 +800,7 @@ test("the agent is spawned with the commands the target repository names for its
     }),
   });
   await runCard("Reads the conventions");
-  expect(seen[0]?.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun *)"]);
+  expect(seen[0]?.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
 });
 
 // --- how a run ends ---
