@@ -540,6 +540,30 @@ const UNREADABLE_TARGET = /[$`~*?[\]{}]|(?:^|\/)\.\.(?:\/|$)/;
  * `>>`, `&>`, `>|` and a leading file descriptor are the same redirection, `2>&1` and `>&-`
  * duplicate a descriptor rather than naming a file, and `>(…)` is process substitution, which
  * the harness asks about whatever it is redirected into.
+ *
+ * **Four known divergences, and every one of them is narrow** — this reads a `>` where the
+ * harness reads none, so the call is refused here and allowed there. Narrow is the direction a
+ * "this is not pre-allowed" assertion cannot afford, and none of the four reaches one: each is
+ * a shape no entry on the fixed list and no scanned line produces, and the escalation chains
+ * 10b and 10c walk carry a real redirection to a real path. The harness parses a command into a
+ * syntax tree where this walks characters, so the list is of what a parser knows and a walk does
+ * not:
+ *
+ * - **Here-documents are not recognised.** `git commit -F - <<'EOF'` whose body carries a line
+ *   beginning with `>` reads that line as a redirection to the next word. The harness parses the
+ *   heredoc and its body as one node, and redirects nothing.
+ * - **`\"` inside a double-quoted string closes the quote here and not in bash.** The escape
+ *   branch below is only reached outside quotes, so `git commit -m "he said \"hi\" > /tmp/x"`
+ *   leaves the string early and reads a redirection to `/tmp/x"`.
+ * - **A `#` comment is not recognised**, so `git add -A # writes > /tmp/x` reads one there too.
+ *   Any other context where bash reads `>` as something else — `[[ a > b ]]`, `((a > b))` —
+ *   falls in the same class.
+ * - **A relative target is resolved against the daemon's cwd, not the agent's.**
+ *   `redirectionAllowed` hands the target to `filePaths`, whose `resolve()` has no base, where
+ *   the harness resolves it against the run's own cwd (`$nt(n,d)` in `iT`). So
+ *   `bun run check > out.txt` is refused here and allowed there, into the worktree. Giving
+ *   `filePaths` a base would need the run's cwd, which nothing in this module has and no
+ *   assertion needs.
  */
 function redirectionsIn(command: string): Redirections {
   const targets: string[] = [];
@@ -730,16 +754,22 @@ const FLAG_WORD = /^-[A-Za-z0-9_-]/;
  * divergence `entryMatches` records, modelled for the six git verbs the fixed list stopped
  * naming, because criteria 10d and 10e are about exactly that boundary.
  *
- * It diverges from the harness in three known places, and none reaches an assertion.
+ * It diverges from the harness in four known places, and none reaches an assertion.
  * **Narrower**: a command carrying a shell operator is refused outright rather than split into
  * parts and judged part by part, so `git status && ls` is self-approved there and not here — as
  * is `git status > <file>`, which the harness reads as a redirection and judges on its target.
- * **Wider**, twice, and both are `nBe`'s value rules, which are not modelled. Its rules on a
+ * **Wider**, three times. Two are `nBe`'s value rules, which are not modelled: its rules on a
  * flag's own value — a `"none"` flag may not carry `=`, a value-taking flag must have a value
  * and it may not itself look like a flag — so `git show --format` and `git status --short=x`
- * are refused there and allowed here. And its rule on a *bundle* of one-letter flags: the
- * harness requires each bundled letter's value type to be `"none"`, where the check below tests
+ * are refused there and allowed here; and its rule on a *bundle* of one-letter flags, where the
+ * harness requires each bundled letter's value type to be `"none"` and the check below tests
  * only membership, so `git status -sM` (`-M` takes a value) is refused there and allowed here.
+ * The third is a second check past the flag table altogether: `SZe` gives `git log` and `git
+ * show` — and no other verb of the six — an `additionalCommandIsDangerousCallback` that refuses
+ * a `--format`, `--pretty` or `--sort` value which is runtime-determined, matches
+ * `/%[-+ ]?G|%\(\*?signature/`, contains `signature`, or (for the first two) is a bare name
+ * outside `oneline short medium full fuller email raw`. This checks flag *names* only, so
+ * `git show --format=custom` is refused there and allowed here.
  *
  * The wide direction is the one a "this asks" assertion cannot afford, which is why every such
  * assertion here names `--output`, a flag absent from the harness's tables altogether; and every
@@ -940,8 +970,8 @@ export interface RunAllowlist {
  * at a commit it authored. Two things keep `refs/remotes/origin/<default>` out of reach, and
  * both are needed:
  *
- * - **No unprompted command writes it.** Only `git fetch`, `git pull`, `git remote` and
- *   `git push` write those refs, of which only `push` is listed, and only as
+ * - **No unprompted *tool call* runs a command that writes it.** Only `git fetch`, `git pull`,
+ *   `git remote` and `git push` write those refs, of which only `push` is listed, and only as
  *   `git push -u origin HEAD` and a bare `git push`. The first pushes the worktree's HEAD — the
  *   card branch `skelcrew/<id>-…`, named by the runner — and so writes that branch's
  *   remote-tracking ref and no other. The second, under a repo-level `push.default = matching`,
@@ -954,7 +984,7 @@ export interface RunAllowlist {
  *   `git rev-parse --git-common-dir`, and write that sha straight into the ref — and a loose
  *   ref wins over `packed-refs`, so the forgery would stand for every later run. `editsIn`
  *   anchors the file tools at the worktree, and the common directory is not under it.
- * - **And no unprompted command writes it through a flag.** `git log`, `git diff` and
+ * - **And no unprompted *tool call* writes it through a flag.** `git log`, `git diff` and
  *   `git show` take `--output=<any path>`, which walked around that anchor entirely while they
  *   were listed as wildcards; rule 3 deleted the entries, and the harness's own read-only check
  *   refuses the flag. That is the third leg, and all three are needed.

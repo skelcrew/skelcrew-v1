@@ -41,11 +41,14 @@ this harness, not permission. Those moves are the owner's — moving your own ca
 or answering your own question, is out of bounds however it is reached, and a check command is
 not a way round the withholding.
 
-**Everything else asks the owner.** The tool call stops, the question goes on the card with
-the exact commands that answer it, and the run goes on once it is answered — allowed or
-denied, with what the owner wrote as the reason. Asking is a normal thing to do, but it
-blocks the run until the owner is at their machine: where a pre-allowed way of doing
-something exists, use it, and never retry a call the owner has denied.
+**Everything the harness does not recognise as read-only asks the owner.** That recognition is
+the same flag-by-flag check the git verbs above go through, and it reaches a plain read of the
+filesystem too — `ls`, `cat`, `head`, `wc`, `grep`, a `find` with no `-exec`. Anything past it
+asks: the tool call stops, the question goes on the card with the exact commands that answer
+it, and the run goes on once it is answered — allowed or denied, with what the owner wrote as
+the reason. Asking is a normal thing to do, but it blocks the run until the owner is at their
+machine: where a pre-allowed way of doing something exists, use it, and never retry a call the
+owner has denied.
 
 Three rules the list cannot enforce, and you must:
 
