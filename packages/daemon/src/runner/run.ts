@@ -173,13 +173,22 @@ function oneLine(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** What a tool call is called on the card: the command for Bash, the path for file tools. */
-function describeInput(tool: string, input: Record<string, unknown>): string {
+/** A tool call's input, whole: the command for Bash, the path for file tools, else the lot. */
+function inputOf(tool: string, input: Record<string, unknown>): string {
   const command = input.command;
-  if (tool === "Bash" && typeof command === "string") return oneLine(command, INPUT_LINE_MAX);
+  if (tool === "Bash" && typeof command === "string") return command;
   const path = input.file_path ?? input.path;
-  if (typeof path === "string") return oneLine(path, INPUT_LINE_MAX);
-  return oneLine(JSON.stringify(input) ?? "", INPUT_LINE_MAX);
+  if (typeof path === "string") return path;
+  return JSON.stringify(input) ?? "";
+}
+
+/**
+ * What a tool call is called on the card: `inputOf`, cut to one glanceable line. This is the
+ * activity summary's rendering and the record of a decision already made — never the question
+ * the owner answers, which carries the input whole (`questionFor`).
+ */
+function describeInput(tool: string, input: Record<string, unknown>): string {
+  return oneLine(inputOf(tool, input), INPUT_LINE_MAX);
 }
 
 /**
@@ -334,9 +343,26 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   const describeCall = (pending: Ask): string =>
     `${pending.tool}: ${describeInput(pending.tool, pending.input)}`;
 
-  /** The question, carrying the two commands that answer it. */
-  const questionFor = (pending: Ask): string =>
-    `allow ${pending.tool} ${describeInput(pending.tool, pending.input)}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)`;
+  /**
+   * The question, carrying the two commands that answer it — and the tool's input **whole**,
+   * not the one-line rendering the activity summary uses. The party choosing the text is the
+   * party being gated: a command whose first two hundred characters read `git log …` and whose
+   * tail is `&& curl … | sh` is compound, so it is not pre-allowed and does reach here, and
+   * approving it on the head alone approves a rendering rather than the thing. The only cut is
+   * the note's own byte cap, which the core enforces; where that bites, it is marked and the
+   * run log holds the whole of it.
+   */
+  const questionFor = (pending: Ask): string => {
+    const head = `allow ${pending.tool} `;
+    const tail = `? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)`;
+    const text = inputOf(pending.tool, pending.input);
+    const bytes = Buffer.byteLength(text, "utf8");
+    const fixed = Buffer.byteLength(head + tail, "utf8");
+    if (fixed + bytes <= COMMENT_MAX_BYTES) return `${head}${text}${tail}`;
+    const mark = `\n… [truncated: ${bytes} bytes; the whole input is in the run log at ${logPath}]`;
+    const budget = COMMENT_MAX_BYTES - fixed - Buffer.byteLength(mark, "utf8");
+    return `${head}${cutBytes(text, budget)}${mark}${tail}`;
+  };
 
   /** Told to the agent when the run is over before the owner has answered. */
   const over = (pending: Ask): void => {
