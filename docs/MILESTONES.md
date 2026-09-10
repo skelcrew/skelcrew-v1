@@ -295,6 +295,263 @@ they know that skelcrew's entries did not yet say:
   dies or goes wrong. Rows do not need reconstructing, so the bill does not transfer: the
   findings above come to a few hundred lines between them. Worth remembering when 008 tempts a
   card into dispatching other cards.
+- **The artefact contract is the differentiation, not a hygiene detail (014).** A scan of the
+  field (2026-09-10, recorded in AGENTS.md) found roughly four hundred orchestrators and no one
+  claiming what 014 specifies: every neighbour's gate is a human pressing approve, and the
+  quality gates that exist are checks run *for* the human rather than a condition the runner
+  refuses to hand off without. "Zero commits past the base is a failed run, not a handoff" is
+  the one sentence nobody else is saying. That raises 014's stakes: relaxing it into "post the
+  attention request and let the owner judge" would leave a board over agents, which Cline gives
+  away and four hundred projects already ship.
+- **Don't grow a planner agent or a hierarchy (008, and Later).** The two closest neighbours
+  each added exactly the two things this repo has refused — Fusion a planner agent that writes
+  the spec plus a Mission → Milestone → Slice → Feature → Task tree, orca a coordinator agent
+  that dispatches and resolves gates — and each paid for it in concept count and recovery
+  machinery. When 008 makes skelcrew build skelcrew and a card wants to dispatch other cards,
+  that is this exact fork, and the answer already given (grouping deferred until 008 shows what
+  it must add) is the one the evidence supports.
+- **A playbook that restates the allowlist can lie, and nothing catches it (012).** `code.md`
+  spells out the fixed list in prose — the tools, the read-only git verbs, the four CLI verbs —
+  so the agent knows what it may do unprompted. That is a second copy of `allowlist.ts`, and
+  editing one silently falsifies the other; the failure surfaces as an unexplained denial
+  mid-run. gstack (garrytan/gstack, a pure playbook library with no runtime, read 2026-09-10)
+  hits the same problem across 23 skills and answers it by generating the docs from the source
+  and failing CI when the committed file drifts. The cheap version here needs no generator: a
+  test that reads every playbook, extracts each `skelcrew <verb>` and each tool named, and
+  asserts the verb exists as a CLI command and the tool appears in `FIXED_ALLOWLIST`. It is
+  free, model-free, milliseconds, and belongs in `bun run check`. Everything lines up today —
+  the test is to keep it that way.
+- **Playbook wording needs a test strategy, and tiering is how it coexists with the constraint
+  (012, and the playbook extraction).** Nothing currently tells us whether an edit to a playbook
+  made runs better or worse. gstack runs three tiers: free static validation on every test run,
+  a real-agent end-to-end pass and an LLM-as-judge score on the prose, the latter two gated
+  behind an env var, with results persisted per run so two runs can be diffed and flakes ranked.
+  That shape keeps *tests never spawn real coding agents* true for `bun run check` — the default
+  suite still fakes the driver — while giving playbook changes something better than taste. Tier
+  one is the bullet above and is worth building now; the rest waits until there are enough
+  playbooks for prose regressions to matter.
+- **The playbooks share an opening, and it should exist once (the playbook extraction).** Both
+  files restate the same framing — one agent on the crew, everything visible on the card, every
+  step through the CLI, nothing is a conversation. Fine at two files, drift at five. gstack
+  factors this into one injected preamble and, more usefully, specifies its *degraded* behaviour:
+  when the preamble's own runtime is missing, apply named safe defaults and carry on with the
+  task rather than stopping. A skelcrew preamble needs the same clause for a daemon that does
+  not answer. Its errors deserve the same treatment: gstack writes every error for the agent
+  rather than the reader ("not found — run `snapshot -i` to see what is available") and orca
+  hands back the literal next command, which is what makes 013's denials and 009's lost claims
+  recoverable instead of merely reported.
+- **A question the agent raises needs a fixed shape, not just a verb (010/013).** `spec.md` says
+  to raise an undecidable decision with `skelcrew attention <id> "<the question, with the
+  options>"` and leaves the rest to the agent, so the quality of what the owner reads varies run
+  to run. gstack gives every skill one house format — context, the question, an explicit
+  `RECOMMENDATION: choose X because …`, then lettered options — and it is the recommendation
+  that does the work: it turns a question into a decision the owner can confirm at a glance
+  instead of a prompt they have to reconstruct the reasoning behind. 010 already requires an
+  attention request to carry its resolving choices; this says what the *body* should look like,
+  and 013 is where the same shape has to cover a permission the agent is asking for. Worth
+  specifying once, in the shared opening, rather than per playbook.
+- **The playbooks are all procedure and almost no judgment (the playbook extraction).** Both
+  files are read this, run that, post here — correct, and thin where it matters. The one line of
+  judgment in either of them is the most valuable sentence in both ("a truthful partial run is a
+  good outcome; a fabricated complete one is the worst thing you can produce"), and there is
+  room for more of that kind. gstack keeps this separate and shared: an `ETHOS.md` of principles
+  — how to weigh completeness, search before building rather than inventing, what to do when
+  first principles contradict the convention — injected into every skill ahead of its own steps.
+  Splitting skelcrew's playbooks the same way gives three layers rather than two: the repository
+  contributes its constraints through `AGENTS.md`, skelcrew contributes how the crew works and
+  what good work looks like here, and the phase file contributes only its own steps. That split
+  is what stops the shared half being copy-pasted per phase, and it is the natural first move
+  when the playbooks come out of `.claude/`.
+- **A run's ending should be one of a few named statuses, not prose (012/014).** Every gstack
+  skill closes with `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED` or `NEEDS_CONTEXT`, in a fixed shape
+  — status, reason, what was attempted, recommendation — plus a stated escalation trigger: after
+  three failed attempts, for anything security-sensitive, or for scope the agent cannot verify.
+  `spec.md` currently asks for a comment carrying goal, approach and criteria count, which is
+  prose the daemon cannot act on. This is orca's typed outcome reached from the playbook side,
+  and it is what lets 014 read an ending rather than parse one; `DONE_WITH_CONCERNS` in
+  particular has no equivalent here, and it is exactly the run the owner most needs flagged.
+- **A claimed limitation is a material claim and needs evidence (012/013).** gstack's rule: an
+  agent saying "the API can't do this", "that needs a credential", "permission denied" must hold
+  the verbatim error, the documented statement, or a live probe — pattern-matching a failure to
+  a familiar story is not evidence — and when a cheap probe would settle it, the probe runs
+  *before* the agent declares itself blocked or asks the owner. This is aimed precisely at the
+  spike's worst outcome, an agent that hit a wall, stopped, and reported something not quite
+  true. It belongs in the shared opening, and it makes 013's denials legible: a denial the agent
+  quotes is a fact the owner can act on, a denial it paraphrases is a story.
+- **A review finding must quote the line that caused it, or be demoted (the review phase).** The
+  strongest single idea in gstack, and it is for the phase skelcrew has not written yet. Before
+  a finding reaches the report the agent must quote the specific code that motivated it — file,
+  line, verbatim text; "field X is missing from model Y" requires quoting the class body where
+  it would live. A finding whose motivating line cannot be quoted is forced to low confidence
+  and dropped from the main report, kept only in an appendix so calibration can be audited.
+  Findings carry a confidence score with explicit display rules (high shown plainly, medium
+  shown with a caveat, low suppressed), and the mirror rule covers the other direction: claiming
+  something is safe requires citing the line that proves it, and "likely handled" or "probably
+  tested" is never an acceptable phrase. gstack ships the list of false-positive classes this
+  kills, measured on a real project. A reviewer whose findings are unfalsifiable is worse than
+  no reviewer, because the owner has to check each one by hand.
+- **Conditional wording in a playbook reads as optional — make the step unconditional and require
+  an explicit empty result (the playbook extraction).** gstack measured this: 43 of 44 durable
+  learnings came from users invoking the command explicitly, because "if you discovered
+  something" read as skippable. The fix was to make the step always run and to require the
+  agent to state "none this session" when there is nothing — an explicit empty result rather
+  than a silent skip. Both skelcrew playbooks are built on conditionals ("if either exists", "if
+  you cannot finish"), and the same reading applies to every one of them. This is a rule about
+  *writing* playbooks, with evidence behind it, which is rare enough to record.
+- **Every finding gets an action, and the questions arrive as one batch (the review phase, 013).**
+  gstack's review classifies each finding auto-fix or ask, applies the auto-fixes immediately,
+  then puts every remaining ask into a single question — numbered items, a recommended fix each,
+  one overall recommendation — rather than returning a list for the owner to triage. Two places
+  this lands here: a review cycle inside a phase should end in changes plus one decision, not a
+  report; and 013's asking should batch what it can, because a run that stops the owner five
+  times is worse than one that stops them once with five things.
+- **Read the code before asking anything, and connect the two (012).** gstack's spec skill makes
+  it a precondition: before any technical question the agent must have read real evidence and
+  cited `path:line`, and it must not ask what the code already answers. It also fixes the shape
+  of interrogation — three to five questions per round, numbered, always last in the message, and
+  assumptions called out explicitly. `spec.md` says to investigate in section 1 and to raise
+  undecidable questions in section 2, but never joins them, so nothing stops a question the
+  repository could have answered.
+- **Depth arrives as sections loaded at their step, never as a longer file (the playbook
+  extraction).** For scale: gstack's playbooks total roughly 39k lines — its review skill is 976
+  and its spec skill 932 — against 146 lines for both of skelcrew's. The gap is the point: phase
+  quality is mostly playbook depth, and the current two are a sketch. But the depth is
+  structured. Long skills are a skeleton plus a section index — "read this section in full
+  before doing its step; do not work from memory" — with literal STOP markers before the steps
+  that matter, and the spec skill carries fourteen numbered quality standards for the artefact
+  (verified current state, testable acceptance criteria, file reference table, root cause
+  analysis, rollback strategy) where `spec.md` has five bullets. That is the same conclusion orca
+  reached from the other side, and it is how these files should grow.
+- **Attention is derived from facts, and it is a set (010/014).** Orca stores no "needs
+  attention" flag. It projects one from the attempt's facts every time it is read, as eight
+  named categories — guidance, input, approval, failure, interruption, stale, unverifiable,
+  root_completion — of which only some make `requiresAction` true; `stale` and a root's
+  completion are informational and demand nothing. A row can carry several at once. Skelcrew
+  keeps one attention record per card and queues the rest, which is the right call for one
+  owner, but the *derivation* is the transferable half: whether a card is waiting on its owner
+  follows from facts the daemon already holds — the claim lapsed, an artefact condition is
+  unmet, the agent asked, the run failed — and computing it beats writing it wherever someone
+  noticed. Two rules are commented in that function as scar tissue, and both are cheaper to
+  copy than to rediscover: a dispatch that settled with no worker row reads unverifiable but is
+  "a statement about supervision that never existed, not work owed"; and a proven exit must
+  suppress unverifiable, because showing both told readers to keep waiting on a worker already
+  known to be gone — a proven exit is evidence, not absence.
+- **Remove a worktree by renaming it into a trash sibling, then deleting in the background
+  (006).** `git worktree remove` deletes the whole checkout inside the call — usually a
+  multi-gigabyte `node_modules` — which cost orca an 8-35 second freeze, so it renames the
+  directory into a hidden sibling trash root instead (metadata only, guaranteed same volume,
+  a nonce in the name so concurrent removals of same-named worktrees cannot collide) and sweeps
+  it later. The speed is the smaller half here. Skelcrew's rule is that a dirty worktree is
+  salvaged and never force-removed; a rename step makes salvage the default for *every* path,
+  because the checkout still exists until the sweep runs, so a wrong call about cleanliness
+  stops being destructive.
+- **A worktree should carry provenance, because a path is an assumption (006/012).** Orca
+  stamps creation time, a creation source (desktop, runtime, cli, ssh) and creator provenance
+  into each worktree's metadata, so removal can ask whether it created this checkout before
+  touching it, and it has a separate module that *proves* an orphaned git directory rather than
+  inferring one from a path. 012's runner identifies its own worktrees by the
+  `<repo>/.skelcrew/worktrees/<id>` convention and reconciles them at startup — which is a
+  convention anyone can land in, by hand or by a stale copy, and a startup sweep that deletes on
+  a path match is one collision away from removing something it did not make.
+- **What is lost from a card if the daemon dies mid-run (012).** Orca's agent hooks post status
+  to the daemon over HTTP and, when that endpoint is unreachable, append the event to a spool
+  file on disk — pane key, worktree id, launch token, hook version, source, timestamp, payload —
+  to be replayed later, with a guard that drops any record too unattributable to place. Skelcrew
+  streams the agent's events straight into the daemon and writes the transcript to a file the
+  run owns, so the transcript survives; the card's activity for the window between the last
+  write and the crash does not. Worth deciding deliberately rather than discovering: either the
+  transcript is authoritative enough to rebuild the card's activity from, or a run's events need
+  somewhere to land when the daemon is not there to receive them.
+- **Many machines wants a shared daemon, not synced daemons (Later — teams).** Teams are the
+  intended destination, and the instinct when a team appears is a backend that keeps each
+  member's harness in sync. Split what would be synced first. Comments, activity and run records
+  are append-only and sync cleanly. Phase, claim and attention are mutable and contended — and
+  claims are leases, which need a single authority: two laptops that both believe card 7 is
+  unclaimed produce two agents implementing it in two worktrees, which is not a conflict anyone
+  resolves later. The cheaper shape is the one already designed: one daemon holds the state,
+  clients stay thin over 003, and runners connect to a daemon they do not live inside — which is
+  what the internal coordination/execution seam was for. The split lands well, too: cards go to
+  the shared daemon, execution stays on each member's own machine, so their agent auth and their
+  checkouts never leave it and *skelcrew never calls a model* survives the move. **Never storing
+  repository contents** is what makes a shared daemon acceptable to a company at all — cards
+  carry branch names, shas, PR links and excerpts, not code — so a constraint written for other
+  reasons is what clears the security review. The trap to refuse is a card with two homes: a
+  personal daemon and a team daemon that exchange work is federation, which is a large share of
+  what orca's concept count bought. One card, one home; someone who wants both runs two boards.
+  Sync is the right answer only if working offline is a requirement, and that wants evidence
+  before it wants a design.
+- **The activity feed is already the memory layer, and the boundary is publication (008, Later).**
+  Making the record queryable — asking what was decided, whether something was tried, why it was
+  done this way — is a natural extension of *the card's activity feed is the run record*, and
+  skelcrew would be building it from a better substrate than anyone else: entries that passed a
+  gate or produced a verified artefact, rather than chat transcripts. But it can quietly undo
+  *a phase handoff is a context boundary*, which is the constraint that separates this from Gas
+  Town, where agents query their predecessors' sessions. The line that keeps both: **build it
+  from what an agent published, never from what a run thought.** The card's comments, decisions,
+  spec and refs are already public and already meant to be read — 012's playbook opens by reading
+  them. A run's transcript is not, and mining transcripts is inheriting context under another
+  name. Order, cheapest first: decisions as their own typed entry (the spec playbook already asks
+  for reasoning in *Implementation approach*, where it is prose buried in a card body and answers
+  the one question git cannot); then learnings, captured unconditionally with an explicit "none
+  this session" rather than a conditional step nobody runs; then per-repo knowledge feeding the
+  next run, which is where it starts compounding and starts shaping behaviour rather than
+  recording it. Playbooks that rewrite themselves come last and not before the eval tiers exist,
+  because a self-modifying prompt with no measurement degrades slowly and invisibly. The failure
+  mode to watch is a second source of truth: the memory *is* the card record, and the work is
+  making it queryable — the moment it becomes a store with its own lifecycle, a hard constraint
+  is gone.
+
+Findings from Hermes Agent (NousResearch/hermes-agent, read 2026-09-10), the most developed
+self-improvement loop in the field and the one neighbour built around agents that learn. Its
+defaults are the opposite of skelcrew's — it writes freely and offers a gate — which is what
+makes it useful to read:
+
+- **A learning entry is a lesson, not a log (008, Later).** Hermes' rule for what an
+  agent-written skill may contain: a generalisable rule plus one clause of *why* — the mechanism
+  — attached to the step it affects, stated once. Incident narration, PR and issue numbers,
+  dates and quoted chat are explicitly not skill content, because "the rule has to stand without
+  the story behind it". It also refuses to restate anything already loaded every turn (the
+  repo's own instructions, tool schemas). An advisory linter enforces the shape with two rules
+  named after the failures that produced them — `incident-log-shape` for a body dense in issue
+  numbers, `references-sprawl` past sixty reference files — and both warn rather than block.
+  Worth holding against this file: a milestone finding *should* carry spec numbers and dates,
+  because it is a project record. A learning is a different artefact and must not look like one,
+  or it decays into a diary nothing reads.
+- **Memory is capped, and a write over the cap fails rather than compacts (008, Later).** Hermes
+  bounds its always-in-context memory hard — roughly 2,200 characters of agent notes and 1,375
+  of user profile — and, when a write would exceed it, the tool returns an error instead of
+  summarising or dropping the oldest entry. The agent must consolidate or delete in the same
+  turn before retrying, and the prompt header shows how full the store is so it can see the
+  ceiling coming. This is the answer to the obvious failure of any memory layer here, which is
+  unbounded growth: a cap that errors forces curation, a cap that compacts only hides the
+  growth. It also splits the stores by job — small durable facts that must always be in context,
+  against longer procedures that load only when relevant — which is the rule for deciding what
+  a learning is versus what belongs in a playbook.
+- **A proposed learning is an artefact for a gate, and that is already built (010/013).** Hermes
+  can stage every agent-written skill change instead of committing it: a pending list, a full
+  diff, approve or reject, surviving restarts, for "small models that misjudge what they
+  learned, secure environments, or just wanting eyes on the self-improvement loop". It is off by
+  default there. Here it is not a setting but the thesis — a playbook or learning change is a
+  machine-produced artefact, and artefacts reaching a human gate is what skelcrew is — so the
+  loop needs no review surface of its own: it is an attention request carrying approve and
+  reject, which 010 already defines and 013 already answers. That is also the differentiator
+  worth naming, because everyone else is building a loop where the agent decides what it
+  learned, and this one would have the agent *propose* what it learned.
+- **Two writers to one memory corrupt it, and skelcrew runs concurrently by design (008).**
+  Hermes warns not to point two agent processes at one memory home, because "two writers sharing
+  one home will compound each other's entries into state neither of them (nor you) authored",
+  and scopes memory per profile to prevent it. Concurrent runs are normal here, so any learning
+  an agent writes goes through the daemon, which serialises and records it, and never straight
+  to a file two runs might hold open. The same rule the cards already follow, for the same
+  reason.
+- **Repo-owned, harness-owned and agent-owned must be enforced, not just documented (the
+  playbook extraction).** Hermes keeps a project's own skill directories read-only to its
+  curator and lands every agent-created skill in the agent's own directory, so an agent can
+  improve what it knows and cannot edit what the project committed. That is the three-layer
+  split already recorded here, with the boundary made real: the target repository's `AGENTS.md`
+  is never agent-writable, skelcrew's playbooks are daemon-owned and injected, and per-repo
+  learnings are the only layer a run may write. An agent that can edit the instructions it is
+  judged against has no gate at all.
 
 ## 001 — Project scaffold
 
@@ -553,6 +810,43 @@ comment may carry an excerpt — must keep `\n` and `\t` while rejecting the res
 included. A blanket rule would break the body; a blanket exemption is the hole. Consider also
 whether rendering should defend itself regardless of what validation accepts, since the terminal
 is where the damage lands and old rows already in a database were never validated.
+
+## 016 — The gate is the daemon's, not the allowlist's
+
+Found in review round 5 of 013, and it retires an assumption 013 was built on. The allowlist
+governs **tool calls**. A subprocess is not a tool call, and the phase playbooks exist to run
+one: the repository's own check command. `bun run check` dispatches through `package.json` and
+runs `bun test`, which executes any test file the run wrote in its worktree — every one of those
+files inside the `Edit(//<worktree>/**)` anchor, and therefore written unprompted. Nothing in the
+permission layer sees what the subprocess then does.
+
+That is not a defect to patch. A coding agent's job is to write code and run it; execution is the
+product. What follows is that the allowlist was never the boundary it was read as, and three
+things 013 protects by omission are not protected at all. The subprocess inherits `PATH` with the
+shim and `SKELCREW_AS=runner` (`runner/shim.ts`), so it can run the very verbs rule 4 withholds —
+`skelcrew mv`, `claim`, `release`, `archive`, `resolve` — moving its own card past the runner's
+artefact check and answering its own permission question. It can also write anything on disk the
+daemon's user can, the worktree anchor notwithstanding. 013 records all of this rather than
+claiming otherwise; closing it is this milestone.
+
+The fix is to move the rules that matter from a list the agent might evade into the daemon, which
+it cannot. The daemon knows which member a request comes from and which run holds the claim, so
+it can refuse on its own authority: a run's own member may not move its card into a phase behind
+a human-only gate, may not resolve an attention request it raised, and may not release or archive
+its own card mid-run. Enforced there, the rule survives arbitrary code execution, a rewritten
+`PATH`, and a shim called directly — none of which the allowlist survives.
+
+Two things to settle when specifying it. First, the identity the shim carries is currently an
+environment variable the subprocess can rewrite, so the daemon must derive the deciding facts
+from its own state (who holds the claim on this card) rather than from what the caller asserts.
+Second, this overlaps 014's artefact contracts: 014 checks that the artefact exists before a
+phase advances, and this checks that the mover is allowed to move it. They are the same gate seen
+from two sides, and the spec should say which check runs first and what each one's failure looks
+like on the card.
+
+Out of scope for it, and worth saying so: OS-level sandboxing of the subprocess. That is the only
+thing that would stop a check command writing outside the worktree, and it is a different
+milestone with a different cost.
 
 ## Later, deliberately unplanned
 

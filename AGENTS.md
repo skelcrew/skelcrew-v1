@@ -83,8 +83,10 @@ but not a pipeline; coordination layers (Korey, from the Shortcut team) sit over
 tracker and chat, chat-driven, and stop short of running the work; simulated orgs (Gas Town)
 give a single human a staffed town — worker agents with durable identity, mail between them,
 patrol agents watching their health, an AI coordinator that decomposes the work, and a
-bors-style merge queue that lands it. The gap skelcrew fills is the phase-driven, headless,
-no-chat harness.
+bors-style merge queue that lands it; orchestrator IDEs (Orca) put worktrees, diffs, terminals
+and a task graph in one desktop window and hand dispatch to a coordinator agent; agent runtimes
+(herdr, and tmux before it) own the terminals agents run in and model no work at all. The gap
+skelcrew fills is the phase-driven, headless, no-chat harness.
 
 Gas Town is the closest neighbour and the sharpest contrast, because it shares the plumbing —
 one human, many agents, git worktrees for isolation, a durable structured work item instead of
@@ -97,6 +99,59 @@ only by producing something verifiable and passing a human. Its concept count is
 that scale, and taking any of it piecemeal means taking that trade — the one part with no
 counterpart here is a watcher for a run that is alive but stuck, which lease expiry does not
 catch.
+
+Orca is the closest shipped neighbour, and reading it is the cheapest available test of these
+constraints, because it reaches nearly this shape by another route — Run → Task → Dispatch in
+SQLite, an attempt carrying a spec with acceptance criteria, finished work checked against git
+rather than believed, a worktree per attempt, agents driving all of it through the same CLI a
+human uses — and then seats an agent where skelcrew seats the owner. A coordinator agent
+decomposes the work, dispatches the workers, answers their questions and resolves the decision
+gates; the gates table has no human column and no UI to answer one, and the human arrives at
+review. The price of that seat is legible: roughly 24k lines of orchestration over a schema
+rebuilt forty times, nearly all of it spent making a plan that lives in a context window survive
+that context dying or being wrong — typed mail between workers, mailbox fencing, idempotent
+mutations, federation to remote hosts. Rows need none of that, so the bill does not transfer;
+the lessons that do are recorded in `docs/MILESTONES.md` against the specs they affect.
+
+herdr sits underneath all of it rather than beside it — a terminal runtime that keeps agents'
+panes alive across detach, restart and remote machines, with no work item anywhere in its API —
+and is additive to skelcrew in the way the positioning above requires, not a competitor. It is
+also one of three different answers to the alive-but-stuck gap, and the three do not agree.
+Herdr reads the screen, classifying every pane working, blocked, idle or done from regex
+manifests, because it does not own the spawn. Orca refuses that explicitly — status comes from
+hooks installed into each agent CLI and normalised per vendor, "never inferred from terminal
+titles" — and keeps process liveness separate from agent liveness, because a live terminal can
+hold a dead agent. Skelcrew owns the spawn *and* the SDK stream, so it starts where orca ended
+up; what neither reporting path covers is the harness blocking underneath the agent, which is
+013's ground.
+
+The field is crowded to the point of commodity. A community index of agent orchestrators now
+lists on the order of four hundred projects, and every primitive here — a worktree per task, a
+board over agents, claims, gates, artefact checks, a phone client — has been built several times
+over. Four neighbours are worth tracking by name (scanned 2026-09-10). **Fusion** (MIT; daemon,
+web UI and CLI) is the closest to this thesis: a worktree per task and an explicit plan → review
+→ execute → review cycle with human approval required to merge — though a planner agent writes
+the spec, state is Postgres across multiple nodes, and a Mission → Milestone → Slice → Feature →
+Task hierarchy sits on top. **kandev** is closest on phases specifically: a board whose
+multi-step workflows put a different agent on each step behind human gates, self-hosted, any
+provider. **Cline** now ships a kanban board, a worktree per card, dependency chains that
+auto-start a successor, approval hooks on tool calls and line comments that go back to the
+agent — as a feature of the agent itself, free. And the work-item end is being absorbed by the
+trackers: Linear's coding sessions (June 2026) delegate an issue to Claude Code or Codex in a
+managed sandbox and draft the PR back onto the issue, and GitHub's Agent HQ mission control
+assigns, steers and tracks a fleet across repos from web, editor, mobile and CLI.
+
+Two things follow, and both sharpen the constraints above rather than softening them. The
+surface is worth nothing on its own: assume a board, worktrees, parallel runs, a diff view and a
+mobile client are available free from four directions, one of which is the agent vendor. What
+the scan did not find anyone claiming as their headline is the whole of the differentiation — a
+phase that ends in an artefact the *runner* verifies rather than a human pressing approve, no
+coordinator agent anywhere, the daemon as the product with every client thin, and no chat. And
+the business shape of this category is demonstrably hostile: Vibe Kanban reached roughly 26k
+stars and thousands of daily users, and the company behind it shut down in April 2026 for want
+of a model worth pursuing, leaving the project community-run and its cloud half switched off a
+month later. Single-player first is therefore also a hedge — a tool worth building for one owner
+does not need that answer.
 
 ## Settled architecture
 
