@@ -172,6 +172,18 @@ Why each group is shaped this way:
   `remote.origin.push` outranks `push.default` and can turn a bare push into
   `+HEAD:refs/heads/main`. Both live in the git common directory, which the file rules below
   place out of reach; if that anchoring is ever removed, this entry stops being narrow.
+- **Listed commands read files the run names.** `git commit -F <path>` and `-t <path>`,
+  `git add --pathspec-from-file`, `gh pr create -F/-T/--recover`, `gh pr comment -F` and
+  `skelcrew body --file` all take a path and read it. `git commit -F /etc/passwd` puts that file
+  into a commit message unprompted, and a commit message travels outward through the pre-allowed
+  push. This grants nothing the agent does not already have — `Read` is on the list unqualified,
+  so it can read the same file and paste it — but the list should not be described as
+  write-anchored without saying that reads were never anchored at all.
+- **Two entries can act outside the card's own subject.** `-R/--repo` on the `gh` entries targets
+  another repository, and `--as <member>` on the `skelcrew` entries speaks as another member.
+  Neither writes a file nor runs a program, and a prefix pattern cannot exclude either. They are
+  the same class as the carried limitation that a run can write to another card, and they are
+  recorded here for the same reason.
 - Nothing here sandboxes the agent. The list governs what runs **unprompted**; everything else
   remains available by asking. This is a gate, not a jail, and the spec should not be read as
   claiming otherwise. Constraining the file tools to the worktree, below, is part of the gate
