@@ -42,20 +42,30 @@ test("both playbooks tell the agent to ask rather than guess, with skelcrew atte
 
 /**
  * The paragraphs a playbook's commands are not read from. Criterion 11 is about the commands a
- * playbook *instructs*, and these three say something else: the paragraph advertising what needs
+ * playbook *instructs*, and these two say something else: the paragraph advertising what needs
  * no asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
- * prove the list matches its own restatement; the paragraph forbidding commands names
- * `git commit --no-verify`, which the playbook exists to rule out, not to run; and the paragraph
- * recording what a subprocess reaches names the five verbs the list withholds, which is the
- * opposite of instructing them. The paragraph on the read-only git verbs stays in: it is checked
- * against the harness's own behaviour rather than against the list it came from, so there is
- * nothing circular about it.
+ * prove the list matches its own restatement; and the paragraph recording what a subprocess
+ * reaches names the five verbs the list withholds, which is the opposite of instructing them.
+ * The paragraph on the read-only git verbs stays in: it is checked against the harness's own
+ * behaviour rather than against the list it came from, so there is nothing circular about it.
  */
 const NOT_INSTRUCTIONS = [
   "Pre-allowed, so they run unprompted:",
   "Those check commands are a subprocess",
-  "**Never ",
 ];
+
+/**
+ * A prohibition, in the shape the playbook writes one: the bolded **Never …** run itself, and
+ * nothing after it. `git commit --no-verify` sits inside such a run — the playbook exists to
+ * rule it out, not to run it — so those spans come out before the commands are read.
+ *
+ * Excluded by its own shape rather than by dropping the paragraph it appears in, because the
+ * prohibitions are one bullet list with an instruction among them: "never push another
+ * refspec" and "`git push -u origin HEAD` is the form to use" share a bullet, so a
+ * whole-paragraph exclusion silently dropped the one push form the playbook instructs. The
+ * next instruction to share a paragraph with a prohibition would have gone the same way.
+ */
+const PROHIBITION = /\*\*Never [^*]*\*\*/g;
 
 /**
  * Every `skelcrew`, `git` or `gh` command a playbook shows, in a fenced block or in an
@@ -69,8 +79,9 @@ const NOT_INSTRUCTIONS = [
  */
 function commandsIn(playbook: string): string[] {
   const out: string[] = [];
-  for (const paragraph of playbook.split("\n\n")) {
-    if (NOT_INSTRUCTIONS.some((marker) => paragraph.includes(marker))) continue;
+  for (const whole of playbook.split("\n\n")) {
+    if (NOT_INSTRUCTIONS.some((marker) => whole.includes(marker))) continue;
+    const paragraph = whole.replaceAll(PROHIBITION, "");
     for (const span of paragraph.match(/`{1,3}[^`]+`{1,3}/g) ?? []) {
       for (const line of span.replaceAll("`", "").split("\n")) {
         const command = line.trim().replaceAll(/<[^<>]*>/g, "PLACEHOLDER");
@@ -111,6 +122,11 @@ test("the criterion-11 check reads the playbook's instructions, not its advertis
   expect(commands).toContain("skelcrew show PLACEHOLDER");
   expect(commands).toContain("git status");
   expect(commands).toContain('skelcrew comment PLACEHOLDER "PLACEHOLDER"');
+  // The prohibition and the instruction share a bullet: "never push another refspec" and
+  // "`git push -u origin HEAD` is the form to use". Excluding the paragraph by its prose
+  // marker dropped the instruction with it, so an instruction that shares a bullet with a
+  // prohibition would stop being checked without anything failing.
+  expect(commands).toContain("git push -u origin HEAD");
 });
 
 /** The sentence in `code.md` that tells the agent what needs no asking. */

@@ -660,3 +660,38 @@ real rules and a lexical cwd the harness asks about every write in the worktree.
   calls, the way the paragraph below them already was.
 - **Minor 8.** The symlink test creates the file its positive case names, and takes its root
   through `realpathSync` so the only link in play is the one inside the worktree.
+
+## Round 7
+
+Spec re-taken from `main` (`06bf9d8`): the qualified *"A repository documenting its commands
+cannot accidentally widen…"* line, the every-word requirement, the new *What a scan cannot be*
+section, and criterion 10h.
+
+Plan, in three steps:
+
+1. **Critical — the no-widening check reads only the first word.** `allowlist.ts`: drop a
+   scanned line when *any* of its words is a narrowed command, not just its first, so a
+   launcher prefix (`env`, `command`, `nice`, `/usr/bin/env`) cannot put `git`, `gh` or
+   `skelcrew` in position two. Then correct the claim above `narrowedCommands` to what the
+   amended spec says — reading every word closes the launcher gap and does **not** make the
+   scan a boundary, because a fenced `sh` yields `Bash(sh *)` and nothing can — and sweep
+   `allowlistFor`'s tail, `runner.ts`'s run-start comment and `code.md` for sentences that now
+   overclaim (criterion 10f, 10h).
+2. **Important — the permission note's frame can be forged.** `run.ts`'s `questionFor`: the two
+   resolving commands move to the frame's first line, the agent-chosen input goes last, and
+   every payload line is quoted with `> ` so no input text can imitate the frame or manufacture
+   the `\n\n` block separator `queueView` splits real requests on. Same class as milestone 015;
+   named in a comment, not implemented here.
+3. **Minor — criterion 11's harvester excludes an instruction.** `playbooks.test.ts`: exclude
+   prohibitions by their own shape — strip the `**Never …**` bold run from a paragraph and
+   harvest the code spans that remain — so `git push -u origin HEAD`, the one push form the
+   playbook instructs, is checked instead of dropped with the prohibition it shares a bullet
+   with.
+
+Files: `packages/daemon/src/runner/allowlist.ts`, `allowlist.test.ts`, `run.ts`, `run.test.ts`,
+`runner.ts`, `playbooks.test.ts`, `packages/daemon/playbooks/code.md`.
+
+Left open by the spec, decided here: the every-word check compares words literally, so a
+path-qualified `/usr/bin/git push` is not caught. That is inside the limit *What a scan cannot
+be* states — a hostile instruction file has `sh` — and normalising basenames would be a claim
+the spec does not make.
