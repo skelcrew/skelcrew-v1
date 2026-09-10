@@ -292,9 +292,10 @@ export function startRunner(options: RunnerOptions): Runner {
         return;
       }
       step = "read the allowlist";
-      // Read at the base commit the branch forked from, so an instruction file a run writes
-      // into the working tree grants nothing to it or to the next run.
-      const allowedTools = await allowlistFor(git, repoRoot, base.sha);
+      // Read from the remote-tracking head of the default branch — a ref nothing the list
+      // pre-allows can write — so an instruction file a run writes, commits, or points a
+      // branch at grants nothing to it or to the next run.
+      const allowedTools = await allowlistFor(git, repoRoot, base.name);
       stillHeld();
       step = "open run log";
       const logPath = createRunLog(dataDir, id, now());

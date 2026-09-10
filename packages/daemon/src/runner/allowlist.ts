@@ -32,15 +32,20 @@
  *    For the same reason a scanned line is a literal command and never a pattern: a fenced
  *    `bun *` would otherwise yield `Bash(bun * *)`, which the harness's own matcher expands
  *    back into `bun -e '<any code>'`. See `PATTERN_CHARS` and `allowlistFor` below.
+ * 5. **No entry writes a ref the next run reads.** `git branch` is absent: branch refs live in
+ *    `refs/heads/` and are *shared* by the main checkout and every linked worktree, so a run
+ *    that can create, rename or repoint a branch changes the owner's repository rather than
+ *    its own scratch copy — and can point the name its successor's base resolves from at a
+ *    commit it wrote itself, instruction file included. No playbook runs `git branch`; a
+ *    read-only use of it asks. `allowlistFor` closes the same hole from the other side.
  *
  * What the list deliberately does not close, recorded rather than discovered:
  * `Bash(git commit *)` permits `--no-verify`, which skips the target repository's hooks (the
- * playbooks forbid it; a prefix pattern cannot); `Bash(git branch *)` permits `git branch -D`
- * inside a disposable worktree; `Bash(git push)` under a repo-level `push.default = matching`
- * can push more than the card's branch; and `Write`, `Edit` and `MultiEdit` are pre-allowed
- * for any path the daemon's user can write, not only the worktree. Nothing here sandboxes the
- * agent: the list governs what runs **unprompted**, and everything else remains available by
- * asking. This is a gate, not a jail.
+ * playbooks forbid it; a prefix pattern cannot); `Bash(git push)` under a repo-level
+ * `push.default = matching` can push more than the card's branch; and `Write`, `Edit` and
+ * `MultiEdit` are pre-allowed for any path the daemon's user can write, not only the worktree.
+ * Nothing here sandboxes the agent: the list governs what runs **unprompted**, and everything
+ * else remains available by asking. This is a gate, not a jail.
  */
 import type { Git } from "./git";
 
@@ -64,7 +69,6 @@ export const FIXED_ALLOWLIST: readonly string[] = [
   "Bash(git show *)",
   "Bash(git merge-base *)",
   "Bash(git rev-parse *)",
-  "Bash(git branch *)",
   "Bash(git add *)",
   "Bash(git commit *)",
   "Bash(git push -u origin HEAD)",
@@ -248,6 +252,11 @@ export function scanInstructions(text: string): string[] {
   return out;
 }
 
+/** Where the scan reads from: the remote-tracking head of the repository's default branch. */
+function scanBase(defaultBranch: string): string {
+  return `refs/remotes/origin/${defaultBranch}`;
+}
+
 /**
  * What a run in `repoRoot` may do without asking: the fixed list, plus `Bash(<line> *)` for
  * each command line the repository's own `AGENTS.md`/`CLAUDE.md` shows in a fenced shell
@@ -255,22 +264,33 @@ export function scanInstructions(text: string): string[] {
  * permission for its check commands. A repository with neither file gets the fixed list
  * exactly, and nothing scanned may widen a command the fixed list narrows.
  *
- * **The files are read as of `base`, the run's base commit, never from the working tree.**
- * `Write` and `Edit` are on the fixed list and are not path-constrained, so a run can write a
- * fenced block into `AGENTS.md` itself — one unprompted call, visible on the card only inside
- * a batched tool summary — and every later run in that repository would then pre-allow the
- * command line it chose. That is a run widening its successor's boundary, so a file that is
- * untracked, or modified relative to `base`, contributes nothing: only what the owner has
- * already merged can grant anything. A base commit that cannot be read contributes nothing
- * either, rather than failing the run — the fixed list is the floor, and the agent asks.
+ * **The files are read from a commit, never from the working tree.** `Write` and `Edit` are on
+ * the fixed list and are not path-constrained, so a run can write a fenced block into
+ * `AGENTS.md` itself — one unprompted call, visible on the card only inside a batched tool
+ * summary — and every later run in that repository would then pre-allow the command line it
+ * chose. That is a run widening its successor's boundary, so a file that is untracked, or
+ * modified relative to that commit, contributes nothing.
+ *
+ * **And the commit is named by a ref no pre-allowed command can write**: `scanBase`, the
+ * remote-tracking head of `defaultBranch`. A local branch name would not do, however carefully
+ * the fixed list is drawn — `refs/heads/` is shared by the main checkout and every linked
+ * worktree, so a run able to create or move a branch could point the name its successor reads
+ * at a commit it authored. Nothing under `refs/remotes/` is writable by anything on the list:
+ * only `git fetch`, `git pull`, `git remote` and `git push` write those refs, of which only
+ * `push` is listed, and only as `git push -u origin HEAD` and a bare `git push` — which update
+ * the remote-tracking ref of a branch that is pushed, never of one that is not. The run's own
+ * branch is `skelcrew/<id>-…`, created by the runner. So only a commit the owner has pushed to
+ * the default branch can grant anything. A ref or a file that cannot be read contributes
+ * nothing rather than failing the run — the fixed list is the floor, and the agent asks.
  */
 export async function allowlistFor(
   git: Pick<Git, "showFile">,
   repoRoot: string,
-  base: string,
+  defaultBranch: string,
 ): Promise<string[]> {
   const list = [...FIXED_ALLOWLIST];
   const narrowed = narrowedCommands();
+  const base = scanBase(defaultBranch);
   for (const name of INSTRUCTION_FILES) {
     let text: string | undefined;
     try {

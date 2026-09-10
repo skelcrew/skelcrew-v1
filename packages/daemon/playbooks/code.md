@@ -13,7 +13,7 @@ speaks as you.
 ## What this run may do without asking, and what it asks for
 
 Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Write`, `Edit` and `MultiEdit`;
-the git verbs `status`, `log`, `diff`, `show`, `merge-base`, `rev-parse`, `branch`, `add` and
+the git verbs `status`, `log`, `diff`, `show`, `merge-base`, `rev-parse`, `add` and
 `commit`; `git push -u origin HEAD` and a bare `git push`; `gh pr create`, `gh pr view`,
 `gh pr diff`, `gh pr comment` and `gh repo view`; the CLI verbs `skelcrew show`, `comment`,
 `body`, `refs` and `attention`; and the check commands this repository's own `AGENTS.md` or

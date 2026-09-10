@@ -75,6 +75,23 @@ async function initRepo(): Promise<void> {
   await sh(repo, "commit", "-q", "--allow-empty", "-m", "init");
 }
 
+/**
+ * A target repository as one really is: `AGENTS.md` on the default branch, and an origin the
+ * default branch is pushed to. The scan reads `refs/remotes/origin/<default>`, so this is what
+ * a repository documenting its own check command looks like to a run.
+ */
+async function initRepoWithOrigin(instructions: string): Promise<void> {
+  await initRepo();
+  writeFileSync(join(repo, "AGENTS.md"), instructions);
+  await sh(repo, "add", "AGENTS.md");
+  await sh(repo, "commit", "-q", "-m", "document the check command");
+  const origin = join(tmp, "origin.git");
+  await sh(tmp, "init", "-q", "--bare", "-b", "main", origin);
+  await sh(repo, "remote", "add", "origin", origin);
+  await sh(repo, "push", "-q", "origin", "main");
+  await sh(repo, "remote", "set-head", "origin", "-a");
+}
+
 /** The agent, scripted: whatever the test's generator does is the whole run. */
 function fakeDriver(script: (options: AgentRunOptions) => AsyncGenerator<AgentEvent>): AgentDriver {
   return { run: (options) => script(options) };
@@ -830,10 +847,7 @@ test("a claim released while the run waits ends the run, and a later answer chan
 });
 
 test("the agent is spawned with the commands the target repository names for itself", async () => {
-  await initRepo();
-  writeFileSync(join(repo, "AGENTS.md"), "# Repo\n\n```\nbun run check\n```\n");
-  await sh(repo, "add", "AGENTS.md");
-  await sh(repo, "commit", "-q", "-m", "document the check command");
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
   const seen: AgentRunOptions[] = [];
   start({
     driver: fakeDriver(async function* (options) {
@@ -846,12 +860,45 @@ test("the agent is spawned with the commands the target repository names for its
 });
 
 /**
+ * Criterion 10b. The whole sequence a run can perform with pre-allowed commands alone:
+ * commit the instruction file it wrote, then point the name its successor's base is resolved
+ * from at that commit. Branch refs are shared by every worktree, so this reaches the owner's
+ * repository; the scan's base is the remote-tracking default branch, which nothing on the
+ * list can write, so the next run's list is what the *remote's* instructions grant and
+ * nothing more.
+ */
+test("a run that commits an instruction file and repoints the default branch grants the next run nothing", async () => {
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      seen.push(options);
+      if (seen.length === 1) {
+        writeFileSync(join(options.cwd, "AGENTS.md"), "```\nbun run evil\n```\n");
+        await sh(options.cwd, "add", "-A");
+        await sh(options.cwd, "commit", "-q", "-m", "docs");
+        await sh(options.cwd, "branch", "-m", "main", "trunk");
+        await sh(options.cwd, "branch", "main", "HEAD");
+      }
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Widens its successor");
+  await runCard("The run after it");
+
+  expect(seen).toHaveLength(2);
+  for (const options of seen) {
+    expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
+  }
+});
+
+/**
  * Criterion 10a. `Write` is pre-allowed and unbounded by path, so a run can put a fenced
  * block into the repository's own instructions; the scan reads the base commit, so what it
  * wrote grants nothing — to it, or to the run after it.
  */
 test("an instruction file a run writes grants nothing to it or to the next run", async () => {
-  await initRepo();
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
   const seen: AgentRunOptions[] = [];
   start({
     driver: fakeDriver(async function* (options) {
@@ -865,7 +912,9 @@ test("an instruction file a run writes grants nothing to it or to the next run",
   await runCard("The run after it");
 
   expect(seen).toHaveLength(2);
-  for (const options of seen) expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST]);
+  for (const options of seen) {
+    expect(options.allowedTools).toEqual([...FIXED_ALLOWLIST, "Bash(bun run check *)"]);
+  }
 });
 
 // --- how a run ends ---

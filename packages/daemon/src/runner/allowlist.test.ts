@@ -27,7 +27,6 @@ test("the fixed list is exactly what the spec names, in its order", () => {
     "Bash(git show *)",
     "Bash(git merge-base *)",
     "Bash(git rev-parse *)",
-    "Bash(git branch *)",
     "Bash(git add *)",
     "Bash(git commit *)",
     "Bash(git push -u origin HEAD)",
@@ -85,7 +84,6 @@ test("every entry on the list matches the call it is there for", () => {
     bash("git show HEAD"),
     bash("git merge-base main HEAD"),
     bash("git rev-parse refs/heads/main"),
-    bash("git branch --show-current"),
     bash("git add -A"),
     bash("git commit -m 'work'"),
     bash("git push -u origin HEAD"),
@@ -144,6 +142,24 @@ test("skelcrew resolve 1 -m allow is not on the list: an agent may not answer it
   expect(allowsTool(...bash("skelcrew resolve 1 -m allow"))).toBe(false);
 });
 
+/**
+ * Criterion 10b's second half. `refs/heads/` is shared by the main checkout and every linked
+ * worktree, so `git branch` writes the owner's repository — including the name a later run's
+ * base is resolved from. No playbook runs it; every form of it asks, read-only ones included.
+ */
+test("git branch is not on the list, in any form", () => {
+  for (const command of [
+    "git branch",
+    "git branch --show-current",
+    "git branch -m main trunk",
+    "git branch main HEAD",
+    "git branch -D main",
+    "git branch -f main HEAD",
+  ]) {
+    expect([command, allowsTool(...bash(command))]).toEqual([command, false]);
+  }
+});
+
 test("a wildcard entry matches the whole subcommand it names, not a longer word", () => {
   // `Bash(git log *)` covers `git log` and its arguments: `git logs` is neither.
   expect(allowsTool(...bash("git logs --all"))).toBe(false);
@@ -178,9 +194,10 @@ const GIT_ENV: Record<string, string | undefined> = {
 };
 
 let repo: string;
+let origin: string;
 let git: Git;
-/** The run's base commit: the only place the scan may read an instruction file from. */
-let base: string;
+/** The repository's default branch, whose *remote-tracking* head is what the scan reads. */
+const DEFAULT_BRANCH = "main";
 
 async function sh(...args: string[]): Promise<string> {
   const proc = Bun.spawn(["git", ...args], { cwd: repo, env: GIT_ENV, stdout: "pipe" });
@@ -194,14 +211,18 @@ async function sh(...args: string[]): Promise<string> {
 
 beforeEach(async () => {
   repo = mkdtempSync(join(tmpdir(), "skr-allow-"));
+  origin = mkdtempSync(join(tmpdir(), "skr-origin-"));
   git = createGit({ env: GIT_ENV });
-  await sh("init", "-q", "-b", "main");
+  await sh("init", "-q", "--bare", "-b", DEFAULT_BRANCH, origin);
+  await sh("init", "-q", "-b", DEFAULT_BRANCH);
   await sh("commit", "-q", "--allow-empty", "-m", "init");
-  base = await sh("rev-parse", "HEAD");
+  await sh("remote", "add", "origin", origin);
+  await sh("push", "-q", "origin", DEFAULT_BRANCH);
 });
 
 afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
+  rmSync(origin, { recursive: true, force: true });
 });
 
 /** Into the working tree only — where a run can write, and the scan may not read. */
@@ -209,17 +230,22 @@ function write(name: string, text: string): void {
   writeFileSync(join(repo, name), text);
 }
 
-/** Committed, which is the only way an instruction file can grant anything. */
-async function commit(name: string, text: string): Promise<void> {
+/** Committed on the local default branch — which the scan does not read either. */
+async function commitLocally(name: string, text: string): Promise<void> {
   write(name, text);
   await sh("add", name);
   await sh("commit", "-q", "-m", `document ${name}`);
-  base = await sh("rev-parse", "HEAD");
+}
+
+/** On the remote's default branch, which is the only way an instruction file grants anything. */
+async function commit(name: string, text: string): Promise<void> {
+  await commitLocally(name, text);
+  await sh("push", "-q", "origin", DEFAULT_BRANCH);
 }
 
 /** The whole list a run in this repository would be spawned with. */
 async function list(): Promise<string[]> {
-  return allowlistFor(git, repo, base);
+  return allowlistFor(git, repo, DEFAULT_BRANCH);
 }
 
 /** What the scan added, in order: everything past the fixed list. */
@@ -349,7 +375,18 @@ test("a block added to an instruction file since the base commit contributes not
   expect(await scanned()).toEqual(["Bash(bun run check *)"]);
 });
 
-test("a base commit that cannot be read contributes nothing rather than failing the run", async () => {
+/**
+ * Criterion 10b. The scan's base is `refs/remotes/origin/<default>`, not the local branch of
+ * that name: `refs/heads/` is shared by every worktree, so a run that could commit and then
+ * move the local default branch would otherwise be choosing its successor's list.
+ */
+test("an instruction file committed locally but not on the remote contributes nothing", async () => {
+  await commitLocally("AGENTS.md", "```\nbun run evil\n```\n");
+  expect(await scanned()).toEqual([]);
+  expect(await list()).not.toContain("Bash(bun run evil *)");
+});
+
+test("a default branch with no remote-tracking head contributes nothing rather than failing", async () => {
   await commit("AGENTS.md", "```\nbun run check\n```\n");
-  expect(await allowlistFor(git, repo, "0".repeat(40))).toEqual([...FIXED_ALLOWLIST]);
+  expect(await allowlistFor(git, repo, "no-such-branch")).toEqual([...FIXED_ALLOWLIST]);
 });
