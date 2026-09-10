@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { type Activity, COMMENT_MAX_BYTES, type Member, worktreesDir } from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
 import type { AgentDriver, AgentEvent, AgentRunOptions, ToolDecision } from "./agent";
-import { allowsTool, deniedTools, editsIn, FIXED_ALLOWLIST } from "./allowlist";
+import { allowsTool, deniedTools, editsIn, FIXED_ALLOWLIST, runsUnprompted } from "./allowlist";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
 import { createRunLog, runLimitFromEnv, TEXT_EXCERPT_BYTES } from "./run";
@@ -1072,13 +1072,14 @@ test("no pre-allowed tool writes the ref the scan reads, so a run cannot forge i
   let preAllowed: boolean | undefined;
   start({
     driver: fakeDriver(async function* (options) {
-      // The pre-allowed steps, run for real in the worktree.
+      // The unprompted steps, run for real in the worktree. `git rev-parse` is off the list
+      // now, and still runs without asking through the harness's own read-only check.
       for (const command of [
         "git add -A",
         "git commit -m docs",
         "git rev-parse --git-common-dir",
       ]) {
-        expect([command, allowsTool("Bash", { command }, options.allowedTools)]).toEqual([
+        expect([command, runsUnprompted("Bash", { command }, options.allowedTools)]).toEqual([
           command,
           true,
         ]);
@@ -1141,6 +1142,100 @@ test("no pre-allowed tool writes the git config, so a bare git push cannot be ai
 
   expect(config).toEndWith("/config");
   expect(preAllowed).toBe(false);
+});
+
+/**
+ * Criterion 10d, as the chain a run would really walk — the same forgery as 10b's, reached
+ * through a flag instead of a file tool. `git log`, `git diff` and `git show` all take
+ * `--output=<any absolute path>`, so while `Bash(git log *)` was on the list the anchor the
+ * file tools sit behind was walked around entirely. Every step before the last is a command
+ * that runs unprompted; the last must not, for a path under the git common directory and for
+ * one inside the worktree alike.
+ */
+test("no unprompted command writes the ref through a flag: git log --output is not pre-allowed", async () => {
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
+  let forge: string | undefined;
+  let inside: string | undefined;
+  const unprompted: Array<[string, boolean]> = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      const runs = (command: string): boolean =>
+        runsUnprompted("Bash", { command }, options.allowedTools, options.disallowedTools);
+      // Poison an instruction file and commit it: every step of that runs unprompted.
+      writeFileSync(join(options.cwd, "AGENTS.md"), "```\nbun run evil\n```\n");
+      for (const command of ["git add AGENTS.md", "git commit -m docs", "git rev-parse"]) {
+        unprompted.push([command, runs(command)]);
+      }
+      await sh(options.cwd, "add", "-A");
+      await sh(options.cwd, "commit", "-q", "-m", "docs");
+      const common = await sh(
+        options.cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      );
+      forge = join(common, "refs", "remotes", "origin", "main");
+      inside = join(options.cwd, "inside.txt");
+      // The last step: writing the sha it just authored into the ref its successor reads.
+      for (const path of [forge, inside]) {
+        unprompted.push([path, runs(`git log -1 --format=%H --output=${path}`)]);
+      }
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Forges its successor's base through a flag");
+
+  expect(forge).toContain("refs/remotes/origin/main");
+  expect(unprompted).toEqual([
+    ["git add AGENTS.md", true],
+    ["git commit -m docs", true],
+    ["git rev-parse", true],
+    [forge as string, false],
+    [inside as string, false],
+  ]);
+});
+
+/**
+ * Criterion 10d and 10c together. The same flag rewrites `.git/config`, where one
+ * `remote.origin.push` line turns the pre-allowed bare `git push` into a push to the default
+ * branch — and `git commit -F` is how the config text gets authored as a commit message first.
+ * Every step but the last runs unprompted; the last asks.
+ */
+test("no unprompted command writes the git config through a flag, so the bare push stays narrow", async () => {
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
+  let config: string | undefined;
+  const unprompted: Array<[string, boolean]> = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      const runs = (command: string): boolean =>
+        runsUnprompted("Bash", { command }, options.allowedTools, options.disallowedTools);
+      for (const command of [
+        "git commit --allow-empty -F payload.txt",
+        "git push",
+        "git rev-parse --git-common-dir",
+      ]) {
+        unprompted.push([command, runs(command)]);
+      }
+      const common = await sh(
+        options.cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+      );
+      config = join(common, "config");
+      unprompted.push([config, runs(`git log -1 --format=%B --output=${config}`)]);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Aims the bare push through a flag");
+
+  expect(config).toEndWith("/config");
+  expect(unprompted).toEqual([
+    ["git commit --allow-empty -F payload.txt", true],
+    ["git push", true],
+    ["git rev-parse --git-common-dir", true],
+    [config as string, false],
+  ]);
 });
 
 /**
