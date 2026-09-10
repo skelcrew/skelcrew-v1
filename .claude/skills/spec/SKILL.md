@@ -126,6 +126,13 @@ What makes each section good here:
   put the rest in *Out of scope*. Say that you did this.
 - **Never weaken the constraints in `CLAUDE.md`** to make a design simpler. If the idea
   requires it, stop and raise the conflict instead.
+- **A permission grant is a security boundary, not a configuration detail.** If the spec gives
+  a process, an agent, or a user anything — an allowlist, a scope, a credential, a capability —
+  name the exact operations and check them against the matching semantics of whatever will
+  enforce them, before you write the line. A wildcard that spans a subcommand (`Bash(git *)`,
+  `Bash(gh pr *)`) grants every verb beneath it, including the ones the spec's own gates exist
+  to catch. Specify the verbs, and say explicitly what must ask. An implementer will write what
+  you wrote; a boundary specified loosely here is a hole that survives review.
 - **Do not implement anything.** No source edits, no test files, no dependency changes. The
   only file you create is the spec.
 

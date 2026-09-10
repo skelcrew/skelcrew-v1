@@ -55,6 +55,11 @@ no edits, no fixes, no "while I was here". Report; do not repair.
   configuration for a requirement that does not exist. Complexity a requirement genuinely
   demands is not a finding; a design that is simple because it dropped a requirement is the
   defect.
+- **Spec defects, faithfully implemented.** A line that does exactly what the spec says and is
+  still wrong is a finding — against the spec, not against the implementer. Say which artefact
+  has to change. Permission grants, allowlists, and scopes the spec dictates are the common
+  case: check them against the semantics of whatever actually enforces them, not against what
+  the spec evidently intended.
 - **Violations of repository conventions** as stated in `CLAUDE.md`.
 - **Unrelated changes** — anything in the diff the spec does not require, including
   reformatting, drive-by renames, and edits to files that are out of scope.
@@ -64,6 +69,12 @@ no edits, no fixes, no "while I was here". Report; do not repair.
 
 Do not report stylistic preferences. If your only argument is that you would have written it
 differently, it is not a finding.
+
+Before proposing that a rule the spec states be relaxed or replaced, re-read the spec's own
+wording for that rule and argue against it explicitly. A rule the spec states, found
+inconvenient in a later round, is usually right and the implementation has drifted off it —
+the useful finding is normally "this no longer matches the spec", not "this rule is too
+strict". Say which of the two you mean.
 
 ## Findings
 

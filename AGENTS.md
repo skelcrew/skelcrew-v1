@@ -73,8 +73,23 @@ existed — not work relocated from the terminal with extra ceremony.
 Landscape: chat-first agents (OpenClaw, Hermes) make conversation load-bearing; parallel-run
 orchestrators (Conductor, Superset) multiplex sessions; peer boards (Baton) share a surface
 but not a pipeline; coordination layers (Korey, from the Shortcut team) sit over a team's
-tracker and chat, chat-driven, and stop short of running the work. The gap skelcrew fills is
-the phase-driven, headless, no-chat harness.
+tracker and chat, chat-driven, and stop short of running the work; simulated orgs (Gas Town)
+give a single human a staffed town — worker agents with durable identity, mail between them,
+patrol agents watching their health, an AI coordinator that decomposes the work, and a
+bors-style merge queue that lands it. The gap skelcrew fills is the phase-driven, headless,
+no-chat harness.
+
+Gas Town is the closest neighbour and the sharpest contrast, because it shares the plumbing —
+one human, many agents, git worktrees for isolation, a durable structured work item instead of
+a chat thread, and the same split of durable identity from disposable sessions — while
+answering the design questions the other way on every constraint above: agents mail each other
+and query their predecessors' sessions for context, a coordinator agent holds the plan, and the
+merge queue merges. It organises around dispatch and liveness, keeping twenty or thirty agents
+fed and recovering; skelcrew organises around artefact contracts and gates, where work advances
+only by producing something verifiable and passing a human. Its concept count is the price of
+that scale, and taking any of it piecemeal means taking that trade — the one part with no
+counterpart here is a watcher for a run that is alive but stuck, which lease expiry does not
+catch.
 
 ## Settled architecture
 

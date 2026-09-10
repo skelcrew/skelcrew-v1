@@ -74,6 +74,12 @@ Address each finding on its own terms. For any finding you do not fix, say which
 "disagree, because X" is a legitimate outcome and better than a silent skip. Do not take the
 opportunity to change anything the findings did not raise.
 
+**Change exactly what the finding names.** When a finding says a rule is too strict, relax that
+rule and nothing adjacent to it — dropping a neighbouring condition "while you are in there"
+opens a hole the next round has to find, and the round after that has to re-close. If the spec
+states the rule, the spec's wording is the target to return to, not a starting point to move
+past: quote it in your report and say how your change lands back on it.
+
 ## Report
 
 Structure your final message exactly like this:

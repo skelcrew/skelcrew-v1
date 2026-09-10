@@ -4,3 +4,6 @@ packages/board/data/
 .skelcrew/
 *.log
 .DS_Store
+
+# /develop creates worktrees here; they are checkouts, never content
+.claude/worktrees/
