@@ -2,13 +2,13 @@
  * What the agent may do without asking. This is a security boundary, so the list is fixed
  * and named exactly: the tools a phase needs, plus the CLI, `git` and `gh` verbs the
  * playbooks run. Everything else reaches the run's `canUseTool` and becomes a question to
- * the owner (013) — with two exceptions that are the harness's own and cannot be closed from
- * here: it self-approves a set of read-only Bash commands, and it allows outright any tool
- * that defines no permission check of its own. So this list is not the complete set of what
- * runs unprompted. `entryAllows` below records both divergences in full, and which class
- * each is.
+ * the owner (013) — with three exceptions that are the harness's own and cannot be closed from
+ * here: it self-approves a set of read-only Bash commands, it allows outright any tool that
+ * defines no permission check of its own, and it reads a wildcard entry as covering
+ * `xargs <that command>` as well. So this list is not the complete set of what runs
+ * unprompted. `entryAllows` below records every divergence in full, and which class each is.
  *
- * Four rules shape it, each from a defect the 007 spike shipped:
+ * Five rules shape it, each from a defect this project shipped:
  *
  * 1. **The wildcard goes after the subcommand, never before it.** `Bash(x *)` is wildcard
  *    matching — every command beginning with `x ` — so `Bash(git *)` would pre-allow `git
@@ -101,8 +101,8 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  * - Any other content is the exact command.
  * - Comparison is case-insensitive. The harness's is not — a divergence, recorded below.
  *
- * Four ways the model and the harness diverge, none compensated for here. The first two are
- * this module's own reading of a rule; the other two are the harness allowing what this
+ * Five ways the model and the harness diverge, none compensated for here. The first two are
+ * this module's own reading of a rule; the other three are the harness allowing what this
  * module's list does not name, and are why the list is *not* the complete set of what runs
  * unprompted:
  *
@@ -123,6 +123,16 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  *   module does not: `git  log` with two spaces is allowed there and asks here. Narrow, and
  *   the one place a "this is allowed" assertion would be the imprecise one — there is no such
  *   assertion, and no entry or scanned line carries a double space.)
+ * - **The harness reads a wildcard rule as covering `xargs <that command>` too** — a divergence
+ *   in what a *listed entry* matches. Having failed to match a wildcard allow rule against the
+ *   command, it retries the pattern with `xargs ` in front whenever the pattern ends in an
+ *   unescaped `*` — `LV("xargs " + pattern, command)` in the shipped binary, guarded by a
+ *   predicate that is exactly "ends in an unescaped star" — so `Bash(git status *)` also allows
+ *   `xargs git status -s` there and asks here. Checked entry by entry, it grants nothing
+ *   further under this list: the alias still runs the command the entry names, with words
+ *   appended from stdin, and the entry's own trailing `*` already allows any arguments. The
+ *   two entries where an alias would matter — `Bash(git push -u origin HEAD)` and
+ *   `Bash(git push)` — carry no wildcard at all, and an exact rule gets no such retry.
  * - **The harness self-approves read-only Bash commands the list never names** — a divergence
  *   in what a *listed tool's arguments* may be. Rather than asking about a command in its own
  *   fixed read-only set — `ls`, `cat`, `head`, `wc`, `grep`, `find` without `-exec` and the
@@ -134,7 +144,7 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  *   `canUseTool` whatever the list says. `Write`, `Edit` and `Bash` all carry checks of their
  *   own, matched against the rules; bookkeeping and sub-agent tools do not.
  *
- * Constraining the last two needs deny rules or the harness's policy tier, and the policy
+ * Constraining the last three needs deny rules or the harness's policy tier, and the policy
  * tier can be dropped on a machine with an IT-managed one — so `canUseTool` stays
  * authoritative and no assertion here claims the list is the complete set.
  */
