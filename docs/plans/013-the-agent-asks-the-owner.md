@@ -538,6 +538,8 @@ being listed.
   `FIXED_ALLOWLIST`, so the record and the list cannot drift apart. The module doc itself is not
   pinned by a test: a test that greps its own module's comment asserts prose, not behaviour.
 - **Important 1.** The branch's spec is `git checkout main --`'d and byte-identical to main's.
+  (True when written; main moved twice afterwards, and round 6 takes the spec again — a
+  statement about a moving branch keeps only as long as the branch stands still.)
 - **Important 2.** Modelled rather than listed as a divergence: `redirectionsIn` and
   `pastRedirections`. It sits beside `entryMatches` rather than inside it because a target is
   checked against every `Edit` rule, which one entry does not know.
@@ -559,3 +561,102 @@ being listed.
 ### Checks
 
 `bun run check` green: 440 tests, 0 fail (434 before this round).
+
+## Review round 6 — a scanned line could open a second rule, and the symlink record was wrong
+
+The spec moved twice more on main (`08cb5a0`, `2d4de9d`) and was taken whole again with
+`git checkout main -- docs/specs/013-the-agent-asks-the-owner.md`: a new paragraph *And a
+scanned line is one rule, never two*, a new criterion 10g, and a corrected `git branch`
+paragraph. Round 5's note that the branch's spec was "byte-identical to main's" was true when
+it was written and stopped being true when main moved; it is corrected here.
+
+### The plan
+
+1. **Critical 1 — one rule, never two.** A scanned line is accepted only if every character of
+   it is on a conservative allowlist, parentheses first; and the invariant that catches whatever
+   that set misses — each entry the scan produces splits into exactly one rule — is asserted
+   against a transcription of the harness's own `--allowedTools` splitter (`td`), not against
+   this module's `ENTRY` regex.
+2. **Important 3 — the symlink record and the allow/deny asymmetry.** `anchor` resolves the
+   worktree path through `realpathSync`, so `editsIn`/`deniedTools` spell a rule the way the
+   harness spells the path it checks; the runner resolves its worktrees directory once, so the
+   agent's cwd is spelled the same way and a run under a symlinked data directory is not
+   reduced to asking about every write. The record states the equivalence table and the
+   allow-only fallback.
+3. **Important 4 — `redirectionsIn`'s divergences**, enumerated beside it in the form
+   `entryMatches` uses, each with the direction it errs in.
+4. **Minor 5** — four known-wide places in `selfApprovedReadOnlyGit`, not three: `git log` and
+   `git show` carry an `additionalCommandIsDangerousCallback` this model does not run.
+   **Minor 6** — `code.md` names the harness's read-only tier rather than claiming everything
+   else asks. **Minor 7** — the bullet title in `allowlistFor` is scoped to tool calls.
+   **Minor 8** — the symlink test's positive case creates the file it names.
+
+### Verifying the two harness facts against the shipped binary
+
+Both were run against `claude` 2.1.266, the binary `@anthropic-ai/claude-agent-sdk@0.3.266`
+spawns, with the relevant functions extracted verbatim.
+
+**The splitter.** `td` — the CLI's own `--allowedTools` splitter — run on the entry
+`allowlistFor` builds from a fenced line:
+
+```
+"bun run"             -> Bash(bun run *)            -> ["Bash(bun run *)"]
+"bun run) Bash(git"   -> Bash(bun run) Bash(git *)  -> ["Bash(bun run)", "Bash(git *)"]
+"bun run) Bash(sh"    -> Bash(bun run) Bash(sh *)   -> ["Bash(bun run)", "Bash(sh *)"]
+```
+
+`Bash(git *)` is the grant the whole spec refuses and `Bash(sh *)` is arbitrary unprompted
+execution, both obtained by a file the target repository controls, with the second command in a
+later word where `narrowedCommands()` never looks. `ENTRY` reads the same entry as one malformed
+entry matching nothing, so no assertion in this repository could see it.
+
+**The equivalence table.** `Ap()` builds `[["/private/tmp","/tmp"],["/private/var","/var"],
+["/private/etc","/etc"],["/usr/bin","/bin"],["/usr/lib","/lib"],["/usr/sbin","/sbin"]]` and keeps
+each pair whose alias really resolves to its real form; on this machine that is the first three.
+`sTt` maps a path under a real prefix back to its alias. `PZe` retries every failed allow lookup
+through `sTt`; `uA`'s deny loop does not. Round 5 stubbed `Ap` as an empty table, which is why it
+recorded the harness as asking. With the real table, on a data directory spelled `/tmp/skel`:
+
+```
+worktree spelled /tmp/…            allow /tmp/…/1/src/x.ts      DENY  /tmp/…/1/.git
+                                   allow /private/tmp/…/1/.git   <- the hole
+worktree spelled /private/tmp/…    allow /private/tmp/…/1/src/x.ts
+                                   DENY  /private/tmp/…/1/.git   DENY  /tmp/…/1/.git
+```
+
+So the record was wrong twice over: an existing file under a symlinked worktree is *allowed*,
+not asked about, and the `.git` deny the whole anchoring exists for is missed in the
+`/private/…` spelling. Spelling the rules the way `realpathSync` spells the path closes it, and
+the third line of the second block is why the runner has to spell its cwd the same way: with
+real rules and a lexical cwd the harness asks about every write in the worktree.
+
+### What changed, per finding
+
+- **Critical 1.** `LINE_CHARS` in `allowlist.ts`: a scanned line is kept only when every
+  character of it is a letter, a digit, one of `. _ / @ + : = -`, or a single space between
+  words. An allowlist, because the attack was not the one a blocklist had been written for; it
+  sits beside `PATTERN_CHARS`, which sanitises against a different language. `splitEntries`
+  transcribes the harness's `td`, and `allowlist.test.ts` asserts the invariant over
+  `allowlistFor`'s whole output for a repository whose instructions carry both attack lines, a
+  `)`, a `(`, a comma and quotes.
+- **Important 2.** The spec is `git checkout main --`'d again; the round-5 note is corrected in
+  place rather than deleted.
+- **Important 3.** `anchor` resolves the worktree path, so `editsIn` and `deniedTools` spell a
+  rule the way the harness spells the path; `startRunner` resolves its worktrees directory once,
+  so the agent's cwd is spelled the same way (with real rules and a lexical cwd the harness asks
+  about every write in the worktree, which would be fail-closed and unusable). `filePaths`'s
+  record replaces the false "asks" sentence with the equivalence table and the allow-only
+  fallback. The test builds a worktree under `tmpdir()`, whose prefix is a link on macOS.
+- **Important 4.** Four divergences beside `redirectionsIn`, each narrow, in `entryMatches`'s
+  form: here-documents, `\"` inside a double-quoted string, `#` comments (with `[[ ]]` and
+  `(( ))` named as the same class), and a relative target resolved against the daemon's cwd
+  rather than the agent's.
+- **Minor 5.** Four known-wide places in `selfApprovedReadOnlyGit`, not three; the fourth is
+  `SZe`'s `additionalCommandIsDangerousCallback`, on `git log` and `git show` only, checked
+  against the binary verb by verb.
+- **Minor 6.** `code.md` names the harness's read-only tier instead of claiming everything else
+  asks.
+- **Minor 7.** The two bullet titles in `allowlistFor` that read as walls are scoped to tool
+  calls, the way the paragraph below them already was.
+- **Minor 8.** The symlink test creates the file its positive case names, and takes its root
+  through `realpathSync` so the only link in play is the one inside the worktree.
