@@ -1,9 +1,10 @@
 /**
- * The execution half, without a coding agent in it yet. A client of the core like the
- * socket is: it watches the activity stream for cards becoming ready, claims one at a time
- * as the `runner` member, prepares a branch and a worktree, and — having no playbook to
- * run — hands the card to the owner. Every step lands on the card; nothing here reaches
- * into the database or the target repository except through `git`.
+ * The execution half. A client of the core like the socket is: it watches the activity
+ * stream for cards becoming ready, claims one at a time as the `runner` member, prepares a
+ * branch and a worktree, and runs the phase's playbook in it through a driver (`run.ts`) —
+ * or, with no driver, hands the card to the owner as 006 did. Every step lands on the card;
+ * nothing here reaches into the database or the target repository except through `git` and
+ * the agent.
  */
 import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +18,20 @@ import {
   worktreesDir,
 } from "@skelcrew/shared";
 import type { Core } from "../core/core";
+import type { AgentDriver } from "./agent";
+import { FIXED_ALLOWLIST } from "./allowlist";
+import { endRun } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
+import type { Playbooks } from "./playbooks";
+import {
+  ABORT_GRACE_MS_DEFAULT,
+  createRunLog,
+  RUN_LIMIT_MINUTES_DEFAULT,
+  RunAbandoned,
+  runPlaybook,
+  TOOL_SUMMARY_MS,
+} from "./run";
+import { agentEnvironment, writeShim } from "./shim";
 import { branchName } from "./slug";
 
 export const RUNNER_MEMBER_NAME = "runner";
@@ -38,10 +52,26 @@ export interface RunnerOptions {
   warn?: (line: string) => void;
   /** The clock readiness reads a claim's expiry against; the core's, so the two agree. */
   now?: () => number;
+  /**
+   * What runs a phase in the worktree, and the playbooks it is given — one or neither, so a
+   * driver can never arrive without them. Without it a run ends in 006's no-playbook handoff.
+   */
+  agent?: { driver: AgentDriver; playbooks: Playbooks };
+  /** The environment the agent inherits from. Defaults to the daemon's own. */
+  env?: Record<string, string | undefined>;
+  /** A run's time limit. Defaults to 60 minutes. */
+  runLimitMs?: number;
+  /** How long an aborted agent gets to end before the run goes on without it. Defaults to 5 s. */
+  abortGraceMs?: number;
+  /** The window a run batches tool calls into one comment over. Defaults to 30 s. */
+  summaryMs?: number;
 }
 
 export interface Runner {
-  /** Takes no further card; resolves once the job in flight has finished. */
+  /**
+   * Takes no further card and tells a live run to stop (it ends as `daemon stopping`);
+   * resolves once the job in flight has finished.
+   */
   stop(): Promise<void>;
 }
 
@@ -63,14 +93,6 @@ function isReady(card: Card, at: number): boolean {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** The run's claim went away while it was inside git: the card is someone else's now. */
-class RunAbandoned extends Error {
-  constructor(reason: string) {
-    super(reason);
-    this.name = "RunAbandoned";
-  }
 }
 
 /** A worktree entry the runner can act on: registered, and its directory still a checkout. */
@@ -106,11 +128,19 @@ function within(text: string): string {
 }
 
 export function startRunner(options: RunnerOptions): Runner {
-  const { core, dataDir, repoRoot, git, member } = options;
+  const { core, dataDir, repoRoot, git, member, agent } = options;
   const warn = options.warn ?? ((line: string) => console.error(line));
   const now = options.now ?? Date.now;
+  const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
+  const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS_DEFAULT;
+  const summaryMs = options.summaryMs ?? TOOL_SUMMARY_MS;
+  const baseEnv = options.env ?? process.env;
+  /** Fired by `stop()`: a live run is told to stop rather than waited out. */
+  const stopping = new AbortController();
   const dir = worktreesDir(dataDir);
   mkdirSync(dir, { recursive: true });
+  // The agent's `skelcrew`: written once, before any run could need it.
+  if (agent !== undefined) writeShim(dataDir);
 
   const jobs: Job[] = [];
   let stopped = false;
@@ -242,13 +272,51 @@ export function startRunner(options: RunnerOptions): Runner {
       stillHeld();
       step = "update card";
       core.setRefs(id, { branch }, member.id);
-      core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
-      core.requestAttention(
+      const playbook =
+        agent !== undefined && (card.phase === "spec" || card.phase === "code")
+          ? agent.playbooks[card.phase]
+          : undefined;
+      if (agent === undefined || playbook === undefined) {
+        // 006's handoff, kept verbatim: nothing has run in the worktree, so this is not the
+        // ending of a run and does not go through `ending.ts`. Every ending does.
+        core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
+        core.requestAttention(
+          id,
+          { to: ownerId(), note: `no playbook for ${card.phase} yet; work in ${path}` },
+          member.id,
+        );
+        core.releaseCard(id, { reason: "no playbook" }, member.id);
+        return;
+      }
+      step = "open run log";
+      const logPath = createRunLog(dataDir, id, now());
+      core.comment(
         id,
-        { to: ownerId(), note: `no playbook for ${card.phase} yet; work in ${path}` },
+        `worktree ready at ${path} on ${branch} (from ${base.name}); run log at ${logPath}`,
         member.id,
       );
-      core.releaseCard(id, { reason: "no playbook" }, member.id);
+      step = "run playbook";
+      await runPlaybook({
+        core,
+        member,
+        ownerId,
+        warn,
+        card,
+        path,
+        branch,
+        base: base.name,
+        driver: agent.driver,
+        playbook,
+        env: agentEnvironment(baseEnv, dataDir),
+        allowedTools: [...FIXED_ALLOWLIST],
+        logPath,
+        limitMs: runLimitMs,
+        graceMs: abortGraceMs,
+        summaryMs,
+        stop: stopping.signal,
+        stillHeld,
+        lost,
+      });
     } catch (error) {
       if (error instanceof RunAbandoned) {
         abandon(error.message);
@@ -260,18 +328,17 @@ export function startRunner(options: RunnerOptions): Runner {
         abandon(gone);
         return;
       }
-      const text = within(`${step} failed: ${message(error)}`);
-      try {
-        core.comment(id, text, member.id);
-        core.requestAttention(id, { to: ownerId(), note: text }, member.id);
-      } catch (inner) {
-        warn(`skelcrew runner: card ${id}: ${text}; and could not say so: ${message(inner)}`);
-      }
-      try {
-        core.releaseCard(id, { reason: "failed" }, member.id);
-      } catch (inner) {
-        warn(`skelcrew runner: card ${id} not released: ${message(inner)}`);
-      }
+      // A throw out of a run that had already escalated ends the card here rather than in
+      // `run.ts`, so this ending goes through the same one in `ending.ts`.
+      endRun({
+        core,
+        cardId: id,
+        memberId: member.id,
+        ownerId,
+        warn,
+        note: within(`${step} failed: ${message(error)}`),
+        reason: "failed",
+      });
     } finally {
       clearInterval(heartbeat);
     }
@@ -434,6 +501,7 @@ export function startRunner(options: RunnerOptions): Runner {
       stopped = true;
       unsubscribe();
       jobs.length = 0;
+      stopping.abort();
       await pumping;
     },
   };
