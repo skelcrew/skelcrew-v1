@@ -499,14 +499,17 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   }
 
   /**
-   * The card is waiting on the owner with `note`, whether or not the claim survived — and
-   * still waiting on the agent's question instead, if one is open, since `raiseAttention`
-   * leaves that one alone. The comment lands either way.
+   * The run's last word: `note` as a comment, whether or not the claim survived, and — when
+   * `raise` — the card left waiting on the owner with it. Still waiting on the agent's
+   * question instead, if one is open, since `raiseAttention` leaves that one alone. The two
+   * effects are separate because they answer to different rules: the comment is the record of
+   * what happened, which the card is owed either way, while a request is a claim on a
+   * member's queue, which a run that no longer holds the card has no standing to make.
    */
-  const stopWith = (note: string): void => {
+  const stopWith = (note: string, raise: boolean): void => {
     try {
       core.comment(id, note, member.id);
-      raiseAttention(core, id, { to: ownerId, note }, member.id, isOwn);
+      if (raise) raiseAttention(core, id, { to: ownerId, note }, member.id, isOwn);
     } catch (error) {
       warn(`skelcrew runner: card ${id}: ${note}; and could not say so: ${message(error)}`);
     }
@@ -520,16 +523,24 @@ export async function runPlaybook(input: RunInput): Promise<void> {
    *
    * `stop` is the exception the card cannot be read for: the claim is gone, so nothing is
    * released, but the card must not become ready again silently, so the run says why it
-   * stopped and leaves the card waiting on the owner.
+   * stopped and — unless someone else now holds the card — leaves it waiting on the owner.
    */
-  type Ending = { kind: "held" } | { kind: "stop"; note: string } | { kind: "gone" };
+  type Ending =
+    | { kind: "held" }
+    | { kind: "stop"; note: string; raise: boolean }
+    | { kind: "gone" };
   const ending = ((): Ending => {
     // The one thing the card cannot answer: what this run's own agent did. A card the agent
     // moved, released, or archived is reported on wherever it ended up — an agent that
     // bypassed its gate is an accountability record, and the state it left behind is its
-    // own doing, not evidence about who the card belongs to.
+    // own doing, not evidence about who the card belongs to. What the card can answer is
+    // whose queue a request would land in: once another member holds the claim, the record
+    // is still owed but the request is theirs to be spared — preventing an immediate
+    // re-dispatch is what it was for, and their claim already does that.
     if (selfAction !== undefined) {
-      return { kind: "stop", note: `run failed: the agent ${selfAction}` };
+      const atEnd = core.getCard(id);
+      const takenOver = atEnd.claim !== null && atEnd.claim.by !== member.id;
+      return { kind: "stop", note: `run failed: the agent ${selfAction}`, raise: !takenOver };
     }
     if (input.lost() === undefined) return { kind: "held" };
     const atEnd = core.getCard(id);
@@ -539,7 +550,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     const free =
       atEnd.claim === null && atEnd.archivedAt === null && atEnd.phase === card.phase && !movedAway;
     if (free && releasedBy !== undefined) {
-      return { kind: "stop", note: `run stopped: released by ${releasedBy}` };
+      return { kind: "stop", note: `run stopped: released by ${releasedBy}`, raise: true };
     }
     return { kind: "gone" };
   })();
@@ -547,7 +558,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   // visible on the card, or it happened invisibly.
   if (ending.kind === "stop") {
     flushTools(true);
-    stopWith(ending.note);
+    stopWith(ending.note, ending.raise);
     return;
   }
 

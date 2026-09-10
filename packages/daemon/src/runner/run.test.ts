@@ -995,6 +995,59 @@ test("an agent that archives its own card fails the run: the comment lands, no r
   expect(warnings.filter((line) => line.includes("could not say so"))).toHaveLength(1);
 });
 
+test("an agent that releases its own card, on a card another member then claims: the failure is a comment and nothing more", async () => {
+  await initRepo();
+  const driver = endless();
+  start({ driver: driver.driver });
+  core.createCard({ title: "Self release, taken over" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working…"));
+  core.moveCard(1, "spec", owner.id);
+  await working;
+  const failed = untilEvent(commentContaining(1, "run failed"));
+  core.releaseCard(1, { reason: "done, I think" }, runnerMember.id);
+  // The owner takes the card over before the run's abort finishes: what the agent did is
+  // still the run's to record, but the owner's queue is not the run's to write to.
+  core.claimCard(1, {}, owner.id);
+  await failed;
+  await Bun.sleep(300);
+
+  expect(driver.aborted()).toBe(true);
+  const card = core.getCard(1);
+  expect(comments(1).filter((c) => c.startsWith("run "))).toEqual([
+    "run failed: the agent released its own card (done, I think)",
+  ]);
+  expect(card.attention).toBeNull();
+  expect(events.filter((e) => e.cardId === 1 && e.type === "attention_requested")).toEqual([]);
+  expect(card.claim?.by).toBe(owner.id);
+});
+
+test("an agent that moves its own card, on a card another member then claims: the failure is a comment and nothing more", async () => {
+  await initRepo();
+  const driver = endless();
+  start({ driver: driver.driver });
+  core.createCard({ title: "Self move, taken over" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working…"));
+  core.moveCard(1, "code", owner.id);
+  await working;
+  const failed = untilEvent(commentContaining(1, "run failed"));
+  // The agent's `skelcrew mv 1 spec`: the claim holder may leave Code. The owner then
+  // claims the card where it landed.
+  core.moveCard(1, "spec", runnerMember.id);
+  core.claimCard(1, {}, owner.id);
+  await failed;
+  await Bun.sleep(300);
+
+  expect(driver.aborted()).toBe(true);
+  const card = core.getCard(1);
+  expect(comments(1).filter((c) => c.startsWith("run "))).toEqual([
+    "run failed: the agent moved its own card (to spec)",
+  ]);
+  expect(card.attention).toBeNull();
+  expect(events.filter((e) => e.cardId === 1 && e.type === "attention_requested")).toEqual([]);
+  expect(card.phase).toBe("spec");
+  expect(card.claim?.by).toBe(owner.id);
+});
+
 test("the owner releasing a running card stops the run and the card waits on them: `run stopped: released by <name>`", async () => {
   await initRepo();
   const driver = endless();
