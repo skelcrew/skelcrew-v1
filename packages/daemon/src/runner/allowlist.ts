@@ -128,6 +128,13 @@ export function editsIn(worktreePath: string): string {
  * choosing. Both forms are named because both are what the spec names; each already covers
  * the other under the harness's gitignore matching, which is belt and braces rather than a
  * mistake.
+ *
+ * Two limits belong on the record rather than in a claim. A deny rule spelled `Edit` covers
+ * every tool that edits a file and `NotebookEdit` besides, but it does not block *reading* the
+ * path — reading a ref was never the problem, writing one was. And the harness applies these
+ * rules to the file commands it recognises inside Bash and to the targets of shell
+ * redirections, but not to a subprocess that opens files itself; no entry on this list starts
+ * one, and any command that would asks.
  */
 export function deniedTools(worktreePath: string): string[] {
   return [`Edit(${anchor(worktreePath)}/.git)`, `Edit(${anchor(worktreePath)}/.git/**)`];
