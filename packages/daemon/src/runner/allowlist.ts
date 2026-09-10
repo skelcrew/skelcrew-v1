@@ -355,6 +355,13 @@ export interface RunAllowlist {
   tools: string[];
   /** Deny rules, which outrank every entry in `tools`. */
   denied: string[];
+  /**
+   * What the scan did, as one clause for the run-start comment. A repository that documents
+   * nothing and a repository whose base the scan could not read leave the same list, and the
+   * owner cannot tell them apart from the card otherwise — while under the second the agent
+   * asks for the repository's own check command on every run, with nothing saying why.
+   */
+  scanned: string;
 }
 
 /**
@@ -399,7 +406,7 @@ export interface RunAllowlist {
  * the floor, and the agent asks.
  */
 export async function allowlistFor(
-  git: Pick<Git, "showFile">,
+  git: Pick<Git, "showFile" | "revParse">,
   repoRoot: string,
   defaultBranch: string,
   worktreePath: string,
@@ -408,20 +415,38 @@ export async function allowlistFor(
   const denied = deniedTools(worktreePath);
   const narrowed = narrowedCommands();
   const base = scanBase(defaultBranch);
+  let reachable = false;
+  try {
+    reachable = (await git.revParse(repoRoot, base)) !== undefined;
+  } catch {
+    // A git that cannot run at all: the scan contributes nothing and the run goes on.
+  }
+  if (!reachable) {
+    return { tools, denied, scanned: `no ${base}: the repository's own commands will ask` };
+  }
+  const lines: string[] = [];
   for (const name of INSTRUCTION_FILES) {
     let text: string | undefined;
     try {
       text = await git.showFile(repoRoot, base, name);
     } catch {
-      // A git that cannot run at all: the scan contributes nothing and the run goes on.
       continue;
     }
     if (text === undefined) continue;
     for (const line of scanInstructions(text)) {
       if (narrowed.has(firstWord(line))) continue;
       const entry = `Bash(${line} *)`;
-      if (!tools.includes(entry)) tools.push(entry);
+      if (tools.includes(entry)) continue;
+      tools.push(entry);
+      lines.push(line);
     }
   }
-  return { tools, denied };
+  return {
+    tools,
+    denied,
+    scanned:
+      lines.length === 0
+        ? "the repository's instructions name no commands: they will ask"
+        : `pre-allowed from the repository's instructions: ${lines.join(", ")}`,
+  };
 }

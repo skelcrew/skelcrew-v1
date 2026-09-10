@@ -299,6 +299,11 @@ async function list(): Promise<string[]> {
   return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree())).tools;
 }
 
+/** The clause the run-start comment carries about the scan. */
+async function scanNote(): Promise<string> {
+  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree())).scanned;
+}
+
 /** The fixed list plus the run's own anchored file-tool entry: what the scan adds to. */
 function floor(): string[] {
   return [...FIXED_ALLOWLIST, editsIn(worktree())];
@@ -457,4 +462,29 @@ test("a default branch with no remote-tracking head contributes nothing rather t
   await commit("AGENTS.md", "```\nbun run check\n```\n");
   const list = await allowlistFor(git, repo, "no-such-branch", worktree());
   expect(list.tools).toEqual(floor());
+});
+
+// --- what the run-start comment says the scan did ---
+
+/**
+ * "This repository documents nothing" and "the scan found no base to read" leave the same
+ * list, and the owner cannot tell them apart from the card otherwise — while under the second
+ * the agent asks for the repository's own check command on every run.
+ */
+test("a repository whose instructions the scan could not reach says so, naming the ref", async () => {
+  const list = await allowlistFor(git, repo, "no-such-branch", worktree());
+  expect(list.scanned).toBe(
+    "no refs/remotes/origin/no-such-branch: the repository's own commands will ask",
+  );
+});
+
+test("a repository that documents no command says that, rather than nothing", async () => {
+  expect(await scanNote()).toBe("the repository's instructions name no commands: they will ask");
+});
+
+test("a repository that documents its check command has it named on the card", async () => {
+  await commit("AGENTS.md", "```\nbun run check\n```\n\n```\nbun test\n```\n");
+  expect(await scanNote()).toBe(
+    "pre-allowed from the repository's instructions: bun run check, bun test",
+  );
 });

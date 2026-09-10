@@ -308,7 +308,7 @@ export function startRunner(options: RunnerOptions): Runner {
       const logPath = createRunLog(dataDir, id, now());
       core.comment(
         id,
-        `worktree ready at ${path} on ${branch} (from ${base.name}); run log at ${logPath}`,
+        `worktree ready at ${path} on ${branch} (from ${base.name}); ${allowlist.scanned}; run log at ${logPath}`,
         member.id,
       );
       step = "run playbook";

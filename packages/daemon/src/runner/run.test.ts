@@ -1026,6 +1026,40 @@ test("an instruction file a run writes grants nothing to it or to the next run",
 });
 
 /**
+ * A repository that documents nothing and a repository the scan could not read leave the same
+ * list, so the run-start comment says which it was. Under the second the agent asks for the
+ * repository's own check command on every run, and the owner would otherwise have nothing on
+ * the card to explain it.
+ */
+test("the run-start comment says what the repository's instructions pre-allowed", async () => {
+  await initRepoWithOrigin("# Repo\n\n```\nbun run check\n```\n");
+  start({
+    driver: fakeDriver(async function* () {
+      yield { type: "result", ok: true };
+    }),
+  });
+  const id = await runCard("Reads the conventions");
+  expect(comments(id)[0]).toContain(
+    "pre-allowed from the repository's instructions: bun run check",
+  );
+});
+
+test("the run-start comment says when the scan had no base to read, and names the ref", async () => {
+  await initRepo();
+  start({
+    driver: fakeDriver(async function* () {
+      yield { type: "result", ok: true };
+    }),
+  });
+  const id = await runCard("No origin at all");
+  expect(comments(id)[0]).toContain(
+    "no refs/remotes/origin/main: the repository's own commands will ask",
+  );
+  // And the log path is still where it was: the clause goes before it, not after.
+  expect(logPathFrom(comments(id)[0] as string)).toEndWith(".jsonl");
+});
+
+/**
  * Criterion 10b's last clause, as the chain a run would really walk. Every step here is a
  * command the list pre-allows, and the last one — the write that would put a sha the run
  * authored into the ref its successor's scan reads — must not be. `git rev-parse` is on the
