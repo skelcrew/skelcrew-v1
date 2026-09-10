@@ -152,9 +152,24 @@ match `bun -e '<any code>'` — arbitrary execution, unprompted — and the equi
 influenced entry the loosest in the list, three paragraphs after the spec explains why
 `Bash(git *)` is intolerable for exactly that reason.
 
+**A scanned line is a literal command, never a pattern.** The harness compiles `*` in a rule to
+`.*`, so any metacharacter surviving into the entry is a wildcard the repository chose. A line
+containing an unescaped `*`, `?` or `[` anywhere therefore contributes nothing — or is escaped
+before it becomes an entry. Checking only the line's first word is not enough: a fenced `bun *`
+yields `Bash(bun * *)`, which matches `bun -e '<any code>'`, and `make *` yields
+`Bash(make * *)`, which matches `make -f /tmp/evil.mk all`. Both run unprompted.
+
 A scanned line must also look like a command: if its first word is not a plain command word
-(letters, digits, `.`, `_`, `/`, `-`), the block contributes nothing. Otherwise a block opening
-with `*` yields a pattern the harness compiles to "every command containing a space".
+(letters, digits, `.`, `_`, `/`, `-`), the block contributes nothing.
+
+**The scan reads the instruction files as of the run's base commit, not the working tree.**
+`Write` and `Edit` are on the fixed list and are not path-constrained, so an agent can write a
+fenced block into the repository's own `AGENTS.md` — a single unprompted `Write`, visible on the
+card only inside a batched tool summary — and thereby pre-allow a command for every later run.
+That is a run widening its own successor's boundary, which defeats the gate this spec exists to
+build. Reading the file from the base commit (`git show <base>:AGENTS.md`) means only a change
+the owner has already merged can grant anything; a file that is untracked, or modified relative
+to the base, contributes nothing.
 
 **A scanned command may not widen a command the fixed list narrows.** `skelcrew`, `git` and `gh`
 are narrowed above; a repo whose instructions show `git status` must not thereby produce
@@ -187,6 +202,10 @@ any repo documenting a git command triggers it.
    `bun -e '…'` therefore still asks. A repository with neither instruction file yields exactly
    the fixed list; a fenced block in another language, and one whose first word is not a plain
    command word, each contribute nothing.
+10a. A fenced block whose line contains an unescaped `*`, `?` or `[` contributes nothing: a repo
+    containing `bun *` does not pre-allow `bun -e '…'`. A fenced block written into the working
+    tree during a run, or present only as an uncommitted change, contributes nothing to that run
+    or to the next one — only the base commit's instruction files are read.
 10. A target repository whose instructions show `git status`, `gh pr view` or a `skelcrew`
     command in a fenced block does **not** cause `Bash(git *)`, `Bash(gh *)` or
     `Bash(skelcrew *)` to appear in the resulting list.
