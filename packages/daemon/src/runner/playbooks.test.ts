@@ -42,14 +42,17 @@ test("both playbooks tell the agent to ask rather than guess, with skelcrew atte
 
 /**
  * The paragraphs a playbook's commands are not read from. Criterion 11 is about the commands a
- * playbook *instructs*, and these two say something else: the paragraph advertising what needs
- * no asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
- * prove the list matches its own restatement; and the paragraph forbidding commands names
- * `git commit --no-verify`, which the playbook exists to rule out, not to run.
+ * playbook *instructs*, and these say something else: the paragraph advertising what needs no
+ * asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
+ * prove the list matches its own restatement; the paragraph forbidding commands names
+ * `git commit --no-verify`, which the playbook exists to rule out, not to run; and the
+ * paragraph recording what a subprocess reaches names the five verbs the list withholds, which
+ * is the opposite of instructing them.
  */
 const NOT_INSTRUCTIONS = [
   "Pre-allowed, so they run unprompted:",
   "Reading the repository with git",
+  "Those check commands are a subprocess",
   "Three rules the list cannot enforce",
   "**Never ",
 ];
@@ -160,6 +163,25 @@ test("the Code playbook says the read-only git verbs go through the harness's ow
     expect(paragraph).toContain(`\`git ${verb}\``);
   }
   expect(paragraph).toContain("--output");
+});
+
+/**
+ * Criterion 10f. The pre-allowed check command is a subprocess, and no rule in the allowlist
+ * reaches inside one — so the verbs the CLI group withholds are reachable anyway, and an agent
+ * told the list is a boundary has been told something false. The assertion is the record and the
+ * list agreeing rather than the record's prose: each verb the playbook names as reachable has to
+ * be one the list really does withhold, so an entry added for one of them later fails here
+ * instead of leaving the paragraph quietly wrong.
+ */
+test("the Code playbook records what a subprocess reaches, naming the withheld verbs", () => {
+  const code = loadPlaybooks().code;
+  const at = code.indexOf("Those check commands are a subprocess");
+  expect(at).toBeGreaterThanOrEqual(0);
+  const paragraph = (code.slice(at).split("\n\n")[0] as string).replace(/\s+/g, " ");
+  for (const verb of ["mv", "claim", "release", "archive", "resolve"]) {
+    expect(paragraph).toContain(`skelcrew ${verb}`);
+    expect(FIXED_ALLOWLIST).not.toContain(`Bash(skelcrew ${verb} *)`);
+  }
 });
 
 test("an empty playbook is refused at load, naming the file", () => {
