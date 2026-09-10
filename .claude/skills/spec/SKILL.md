@@ -3,7 +3,7 @@ name: spec
 description: Turn a rough idea — or the number of a spec already planned in docs/MILESTONES.md — into an implementation-ready specification in docs/specs/. Investigates the repository first, resolves design decisions from context, asks only about choices that materially change behavior or scope, and stops without implementing anything.
 argument-hint: <NNN> | [the idea, in a sentence or two]
 disable-model-invocation: true
-allowed-tools: Read, Grep, Glob, Bash(git status), Bash(git log *), Bash(git diff *), Bash(ls *), Bash(rg *), Bash(find *), Bash(cat *), Bash(head *), Bash(sed -n *), Write, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Write, AskUserQuestion
 ---
 
 # Write a specification
@@ -133,6 +133,25 @@ What makes each section good here:
   `Bash(gh pr *)`) grants every verb beneath it, including the ones the spec's own gates exist
   to catch. Specify the verbs, and say explicitly what must ask. An implementer will write what
   you wrote; a boundary specified loosely here is a hole that survives review.
+
+  Two checks, both learned the expensive way — spec 013 took five review rounds and every
+  Critical was a hole in the spec, not in the code:
+
+  **A trailing wildcard is the command's entire flag surface, present and future.** `Bash(x *)`
+  grants every flag `x` has, so before writing one, enumerate them and name the ones that write
+  a file or run another program. `git log --output=<any path>` writes anywhere on disk, which
+  made a verb everyone reads as read-only into an arbitrary-write primitive. A prefix pattern
+  cannot exclude a flag, so if such a flag exists, the entry does not belong in that form.
+  Check also whether the enforcer already validates that command flag by flag: naming it
+  yourself may *replace* a curated check with "anything goes", in which case the safest entry
+  is no entry at all.
+
+  **Check each grant against every other grant on the same list, not only against itself.**
+  Four of 013's five escalations were compositions of individually reasonable grants: a
+  path-less `Write` beside `git rev-parse --git-common-dir` let a run forge the very ref its
+  successor read. Reasoning that enumerates one class of grant carefully and forgets the class
+  sitting next to it is the single most common way a boundary fails here. Ask what files each
+  grant can reach, what it can execute, and what the others make of that.
 - **Do not implement anything.** No source edits, no test files, no dependency changes. The
   only file you create is the spec.
 
