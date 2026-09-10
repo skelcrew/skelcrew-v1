@@ -2,7 +2,14 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { allowlistFor, allowsTool, deniedTools, editsIn, FIXED_ALLOWLIST } from "./allowlist";
+import {
+  allowlistFor,
+  allowsTool,
+  deniedTools,
+  editsIn,
+  FIXED_ALLOWLIST,
+  runsUnprompted,
+} from "./allowlist";
 import { createGit, type Git } from "./git";
 
 /** The list, entry by entry: a change to it is a change to what an agent may do unprompted. */
@@ -18,12 +25,6 @@ test("the fixed list is exactly what the spec names, in its order", () => {
     "Bash(skelcrew body *)",
     "Bash(skelcrew refs *)",
     "Bash(skelcrew attention *)",
-    "Bash(git status *)",
-    "Bash(git log *)",
-    "Bash(git diff *)",
-    "Bash(git show *)",
-    "Bash(git merge-base *)",
-    "Bash(git rev-parse *)",
     "Bash(git add *)",
     "Bash(git commit *)",
     "Bash(git push -u origin HEAD)",
@@ -47,6 +48,21 @@ test("no entry puts a wildcard before the subcommand", () => {
     expect(entry).not.toBe("Bash(gh *)");
     expect(entry).not.toBe("Bash(gh pr *)");
     expect(entry).not.toBe("Bash(skelcrew *)");
+  }
+});
+
+/**
+ * Criterion 10d's second clause. These six were on the list as wildcards until a review round
+ * proved `Bash(git log *)` an arbitrary-file-write primitive: `git log`, `git diff` and
+ * `git show` all take `--output=<any absolute path>`, and a trailing wildcard cannot exclude a
+ * flag. Deleting the entries is what closes it — the harness carries a per-subcommand safe-flag
+ * allowlist for exactly these verbs and `--output` is on none of them, so unlisted, the safe
+ * forms still run and `--output` asks.
+ */
+test("the six read-only git verbs are absent from the list, in every form", () => {
+  for (const verb of ["status", "log", "diff", "show", "merge-base", "rev-parse"]) {
+    expect(FIXED_ALLOWLIST).not.toContain(`Bash(git ${verb} *)`);
+    expect(FIXED_ALLOWLIST).not.toContain(`Bash(git ${verb})`);
   }
 });
 
@@ -112,6 +128,98 @@ test("a write outside the worktree is not pre-allowed, however near it sits", ()
 
 const bash = (command: string): [string, Record<string, unknown>] => ["Bash", { command }];
 
+/**
+ * Criterion 10d's first clause. `--output=<path>` makes `git log`, `git diff` and `git show`
+ * write any file the daemon's user can write, so no entry may pre-allow them — for a path under
+ * the git common directory, and equally for one inside the worktree, because the criterion is
+ * "not pre-allowed for any path" rather than "anchored like the file tools".
+ */
+test("git log, diff and show with --output are not pre-allowed, for any path", () => {
+  for (const verb of ["log", "diff", "show"]) {
+    for (const path of [
+      "/tmp/x",
+      `${WT}/x`,
+      "/repo/.git/config",
+      "/repo/.git/refs/remotes/origin/main",
+    ]) {
+      const command = `git ${verb} --output=${path}`;
+      expect([command, allowsTool("Bash", { command }, anchored, denied)]).toEqual([
+        command,
+        false,
+      ]);
+    }
+  }
+  // The two forms the escalations actually use, with the flags that make them work.
+  for (const command of [
+    "git log -1 --format=%H --output=/repo/.git/refs/remotes/origin/main",
+    "git log -1 --format=%B --output=/repo/.git/config",
+  ]) {
+    expect([command, allowsTool("Bash", { command }, anchored, denied)]).toEqual([command, false]);
+  }
+});
+
+/**
+ * The other half of criterion 10d, and the half the list alone cannot show: off the list, the
+ * decision moves to the harness's per-subcommand safe-flag check, and `--output` has to fail
+ * *there* too. `runsUnprompted` is the list plus that check.
+ */
+test("git log, diff and show with --output are not self-approved either, so they ask", () => {
+  for (const command of [
+    "git log --output=/tmp/x",
+    "git diff --output=/tmp/x",
+    "git show --output=/tmp/x",
+    `git log --output=${WT}/x`,
+    `git diff --output=${WT}/x`,
+    `git show --output=${WT}/x`,
+    "git log -1 --format=%H --output=/repo/.git/refs/remotes/origin/main",
+    "git log -1 --format=%B --output=/repo/.git/config",
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, anchored, denied)]).toEqual([
+      command,
+      false,
+    ]);
+  }
+});
+
+/**
+ * Criterion 10e: deleting the six entries must not make the playbooks ask. Each of these is
+ * absent from the list and still runs unprompted, through the harness's own read-only check —
+ * which is the whole reason deleting the entries is the safer choice rather than a cost.
+ */
+test("the six verbs' safe forms still run unprompted, through the harness's own check", () => {
+  for (const command of [
+    "git status",
+    "git status --porcelain",
+    "git log",
+    "git log --oneline",
+    "git log --oneline -5",
+    "git diff",
+    "git diff main",
+    "git show HEAD",
+    "git show 1a2b3c4",
+    "git merge-base main HEAD",
+    "git rev-parse HEAD",
+    "git rev-parse --git-common-dir",
+  ]) {
+    expect([command, "on the list", allowsTool("Bash", { command }, anchored, denied)]).toEqual([
+      command,
+      "on the list",
+      false,
+    ]);
+    expect([command, "unprompted", runsUnprompted("Bash", { command }, anchored, denied)]).toEqual([
+      command,
+      "unprompted",
+      true,
+    ]);
+  }
+});
+
+/** A deny rule outranks the harness's read-only self-approval, the way it outranks the list. */
+test("a denied call is not rescued by the read-only check", () => {
+  const command = "git status";
+  expect(runsUnprompted("Bash", { command }, anchored, ["Bash(git status *)"])).toBe(false);
+});
+
 test("every entry on the list matches the call it is there for", () => {
   const allowed: Array<[string, Record<string, unknown>]> = [
     ["Read", { file_path: "/repo/AGENTS.md" }],
@@ -124,12 +232,6 @@ test("every entry on the list matches the call it is there for", () => {
     bash("skelcrew body 1 --file spec.md"),
     bash("skelcrew refs 1 --pr https://example.invalid/pr/1"),
     bash("skelcrew attention 1 'which base branch?'"),
-    bash("git status --porcelain"),
-    bash("git log --oneline -5"),
-    bash("git diff main"),
-    bash("git show HEAD"),
-    bash("git merge-base main HEAD"),
-    bash("git rev-parse refs/heads/main"),
     bash("git add -A"),
     bash("git commit -m 'work'"),
     bash("git push -u origin HEAD"),
@@ -207,8 +309,8 @@ test("git branch is not on the list, in any form", () => {
 });
 
 test("a wildcard entry matches the whole subcommand it names, not a longer word", () => {
-  // `Bash(git log *)` covers `git log` and its arguments: `git logs` is neither.
-  expect(allowsTool(...bash("git logs --all"))).toBe(false);
+  // `Bash(git add *)` covers `git add` and its arguments: `git address` is neither.
+  expect(allowsTool(...bash("git address --all"))).toBe(false);
   expect(allowsTool(...bash("skelcrew showcase 1"))).toBe(false);
   // Every entry has the space before the `*`, including this one: `Bash(gh repo view*)`
   // would compile to `^gh repo view.*$`, a prefix with no separator.
@@ -217,9 +319,9 @@ test("a wildcard entry matches the whole subcommand it names, not a longer word"
 
 test("a wildcard entry covers the subcommand bare, the way the harness's comparator does", () => {
   // The harness compiles a rule ending in a single ` *` to `^<prefix>( .*)?$` — the
-  // arguments are optional — so `Bash(git log *)` covers a bare `git log` there too.
-  expect(allowsTool(...bash("git log"))).toBe(true);
-  expect(allowsTool(...bash("git status"))).toBe(true);
+  // arguments are optional — so `Bash(git add *)` covers a bare `git add` there too.
+  expect(allowsTool(...bash("git add"))).toBe(true);
+  expect(allowsTool(...bash("gh pr view"))).toBe(true);
 });
 
 test("a Bash call without a string command is not allowed", () => {

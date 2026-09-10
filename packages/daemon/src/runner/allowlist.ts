@@ -6,9 +6,12 @@
  * here: it self-approves a set of read-only Bash commands, it allows outright any tool that
  * defines no permission check of its own, and it reads a wildcard entry as covering
  * `xargs <that command>` as well. So this list is not the complete set of what runs
- * unprompted. `entryMatches` below records every divergence in full, and which class each is.
+ * unprompted. `entryMatches` below records every divergence in full, and which class each is;
+ * `selfApprovedReadOnlyGit` models the first of them for the git verbs this list stopped
+ * naming, because that one is now load-bearing rather than merely recorded.
  *
- * Six rules shape it, each from a defect this project shipped:
+ * Eight rules shape it, each from a defect this project shipped or a review round that found
+ * one:
  *
  * 1. **The wildcard goes after the subcommand, never before it.** `Bash(x *)` is wildcard
  *    matching — every command beginning with `x ` — so `Bash(git *)` would pre-allow `git
@@ -19,12 +22,35 @@
  *    Each git verb is listed separately for that reason, and so is each `gh pr` verb:
  *    `Bash(gh pr *)` would pre-allow `gh pr merge` and `gh pr close`, and unlike a card move
  *    the daemon can neither detect nor undo a merge.
- * 2. **The CLI is allowed verb by verb.** `mv`, `claim`, `release`, `archive` and `resolve`
+ * 2. **A trailing wildcard is not a boundary; it is the command's entire flag surface.**
+ *    `Bash(x *)` grants every flag `x` has, present and future, the ones that write files and
+ *    run other programs included. Four review rounds found four escalations and every one was
+ *    this: `gh pr *` reaching `merge`, `git *` reaching `push` and `-c`, a bare `Write`
+ *    reaching a ref file, and `git log *` reaching `--output`. So before an entry is written as
+ *    `x *`, `x`'s flag set is enumerated and its write-capable and exec-capable flags named; if
+ *    they cannot be excluded — and a prefix pattern cannot exclude a flag — the entry does not
+ *    belong on the list in that form. The audit for each surviving entry is below.
+ * 3. **The read-only git verbs are not listed at all, and that is the safer choice.**
+ *    `git status`, `git log`, `git diff`, `git show`, `git merge-base` and `git rev-parse` were
+ *    here as wildcards until `Bash(git log *)` proved an arbitrary-file-write primitive:
+ *    `git log`, `git diff` and `git show` all take `--output=<any absolute path>`, so
+ *    `git log -1 --format=%H --output=<common>/refs/remotes/origin/main` forges the very ref
+ *    the scan reads, and the same flag rewrites `.git/config` so the pre-allowed bare
+ *    `git push` lands on the default branch. Both were reproduced end to end against git
+ *    2.48.1, and rule 2 says there was no narrower wildcard to write. What closes it is
+ *    deleting the entries: the harness carries a per-subcommand safe-flag allowlist for exactly
+ *    these six verbs and self-approves a call only when every flag is on it, and `--output` is
+ *    on none of them — so an explicit `Bash(git log *)` rule *bypassed* that validator, having
+ *    replaced a curated flag allowlist with "any flag at all". Unlisted, the safe forms still
+ *    run unprompted and `--output` asks. Both halves were checked against the shipped binary:
+ *    its allow-rule layer runs *before* its read-only self-approval, and its deny rules before
+ *    both. See `SAFE_GIT_FLAGS`.
+ * 4. **The CLI is allowed verb by verb.** `mv`, `claim`, `release`, `archive` and `resolve`
  *    are absent deliberately: they would let the agent move its own card past the runner's
  *    artefact check, or answer its own question. They ask.
- * 3. **`push` is allowed only in the exact form the playbook runs**, and its bare follow-up,
+ * 5. **`push` is allowed only in the exact form the playbook runs**, and its bare follow-up,
  *    so any other refspec — and any force push — asks.
- * 4. **The scan grants the command line it found, not its first word, and may not widen a
+ * 6. **The scan grants the command line it found, not its first word, and may not widen a
  *    command the fixed list narrows.** `bun run check` yields `Bash(bun run check *)`, never
  *    `Bash(bun *)` — which would match `bun -e '<any code>'`, and the same holds for `node -e`,
  *    `python -c`, `npm` and `make`. This entry is derived from a file the *target repository*
@@ -32,15 +58,15 @@
  *    For the same reason a scanned line is a literal command and never a pattern: a fenced
  *    `bun *` would otherwise yield `Bash(bun * *)`, which the harness's own matcher expands
  *    back into `bun -e '<any code>'`. See `PATTERN_CHARS` and `allowlistFor` below.
- * 5. **No entry writes a ref the next run reads.** `git branch` is absent: branch refs live in
+ * 7. **No entry writes a ref the next run reads.** `git branch` is absent: branch refs live in
  *    `refs/heads/` and are *shared* by the main checkout and every linked worktree, so a run
  *    that can create, rename or repoint a branch changes the owner's repository rather than
  *    its own scratch copy — and can point the name its successor's base resolves from at a
  *    commit it wrote itself, instruction file included. No playbook runs `git branch`; a
  *    read-only use of it asks. `allowlistFor` closes the same hole from the other side.
- * 6. **The file tools are anchored to the run's own worktree.** Choosing a ref the list cannot
+ * 8. **The file tools are anchored to the run's own worktree.** Choosing a ref the list cannot
  *    write is not enough while a file tool is on the list bare: a ref is a plain file, and
- *    `git rev-parse --git-common-dir` — pre-allowed — names the directory holding it, so a run
+ *    `git rev-parse --git-common-dir` — unprompted — names the directory holding it, so a run
  *    could commit an instruction file and then write the sha into
  *    `refs/remotes/origin/<default>` itself. The same unqualified write reaches `.git/config`,
  *    where one `remote.origin.push` line turns the pre-allowed bare `git push` into a push to
@@ -48,17 +74,58 @@
  *    `editsIn(<its worktree>)` instead, with `deniedTools(<its worktree>)` denying the `.git`
  *    file that says which git directory the worktree belongs to. See those two below.
  *
+ * **The flag audit rule 2 requires, entry by entry**, against git 2.48.1 and gh 2.86.0. What
+ * was looked for is the `--output` class: a flag whose *argument* names a file to write or a
+ * program to run. None was found on any surviving entry.
+ *
+ * - `Bash(git add *)` — no flag writes a file it is given. `-e`, `-p` and `-i` open the diff in
+ *   an editor and so run a program, but the program is `GIT_EDITOR`/`core.editor`, never named
+ *   in the command; env and config are both out of reach (an env-prefixed command does not
+ *   match the entry, `git config` is not listed, and the config file is outside the anchor).
+ *   `--pathspec-from-file=<file>` reads a file — see the record below.
+ * - `Bash(git commit *)` — same shape. `-e` and `-t <file>` reach the editor, `-S` reaches
+ *   `gpg.program`; hooks run from `<common>/hooks` (checked: a linked worktree's
+ *   `--git-path hooks` resolves into the *common* directory, outside the anchor) or
+ *   `core.hooksPath`, which is config. `-F <file>` and `-t <file>` read a file. `--no-verify`
+ *   is the recorded limitation below.
+ * - `Bash(git push -u origin HEAD)` and `Bash(git push)` carry no wildcard at all.
+ * - `Bash(gh pr create *)`, `Bash(gh pr view *)`, `Bash(gh pr diff *)`, `Bash(gh pr comment *)`,
+ *   `Bash(gh repo view *)` — no flag writes a file. `--web` opens a browser and `-e/--editor`
+ *   an editor, both named by `GH_BROWSER`/`GH_EDITOR` or gh's config, not by the command.
+ *   `--jq` and `--template` are gojq and Go text/template over gh's own JSON: no file, no exec.
+ *   `-F/--body-file`, `-T/--template <file>` and `--recover <file>` read a file. gh's config
+ *   (`$GH_CONFIG_DIR`, else `~/.config/gh`) is outside the anchor, and its shell aliases cannot
+ *   shadow a real command, so `gh pr …` cannot be redefined. `-R/--repo` is recorded below.
+ * - `Bash(skelcrew show|comment|body|refs|attention *)` — this CLI. `body --file <path>` reads a
+ *   file; nothing writes one or starts a program. `--as <member>` is recorded below.
+ *
  * What the list deliberately does not close, recorded rather than discovered:
- * `Bash(git commit *)` permits `--no-verify`, which skips the target repository's hooks (the
- * playbooks forbid it; a prefix pattern cannot); and `Bash(git push)` is only as narrow as the
- * config that governs it — under a repo-level `push.default = matching` it can push more than
- * the card's branch, and `remote.origin.push`, which outranks `push.default`, could turn it
- * into a push to the default branch. Both settings live in the git common directory, which
- * rule 6's anchor puts out of reach; if that anchoring is ever removed, this entry stops being
- * narrow. Nothing here sandboxes the agent: the list governs what runs **unprompted**, and
- * everything else remains available by asking. This is a gate, not a jail — anchoring the file
- * tools decides which writes ask, and denies only the one path whose whole purpose is to
- * redirect the others.
+ *
+ * - `Bash(git commit *)` permits `--no-verify`, which skips the target repository's hooks. The
+ *   playbooks forbid it; a prefix pattern cannot.
+ * - `Bash(git push)` is only as narrow as the config that governs it — under a repo-level
+ *   `push.default = matching` it can push more than the card's branch, and `remote.origin.push`,
+ *   which outranks `push.default`, could turn it into a push to the default branch. Both
+ *   settings live in the git common directory, which rule 8's anchor puts out of reach; if that
+ *   anchoring is ever removed, this entry stops being narrow.
+ * - **Listed commands do read files the run names.** `git commit -F/-t`, `git add
+ *   --pathspec-from-file`, `gh pr create -F/-T/--recover`, `gh pr comment -F` and
+ *   `skelcrew body --file` all open a path the command chose, and the harness's Read rules do
+ *   not reach a subprocess opening a file itself. So `git commit -F /etc/passwd` puts that file
+ *   in a commit message unprompted. This spec's boundary is about writes; the read is recorded.
+ * - **Flags that start a program named elsewhere.** `git add -e/-p/-i`, `git commit -e/-S` and
+ *   every gh `--web`/`--editor` run an editor, browser or signing program. None takes the
+ *   program from the command, and neither env nor config is reachable from this list, so no
+ *   sequence here chooses what runs — but the flags are on the entries, so they are recorded.
+ * - **`-R/--repo` on the gh entries** targets another repository: `gh pr create -R other/repo`
+ *   opens a pull request outside the card's repo. Neither a write nor an exec, and the same
+ *   class as the carried limitation that a run can write to another card.
+ * - **`--as <member>` on the skelcrew entries** speaks as another member. `resolve` is off the
+ *   list, so a run still cannot answer its own question; the same carried limitation.
+ * - Nothing here sandboxes the agent: the list governs what runs **unprompted**, and everything
+ *   else remains available by asking. This is a gate, not a jail — anchoring the file tools
+ *   decides which writes ask, and denies only the one path whose whole purpose is to redirect
+ *   the others.
  */
 import { resolve } from "node:path";
 import type { Git } from "./git";
@@ -74,12 +141,6 @@ export const FIXED_ALLOWLIST: readonly string[] = [
   "Bash(skelcrew body *)",
   "Bash(skelcrew refs *)",
   "Bash(skelcrew attention *)",
-  "Bash(git status *)",
-  "Bash(git log *)",
-  "Bash(git diff *)",
-  "Bash(git show *)",
-  "Bash(git merge-base *)",
-  "Bash(git rev-parse *)",
   "Bash(git add *)",
   "Bash(git commit *)",
   "Bash(git push -u origin HEAD)",
@@ -133,8 +194,10 @@ export function editsIn(worktreePath: string): string {
  * every tool that edits a file and `NotebookEdit` besides, but it does not block *reading* the
  * path — reading a ref was never the problem, writing one was. And the harness applies these
  * rules to the file commands it recognises inside Bash and to the targets of shell
- * redirections, but not to a subprocess that opens files itself; no entry on this list starts
- * one, and any command that would asks.
+ * redirections, but not to a subprocess that opens files itself — and the flag audit above
+ * found several listed commands that do (`git commit -F`, `gh pr create -T`, `skelcrew body
+ * --file`), all of them reading rather than writing. None of them writes a path it is given,
+ * which is what this deny rule and the anchor above are for.
  */
 export function deniedTools(worktreePath: string): string[] {
   return [`Edit(${anchor(worktreePath)}/.git)`, `Edit(${anchor(worktreePath)}/.git/**)`];
@@ -187,7 +250,7 @@ function coversPath(content: string, path: string): boolean {
  *   uses shell operators that require approval for safety"), and a list or pipeline is split
  *   into its parts, each matched against the rules on its own — allowed only if every part
  *   is. A whole compound command matches a rule only when the rule's content is that command
- *   exactly. So `git status && <anything>` is not covered by `Bash(git status *)` there,
+ *   exactly. So `git add -A && <anything>` is not covered by `Bash(git add *)` there,
  *   while a plain prefix comparison says it is; and a scanned entry that happens to contain
  *   `&&` grants nothing its parts do not already grant. The model erring wide only makes the
  *   assertions above stricter about what the list may hold.
@@ -203,8 +266,8 @@ function coversPath(content: string, path: string): boolean {
  *   in what a *listed entry* matches. Having failed to match a wildcard allow rule against the
  *   command, it retries the pattern with `xargs ` in front whenever the pattern ends in an
  *   unescaped `*` — `LV("xargs " + pattern, command)` in the shipped binary, guarded by a
- *   predicate that is exactly "ends in an unescaped star" — so `Bash(git status *)` also allows
- *   `xargs git status -s` there and asks here. Checked entry by entry, it grants nothing
+ *   predicate that is exactly "ends in an unescaped star" — so `Bash(git add *)` also allows
+ *   `xargs git add` there and asks here. Checked entry by entry, it grants nothing
  *   further under this list: the alias still runs the command the entry names, with words
  *   appended from stdin, and the entry's own trailing `*` already allows any arguments. The
  *   two entries where an alias would matter — `Bash(git push -u origin HEAD)` and
@@ -213,7 +276,9 @@ function coversPath(content: string, path: string): boolean {
  *   in what a *listed tool's arguments* may be. Rather than asking about a command in its own
  *   fixed read-only set — `ls`, `cat`, `head`, `wc`, `grep`, `find` without `-exec` and the
  *   like — it allows it, so those never reach `canUseTool` any more than a listed command
- *   does.
+ *   does. That set includes the six git verbs rule 3 took off this list, judged flag by flag
+ *   against `SAFE_GIT_FLAGS`; `runsUnprompted` below is `allowsTool` plus that check, and it is
+ *   what "runs without asking" means once rule 3 applies.
  * - **A tool that defines no permission check of its own is allowed outright** — a divergence
  *   in *which tools* run unprompted. The harness's tool builder falls back to a default
  *   descriptor whose check resolves `{behavior:"allow"}`, so such a tool never reaches
@@ -261,6 +326,121 @@ export function allowsTool(
   return list.some((entry) => entryMatches(entry, tool, input));
 }
 
+/**
+ * The harness's own safe-flag allowlist for the six read-only git verbs this list does not
+ * name, read out of the shipped Claude Code binary the SDK spawns (`SZe`, version 2.1.266) and
+ * transcribed whole. The harness self-approves a git command as read-only only when its verb is
+ * a key here and every flag it carries is in that key's set; `--output` is in none of them,
+ * which is what makes deleting the six entries close the hole rather than merely move it.
+ */
+const SAFE_GIT_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  (
+    [
+      [
+        "status",
+        `--ahead-behind --branch --column --find-renames --ignore-submodules --ignored --long
+         --no-ahead-behind --no-column --no-renames --porcelain --renames --short
+         --untracked-files --verbose -M -b -s -u -v`,
+      ],
+      [
+        "log",
+        `--abbrev-commit --after --all --ancestry-path --author --author-date-order --before
+         --boundary --branches --cherry-mark --cherry-pick --color --committer --date
+         --date-order --decorate --dense --diff-filter --first-parent --follow --format
+         --full-history --graph --grep --left-right --max-age --max-count --merges --min-age
+         --name-only --name-status --no-color --no-decorate --no-ext-diff --no-max-parents
+         --no-merges --no-min-parents --no-patch --no-walk --numstat --oneline --patch
+         --pickaxe-all --pickaxe-regex --pretty --relative-date --remotes --reverse --shortstat
+         --simplify-merges --since --skip --source --sparse --stat --tags --topo-order --until
+         --walk-reflogs -G -S -n -p -s`,
+      ],
+      [
+        "diff",
+        `--abbrev --binary --break-rewrites --cached --check --color --color-words
+         --diff-algorithm --diff-filter --dirstat --exit-code --find-copies --find-copies-harder
+         --find-renames --full-index --function-context --histogram --ignore-all-space
+         --ignore-blank-lines --ignore-space-at-eol --ignore-space-change --inter-hunk-context
+         --irreversible-delete --minimal --name-only --name-status --no-color --no-ext-diff
+         --no-index --no-renames --numstat --patch-with-stat --patience --pickaxe-all
+         --pickaxe-regex --quiet --relative --shortstat --staged --stat --summary --word-diff
+         --word-diff-regex --ws-error-highlight -B -C -D -G -M -O -R -S -l -p -s -u`,
+      ],
+      [
+        "show",
+        `--abbrev-commit --color --color-words --date --decorate --diff-filter --first-parent
+         --format --graph --name-only --name-status --no-color --no-decorate --no-ext-diff
+         --no-patch --numstat --oneline --patch --pretty --quiet --raw --relative-date
+         --shortstat --stat --word-diff --word-diff-regex -m -p -s`,
+      ],
+      ["merge-base", "--all --fork-point --independent --is-ancestor --octopus"],
+      [
+        "rev-parse",
+        `--abbrev-ref --absolute-git-dir --git-common-dir --git-dir --is-bare-repository
+         --is-inside-git-dir --is-inside-work-tree --is-shallow-repository --is-shallow-update
+         --path-prefix --short --show-cdup --show-prefix --show-superproject-working-tree
+         --show-toplevel --symbolic --symbolic-full-name --verify`,
+      ],
+    ] as const
+  ).map(([verb, flags]) => [verb, new Set(flags.trim().split(/\s+/))]),
+);
+
+/** A word the harness reads as a flag rather than as an argument (`Om` in the binary). */
+const FLAG_WORD = /^-[A-Za-z0-9_-]/;
+
+/**
+ * Whether the harness self-approves this command as read-only with no rule saying so — the
+ * divergence `entryMatches` records, modelled for the six git verbs the fixed list stopped
+ * naming, because criteria 10d and 10e are about exactly that boundary.
+ *
+ * It diverges from the harness in two known places, in opposite directions, and neither reaches
+ * an assertion. **Narrower**: a command carrying a shell operator is refused outright rather
+ * than split into parts and judged part by part, so `git status && ls` is self-approved there
+ * and not here. **Wider**: `nBe`'s value rules — a `"none"` flag may not carry `=`, a
+ * value-taking flag must have a value and it may not itself look like a flag — are not
+ * modelled, so `git show --format` and `git status --short=x` are refused there and allowed
+ * here. That second direction is the one a "this asks" assertion cannot afford, which is why
+ * every such assertion here names `--output`, a flag absent from the harness's tables
+ * altogether; and every "runs unprompted" assertion was run against the extracted validator
+ * itself before it was written down.
+ */
+function selfApprovedReadOnlyGit(command: string): boolean {
+  if (/[&|;<>()`$\n]/.test(command)) return false;
+  const words = command.trim().split(/\s+/);
+  if (words[0] !== "git") return false;
+  const flags = SAFE_GIT_FLAGS.get(words[1] ?? "");
+  if (flags === undefined) return false;
+  for (const word of words.slice(2)) {
+    if (word === "--") break;
+    if (!FLAG_WORD.test(word)) continue;
+    // `git log -5`: the harness lets a bare `-<number>` through for git whatever the verb.
+    if (/^-\d+$/.test(word)) continue;
+    const name = word.includes("=") ? (word.split("=")[0] as string) : word;
+    if (flags.has(name)) continue;
+    // A bundle of one-letter flags is read letter by letter, as the harness reads it.
+    const bundled = !name.startsWith("--") && name.length > 2;
+    if (bundled && [...name.slice(1)].every((letter) => flags.has(`-${letter}`))) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Whether this call runs without reaching the run's `canUseTool` at all: the list, plus the
+ * harness's own read-only self-approval for the git verbs the list deliberately does not name.
+ */
+export function runsUnprompted(
+  tool: string,
+  input: Record<string, unknown>,
+  list: readonly string[] = FIXED_ALLOWLIST,
+  denied: readonly string[] = [],
+): boolean {
+  if (denied.some((entry) => entryMatches(entry, tool, input))) return false;
+  if (list.some((entry) => entryMatches(entry, tool, input))) return true;
+  return tool === "Bash" && typeof input.command === "string"
+    ? selfApprovedReadOnlyGit(input.command)
+    : false;
+}
+
 /** The target repository's own instructions, in the order they are scanned. */
 const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 /** A fenced block whose info string is one of these — or absent — is read as shell. */
@@ -291,7 +471,7 @@ function firstWord(line: string): string {
  * line whose first word is one of these contributes nothing, because the fixed list decides
  * what `git`, `gh` and `skelcrew` may do and a scanned line may only ever add to that — any
  * repository documenting a `git status` line triggers this, and one documenting
- * `git push --force` would otherwise grant exactly the form rule 3 withholds. Reading the
+ * `git push --force` would otherwise grant exactly the form rule 5 withholds. Reading the
  * line's first word rather than the whole line is what keeps the rule working now that the
  * grant is of the line: `git status && rm -rf /` is dropped for its `git`, like every other
  * `git` line. Derived from the list rather than written out, so a verb narrowed later is
@@ -386,27 +566,31 @@ export interface RunAllowlist {
  * widening its successor's boundary, so a file that is untracked, or modified relative to that
  * commit, contributes nothing.
  *
- * **And the commit is named by a ref no pre-allowed tool can write**: `scanBase`, the
+ * **And the commit is named by a ref nothing that runs unprompted can write**: `scanBase`, the
  * remote-tracking head of `defaultBranch`. A local branch name would not do, however carefully
  * the fixed list is drawn — `refs/heads/` is shared by the main checkout and every linked
  * worktree, so a run able to create or move a branch could point the name its successor reads
  * at a commit it authored. Two things keep `refs/remotes/origin/<default>` out of reach, and
  * both are needed:
  *
- * - **No listed command writes it.** Only `git fetch`, `git pull`, `git remote` and `git push`
- *   write those refs, of which only `push` is listed, and only as `git push -u origin HEAD` and
- *   a bare `git push`. The first pushes the worktree's HEAD — the card branch
- *   `skelcrew/<id>-…`, named by the runner — and so writes that branch's remote-tracking ref
- *   and no other. The second, under a repo-level `push.default = matching`, pushes every local
- *   branch with a counterpart on the remote, the default branch included; but it pushes each at
- *   the value it already holds, and no pre-allowed command can change that value: a run's
- *   commits land on its own HEAD, and `git branch` is off the list precisely so nothing else
- *   can move a `refs/heads/` entry.
- * - **No listed *tool* writes it either.** A ref is a plain file. While a file tool sat on the
- *   list bare, a run could author a commit, name the git common directory with the pre-allowed
+ * - **No unprompted command writes it.** Only `git fetch`, `git pull`, `git remote` and
+ *   `git push` write those refs, of which only `push` is listed, and only as
+ *   `git push -u origin HEAD` and a bare `git push`. The first pushes the worktree's HEAD — the
+ *   card branch `skelcrew/<id>-…`, named by the runner — and so writes that branch's
+ *   remote-tracking ref and no other. The second, under a repo-level `push.default = matching`,
+ *   pushes every local branch with a counterpart on the remote, the default branch included;
+ *   but it pushes each at the value it already holds, and nothing unprompted can change that
+ *   value: a run's commits land on its own HEAD, and `git branch` is off the list precisely so
+ *   nothing else can move a `refs/heads/` entry.
+ * - **No unprompted *tool* writes it either.** A ref is a plain file. While a file tool sat on
+ *   the list bare, a run could author a commit, name the git common directory with
  *   `git rev-parse --git-common-dir`, and write that sha straight into the ref — and a loose
  *   ref wins over `packed-refs`, so the forgery would stand for every later run. `editsIn`
  *   anchors the file tools at the worktree, and the common directory is not under it.
+ * - **And no unprompted command writes it through a flag.** `git log`, `git diff` and
+ *   `git show` take `--output=<any path>`, which walked around that anchor entirely while they
+ *   were listed as wildcards; rule 3 deleted the entries, and the harness's own read-only check
+ *   refuses the flag. That is the third leg, and all three are needed.
  *
  * So only a commit the owner has pushed to the default branch can grant anything. A ref or a
  * file that cannot be read contributes nothing rather than failing the run — the fixed list is
