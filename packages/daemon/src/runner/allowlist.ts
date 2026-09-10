@@ -680,6 +680,53 @@ export function allowsTool(
  * which is the real protection; naming the version here ties the transcription to that pin, so a
  * bump fails a test rather than moving the table underneath the list in silence.
  */
+/**
+ * **The maintenance contract for everything transcribed below.** Read this before acting on a
+ * failure in `claude.test.ts`'s version pin or in any test that asserts what the harness would
+ * do. It exists so that a failure here is a ten-minute decision rather than an afternoon's
+ * archaeology, and so that the cheapest wrong answer is not the one taken.
+ *
+ * **What ages.** Four models here are transcriptions of software this repository does not
+ * control: `SAFE_GIT_FLAGS` (the harness's per-verb safe-flag tables), `splitEntries` (its
+ * `--allowedTools` splitter), `redirectionsIn` (its redirection extractor, whose original is a
+ * real parser), and `filePaths` (its symlink resolution). `entryMatches`, `allowsTool`,
+ * `runsUnprompted` and `selfApprovedReadOnlyGit` sit on top of them. Each records where it is
+ * known to diverge and in which direction; a version bump can invalidate those records silently,
+ * because nothing in the transcription notices the original changing under it.
+ *
+ * **What does not age.** Everything with a production caller: `anchor`, `editsIn`, `deniedTools`,
+ * `LINE_CHARS`, `narrowedCommands` and `words`. These build the rules the harness is given. They
+ * are containment — a fence around a place — and a fence does not expire when git adds a flag.
+ * `FIXED_ALLOWLIST` is data, and ages only when a playbook changes.
+ *
+ * **What a stale model can and cannot do.** None of the four has a production caller: they exist
+ * so tests can assert what the harness would do, and the harness itself is what gates a real run.
+ * So drift produces a **wrong test** — one passing that should fail, or failing when nothing is
+ * broken — and never a boundary that opens quietly. That bounds how urgent a failure here is. It
+ * does not make it ignorable, because a test asserting "this asks" is the only thing standing
+ * between a future edit and a repeat of rounds 1 to 7.
+ *
+ * **What to do when one fires.** Exactly one of three, and the third is a decision someone makes
+ * on purpose:
+ *
+ * 1. **Re-verify.** Extract the named function from the new binary the way each doc comment says
+ *    it was extracted, diff it against the transcription, update both the model and its
+ *    divergence record, and move the version here.
+ * 2. **Delete the model and the assertions that rest on it**, accepting the loss of coverage and
+ *    saying so where the criterion is listed. A missing assertion that is written down beats a
+ *    present one that lies.
+ * 3. **Record the drift** — the transcription is stale, these assertions are advisory until
+ *    someone does (1) — and move the version with a note saying so.
+ *
+ * **What not to do**, which is the whole reason this paragraph is here: do not adjust a model
+ * until its test passes again. That converts a signal into a lie, and every one of these models
+ * exists because a previous version of this file claimed something that was not true.
+ *
+ * **The general lesson, for whoever extends this.** Prefer containment to enumeration wherever
+ * the choice exists. Each enumeration bought a maintenance obligation; each containment bought
+ * none. Milestone 016 is the containment that makes the gates hold whatever the agent runs, and
+ * it does not appear in this list because it will not need to.
+ */
 export const TRANSCRIBED_FROM = {
   /** The agent SDK this package depends on; `claude.test.ts` checks it against what is installed. */
   sdk: "0.3.266",
