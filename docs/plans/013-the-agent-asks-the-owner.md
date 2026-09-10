@@ -437,3 +437,52 @@ confirms, on the exact strings `editsIn`/`deniedTools` produce:
 
 The rule is written `Edit(//<abs>/**)`, two slashes: `//` is the harness's "absolute from the
 filesystem root" prefix. The spec's `Edit(//<worktree>/**)` read literally would be three.
+
+## Review round 4 — `Bash(git log *)` was an arbitrary-file-write primitive
+
+The spec was amended again (`160580a`): a new paragraph on trailing wildcards, a new bullet
+saying the read-only git verbs are not listed at all, a shortened fixed list, and criteria 10d
+and 10e. What follows implements the amended spec.
+
+### The finding
+
+`git log`, `git diff` and `git show` all accept `--output=<any absolute path>`. A trailing
+wildcard cannot exclude a flag, so `Bash(git log *)` pre-allowed
+`git log -1 --format=%H --output=<common>/refs/remotes/origin/main` — the forgery round 3 closed
+from the file-tool side — and `git log -1 --format=%B --output=<common>/config`, which re-opens
+10c. Reproduced against git 2.48.1 in a scratch repository with a linked worktree.
+
+### The change, in steps
+
+1. **Delete the six read-only git verbs from `FIXED_ALLOWLIST`** (`git status`, `git log`,
+   `git diff`, `git show`, `git merge-base`, `git rev-parse`). No narrower wildcard exists.
+2. **Model the harness's own read-only self-approval** for exactly those six verbs
+   (`selfApprovedReadOnlyGit`, `runsUnprompted`), so 10d and 10e can be asserted rather than
+   asserted-about-the-list-only: the point of the deletion is that the decision moves from our
+   list to the harness's per-subcommand safe-flag validator, and a test that only reads our list
+   proves nothing about the boundary.
+3. **Audit every surviving wildcard entry's flags** and record the findings beside the entry in
+   the module doc; rewrite the "rules" preamble (now more than five) and the "what this list
+   does not close" section.
+4. **Playbooks**: the Code playbook's advertised list loses the six verbs and gains a sentence
+   saying the read-only git verbs run through the harness's own check. `playbooks.test.ts`'s
+   command-by-command check becomes "runs unprompted" rather than "is on the list", which is
+   what criterion 11 says.
+5. **Tests**: both escalation chains as their own cases in `run.test.ts` with the `--output` step
+   asserted not pre-allowed for a path inside the worktree and out; the six safe forms asserted
+   still unprompted; the literal-list assertion updated.
+
+### Files
+
+`packages/daemon/src/runner/allowlist.ts`, `allowlist.test.ts`, `run.test.ts`,
+`playbooks.test.ts`, `packages/daemon/playbooks/code.md`.
+
+### Decided here, left open by the spec
+
+- **The read-only model lives in `allowlist.ts`, not in a test file**, because three test files
+  need it and a test importing another test file would re-run its cases. It is not called by
+  production code: `run.ts`'s `canUseTool` only sees what the harness did *not* self-approve.
+- **The model is the flag-name check only.** `nBe`'s value-type rules (a `"none"` flag may not
+  carry `=`, a value flag consumes the next word) are not modelled; no assertion depends on
+  them, and every negative asserted here is a flag that is absent from the harness's table
+  altogether.
