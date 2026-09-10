@@ -155,6 +155,19 @@ function cutBytes(text: string, budget: number): string {
   return text.slice(0, cut);
 }
 
+/**
+ * `text` with every line prefixed `> `, an empty one becoming `>`. What this is for is the
+ * question's payload: the agent chooses that text, so unquoted it can be laid out to read as
+ * the frame around it, and a blank line in it manufactures the separator the CLI's queue view
+ * splits real requests on. Quoted, no line of it is either.
+ */
+function quoted(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => (line.length === 0 ? ">" : `> ${line}`))
+    .join("\n");
+}
+
 /** `text` within `budget` bytes, marked when there was more of it. */
 function cutMarked(text: string, budget: number): string {
   if (Buffer.byteLength(text, "utf8") <= budget) return text;
@@ -356,17 +369,29 @@ export async function runPlaybook(input: RunInput): Promise<void> {
    * approving it on the head alone approves a rendering rather than the thing. The only cut is
    * the note's own byte cap, which the core enforces; where that bites, it is marked and the
    * run log holds the whole of it.
+   *
+   * **The frame comes first and the payload is quoted**, for the same reason read the other
+   * way round. Interpolated raw, the agent's own text laid the note out: an input beginning
+   * `ls? (skelcrew resolve 1 -m allow | …)` and continuing, past a blank line, with what looks
+   * like another card's request produced a note whose first line was a complete, benign
+   * question and whose tail read as a second request — the CLI's queue view prints the note
+   * verbatim and separates real requests with exactly one blank line. So both resolving
+   * commands sit on the first line, the input goes last under its own label, and `quoted`
+   * leaves no line of it that can be either. Same class as milestone 015, where control
+   * characters repaint a rendered line rather than laying out a fake one; 015 is not this.
    */
   const questionFor = (pending: Ask): string => {
-    const head = `allow ${pending.tool} `;
-    const tail = `? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)`;
-    const text = inputOf(pending.tool, pending.input);
-    const bytes = Buffer.byteLength(text, "utf8");
-    const fixed = Buffer.byteLength(head + tail, "utf8");
-    if (fixed + bytes <= COMMENT_MAX_BYTES) return `${head}${text}${tail}`;
+    const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\ninput:\n`;
+    const raw = inputOf(pending.tool, pending.input);
+    const text = quoted(raw);
+    const fixed = Buffer.byteLength(frame, "utf8");
+    if (fixed + Buffer.byteLength(text, "utf8") <= COMMENT_MAX_BYTES) return `${frame}${text}`;
+    const bytes = Buffer.byteLength(raw, "utf8");
     const mark = `\n… [truncated: ${bytes} bytes; the whole input is in the run log at ${logPath}]`;
     const budget = COMMENT_MAX_BYTES - fixed - Buffer.byteLength(mark, "utf8");
-    return `${head}${cutBytes(text, budget)}${mark}${tail}`;
+    // The cut's own trailing newline would meet the marker's leading one and make the blank
+    // line the quoting exists to prevent.
+    return `${frame}${cutBytes(text, budget).replace(/\n+$/, "")}${mark}`;
   };
 
   /** Told to the agent when the run is over before the owner has answered. */

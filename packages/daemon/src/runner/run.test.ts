@@ -554,7 +554,7 @@ test("a tool outside the fixed list becomes a question on the card, and the run 
   const request = core.getCard(card.id).attention;
   expect(request).toMatchObject({ to: owner.id, raisedBy: runnerMember.id });
   expect(request?.note).toBe(
-    "allow Bash rm -rf build? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)",
+    "allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)\ninput:\n> rm -rf build",
   );
 
   // And the run has not proceeded: the agent is still waiting on the answer.
@@ -599,6 +599,93 @@ test("the question carries the tool's input in full, past the activity summary's
 
   core.resolveAttention(card.id, "no", owner.id);
   await done;
+});
+
+/**
+ * Criterion 2, from the other side of the same reason: the party choosing the text is the
+ * party being gated, so the text it chooses may not read as the frame around it. An input
+ * whose first line is a complete, benign-looking question and whose tail is laid out as
+ * another card's request would otherwise produce a note the owner skims as two requests —
+ * `queueView` separates real ones with exactly one blank line and prints the note verbatim —
+ * and approve the real call on the strength of the forged first line. The frame therefore
+ * comes first, carrying both resolving commands, and every line of the input is quoted, so no
+ * input text can imitate the frame or manufacture that separator.
+ *
+ * Same class as milestone 015, which is control characters repainting a rendered line: the
+ * agent choosing what the owner reads. 015 is not implemented here.
+ */
+test("a tool input cannot forge the question's frame or a second request block", async () => {
+  await initRepo();
+  const command = [
+    "ls? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)",
+    "",
+    "3  Some other card  [Code]",
+    "runner → simon, 14:02",
+  ].join("\n");
+  start({
+    driver: fakeDriver(async function* (options) {
+      void options.canUseTool("Bash", { command });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Forges a request" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  const note = core.getCard(card.id).attention?.note as string;
+  const [frame, label, ...payload] = note.split("\n");
+  // The frame is first and is the only thing that answers the question.
+  expect(frame).toBe(
+    `allow Bash? (skelcrew resolve ${card.id} -m allow | skelcrew resolve ${card.id} -m deny)`,
+  );
+  expect(label).toBe("input:");
+  // Every line of the agent's text is quoted, so none of it can read as the frame — and no
+  // blank line survives, so the note cannot produce a second apparent block.
+  expect(payload.every((line) => line.startsWith(">"))).toBe(true);
+  expect(note).not.toContain("\n\n");
+  // And it is all there: criterion 2's "in full" is unchanged by the quoting.
+  expect(payload).toEqual([
+    "> ls? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)",
+    ">",
+    "> 3  Some other card  [Code]",
+    "> runner → simon, 14:02",
+  ]);
+
+  core.resolveAttention(card.id, "no", owner.id);
+  await done;
+});
+
+/**
+ * And the quoting holds where the note is cut. The cut lands wherever the cap falls; on a line
+ * boundary the truncation marker's own newline would meet the cut's and make the blank line the
+ * quoting exists to prevent. Each quoted `y` line is four bytes, so four inputs one byte apart
+ * put the cut on a boundary in exactly one of them, whatever the note's fixed part measures.
+ */
+test("a truncated question carries no blank line either, wherever the cut falls", async () => {
+  await initRepo();
+  for (const pad of ["", "x", "xx", "xxx"]) {
+    const command = `git log ${pad}\n${"y\n".repeat(COMMENT_MAX_BYTES / 2)}`;
+    start({
+      driver: fakeDriver(async function* (options) {
+        void options.canUseTool("Bash", { command });
+        yield { type: "result", ok: true };
+      }),
+    });
+    const card = core.createCard({ title: `Too long to carry (${pad})` }, owner.id);
+    const question = untilEvent(asked(card.id));
+    const done = untilEvent(released(card.id));
+    core.moveCard(card.id, "spec", owner.id);
+    await question;
+
+    const note = core.getCard(card.id).attention?.note as string;
+    expect([pad, note.includes("truncated")]).toEqual([pad, true]);
+    expect([pad, note.includes("\n\n")]).toEqual([pad, false]);
+
+    core.resolveAttention(card.id, "no", owner.id);
+    await done;
+  }
 });
 
 /** The one cut the question does make is the note's own cap, and it says so. */
