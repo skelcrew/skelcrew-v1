@@ -115,3 +115,83 @@ request: it is the run's own dead question, so the ending replaces it — leavin
 prevent. The test now asserts the stop, the replacement, and that the question still stands in
 the card's activity where it was raised. Its other assertions — the pending call denied, no
 "proceeding", a later answer changing nothing — are unchanged.
+
+## Review round 1
+
+CHANGES REQUESTED: three Important, four Minor, no Criticals. The reviewer confirmed the two
+constructions compose, the changed 013 test, criterion 13's per-path coverage, and
+`classifyEnding`'s two event queries. What follows is what changed.
+
+### The PR-recording command would have stalled every Code run (Important 2)
+
+`code.md` prescribed `skelcrew refs <id> --pr "$(gh pr view --json url --jq .url)"`. The harness
+asks outright for a command carrying a substitution (`bashMissKind:"shell-operators"`), whatever
+the pre-allowed list says; `allowlist.ts` records both that refusal and that this repository's
+*model* of it is deliberately looser, so `runsUnprompted` answered `true` and the discrepancy was
+invisible from here. Every Code run — including every revision run, which criterion 6 requires to
+re-record — would have stopped on a permission question to satisfy the one condition that decides
+whether the phase can complete, and unattended would have hit the time limit and failed it.
+
+Now two prescribed calls, each matching a fixed-list entry on its own: `gh pr view --json url
+--jq .url`, then `skelcrew refs <id> --pr <the URL that printed>`, with a paragraph saying why
+they must not be joined.
+
+The guard is structural rather than a one-off fix: `no command either playbook prescribes carries
+a shell operator` walks every fenced line in both playbooks and rejects `$(`, a backtick, `&&`,
+`||`, `|` and `;`. It went red on exactly the one line, which also establishes nothing else in
+either playbook carries one. A redirection is deliberately not in that set — the harness matches
+its rule against the command with redirections stripped, which is what makes `spec.md`'s heredoc
+fine.
+
+### Re-deriving the ending assertions (Important 1)
+
+The 16 ending cases were written after the ending code — disclosed under *Red, then green*, and a
+real deviation from red-then-green, since these cover the invariant the spike half-implemented
+five times. History cannot be rewritten, so instead every assertion was re-derived from criteria
+8-14 **as the spec words them**, and each case now names the clause it checks. What changed:
+
+- **An abandonment is checked against the spec's sentence**, "one comment saying so, and nothing
+  else", through one `expectAbandoned` helper: the single comment, no request, and no release by
+  the run. Previously the moved and archived cases only checked that the note was not the stop's.
+  The helper deliberately does *not* assert the runner wrote nothing at all — a move or an
+  archive queues 006's teardown, whose comment is not part of the ending.
+- **Criterion 10** (the case the reviewer named) is now asserted clause by clause: the run stopped
+  (`runs === 1`), the card is unclaimed *and* unarchived so only the open request keeps it out of
+  the queue, the request is addressed to the owner, the comment and the note are the same text,
+  the card is in the phase it was claimed in — which is what "not superseded" means, and what the
+  release-then-move case above proves is decisive — and exactly one `claimed` event exists. The
+  two readings the reviewer flagged are kept but re-grounded: the note says the run stopped rather
+  than that it finished, and it offers no move because the spec attaches a phase move only to a
+  met contract.
+- **Criterion 12** now asserts `run failed` in the note, not only the description of what the
+  agent did: "fails the run" is a clause of the criterion. The self-release case also asserts the
+  body this run wrote is on the card and was still not accepted — the artefact check is skipped,
+  not merely failed. The taken-over case asserts exactly one failure comment.
+- **Criterion 11** now goes through `expectAbandoned` too, and says why the lapse is the reason
+  and never the decision: a swept card is free and in its own phase, which is criterion 10's
+  shape.
+
+**No assertion had to change because it was wrong.** Every re-derived case passed unchanged; what
+changed was the addition of clauses the criteria state and the tests had not checked. That is the
+outcome to be sceptical of, so it is recorded plainly rather than claimed as vindication.
+
+### The rest
+
+- **Minor 4** — criterion 13 gained its lapsed-lease case: the agent asks, the lease lapses, the
+  sweep runs, the question is still the card's request. It passed on first run; the finding was
+  missing coverage, not wrong behaviour.
+- **Minor 6** — every unmet contract note now ends `; the work is in <path>`, which is the
+  owner's exit ramp from their queue. The dirty-worktree condition no longer repeats the path in
+  its own clause, since the note now always carries it.
+- **Minor 7** — `endRun` told a refusal apart from a throw. `raised === false` covered both, so a
+  `ownerId()` lookup that threw — resolved inside the `try` on purpose, so a throwing lookup still
+  releases — would have released a finished artefact as `blocked`. Now only the helper returning
+  `undefined` means `blocked`. Red first, against a core whose `requestAttention` throws.
+- **Minor 5** — the playbook assertions matched single words (`toContain("refs/heads/")` passes on
+  §4's condition list alone). They now assert the sentence carrying each rule, against a
+  whitespace-collapsed copy so a wrapped sentence can be asserted whole, and the prescribed
+  commands as exact fenced lines. Verified by deleting §1's rule from `code.md`: the tightened
+  test fails, the old one would not have.
+- **Important 3** is a spec amendment — the *Tests* line "Existing 012 and 013 coverage must pass
+  unchanged" cannot hold once criterion 10 reclassifies 013's release-while-waiting case — and
+  goes to the owner. The spec file is not edited here.

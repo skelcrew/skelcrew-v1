@@ -208,31 +208,82 @@ test("an empty playbook is refused at load, naming the file", () => {
 
 // --- what the Code phase's contract requires of its playbook ---
 
+/**
+ * The playbook as one line. A rule is a sentence, and a sentence wraps; asserting on the
+ * sentence rather than on a word it happens to contain is what makes deleting the rule fail
+ * the test — `toContain("refs/heads/")` passes on §4's condition list with §1's rule gone.
+ */
+function unwrapped(playbook: string): string {
+  return playbook.replace(/\s+/g, " ");
+}
+
+/**
+ * The lines inside a playbook's fenced blocks: what it puts in front of the agent to run.
+ * A heredoc body is in here too, and is prose rather than a command — no shape asserted
+ * against these reaches it, so it needs no separating out.
+ */
+function prescribed(playbook: string): string[] {
+  const lines: string[] = [];
+  let inside = false;
+  for (const line of playbook.split("\n")) {
+    if (line.startsWith("```")) {
+      inside = !inside;
+      continue;
+    }
+    if (inside && line.trim().length > 0) lines.push(line);
+  }
+  return lines;
+}
+
 test("the Code playbook records the pull request on every run, reading an existing one back", () => {
   const code = loadPlaybooks().code;
   // The contract checks that *this run* recorded it, so a revision on an existing PR still
   // has to record — which means reading the URL back off the branch.
-  expect(code).toContain("gh pr view --json url");
-  expect(code).toContain("skelcrew refs <id> --pr");
-  expect(code).toContain("every run");
+  expect(unwrapped(code)).toContain(
+    "**Record the pull request on every run**, not only the run that opens it.",
+  );
+  expect(unwrapped(code)).toContain(
+    "Two calls, and **never one**: read the URL, then pass what it printed as a literal.",
+  );
+  // Both prescribed, so the agent copies them rather than composing one with a substitution.
+  expect(prescribed(code)).toContain("gh pr view --json url --jq .url");
+  expect(prescribed(code)).toContain("skelcrew refs <id> --pr <the URL that printed>");
 });
 
-test("the Code playbook qualifies the base branch wherever it computes a diff", () => {
+test("the Code playbook makes qualifying both branch names a rule, not an example", () => {
   // A bare name resolves by precedence, and a tag outranks a branch head.
-  expect(loadPlaybooks().code).toContain("refs/heads/");
+  expect(unwrapped(loadPlaybooks().code)).toContain(
+    "**Name both branches in full wherever you compute a diff or a range**: `refs/heads/<base>` and `refs/heads/<branch>`, never the bare names.",
+  );
 });
 
 test("the Code playbook exports a spec file only where the repository already keeps specs", () => {
   const code = loadPlaybooks().code;
-  expect(code).toContain("docs/specs");
-  expect(code).toContain("skelcrew refs <id> --spec");
-  // The card's body is the spec; a file in the repository is a copy pushed outward.
-  expect(code).toContain("export");
-  expect(code).toContain("pull request description");
+  expect(unwrapped(code)).toContain(
+    "Write a spec file **only** where the repository already keeps specs",
+  );
+  // The card's body is the spec, so a repository that publishes none finishes just the same.
+  expect(unwrapped(code)).toContain("the contract in §4 never asks whether you wrote one");
+  expect(prescribed(code)).toContain("skelcrew refs <id> --spec docs/specs/<NNN>-<name>.md");
 });
 
 test("the Code playbook reuses the recorded spec path on a card returning from PR", () => {
-  const code = loadPlaybooks().code;
-  expect(code).toContain("specPath");
-  expect(code).toContain("overwrite");
+  expect(unwrapped(loadPlaybooks().code)).toContain(
+    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body. Do not allocate a new number",
+  );
+});
+
+test("no command either playbook prescribes carries a shell operator", () => {
+  // The harness asks about a command substitution or a subshell outright — "shell operators
+  // that require approval for safety" — and splits a list or a pipeline into parts it matches
+  // one by one, whatever the fixed list holds. A prescribed command carrying one therefore
+  // stops an unattended run on a permission question no matter how the list is written, and
+  // for the pull request that is the one condition deciding whether the phase can complete.
+  // A redirection is not in this class: the harness matches the rule against the command with
+  // its redirections stripped, which is why the Spec playbook's heredoc is fine.
+  for (const phase of PLAYBOOK_PHASES) {
+    for (const line of prescribed(loadPlaybooks()[phase])) {
+      expect(line).not.toMatch(/\$\(|`|&&|\|\||\||;/);
+    }
+  }
 });

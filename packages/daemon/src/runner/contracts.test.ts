@@ -91,11 +91,13 @@ interface StartOptions {
   runLimitMs?: number;
   abortGraceMs?: number;
   now?: () => number;
+  /** A core with one call replaced, for the failures the real one cannot be made to have. */
+  core?: Core;
 }
 
 function start(options: StartOptions): Runner {
   runner = startRunner({
-    core,
+    core: options.core ?? core,
     dataDir,
     repoRoot: repo,
     git,
@@ -185,10 +187,13 @@ test("a Spec run that writes no body fails, and the request offers no move", asy
   await runCard("Nothing written", "spec");
 
   const card = core.getCard(1);
-  expect(comments(1).at(-1)).toBe("run finished without a spec");
-  expect(card.attention).toMatchObject({ note: "run finished without a spec", moves: [] });
+  expect(card.attention?.note).toContain("run finished without a spec");
+  expect(card.attention?.moves).toEqual([]);
+  expect(comments(1).at(-1)).toBe(card.attention?.note);
   expect(card.phase).toBe("spec");
   expect(lastRelease(1)).toBe("failed");
+  // The owner's queue is where a failed run is read, so it says where to pick the work up.
+  expect(card.attention?.note).toContain(`the work is in ${worktreePath(1)}`);
 });
 
 test("a body that was on the card before the run is not this run's spec", async () => {
@@ -200,7 +205,7 @@ test("a body that was on the card before the run is not this run's spec", async 
   });
   await runCard("Already had a body", "spec", "# an older spec\n");
 
-  expect(comments(1).at(-1)).toBe("run finished without a spec");
+  expect(comments(1).at(-1)).toContain("run finished without a spec");
   expect(core.getCard(1).body).toBe("# an older spec\n");
 });
 
@@ -214,7 +219,7 @@ test("a Spec run that writes an empty body has written no spec", async () => {
   });
   await runCard("Whitespace", "spec");
 
-  expect(comments(1).at(-1)).toBe("run finished without a spec");
+  expect(comments(1).at(-1)).toContain("run finished without a spec");
 });
 
 // --- the Code contract ---
@@ -262,6 +267,8 @@ test("a Code run with no commits fails, names the condition, and keeps the workt
   expect(core.getCard(1).phase).toBe("code");
   expect(core.getCard(1).attention?.moves).toEqual([]);
   expect(await sh(repo, "worktree", "list", "--porcelain")).toContain(worktreePath(1));
+  // The worktree is kept, so the note says where it is: that is the owner's exit ramp.
+  expect(said).toContain(`the work is in ${worktreePath(1)}`);
 });
 
 test("a Code run that leaves the worktree dirty fails and names that condition", async () => {
@@ -432,6 +439,17 @@ test("a tag named after the card's branch does not make an empty branch look lik
 });
 
 // --- the endings ---
+//
+// Every assertion below is derived from criteria 8-14 as the spec words them, and each case
+// says which clause it is checking. That is worth stating because the code came first here:
+// see "Red, then green" and "Re-deriving the ending assertions" in
+// `docs/plans/014-a-phase-ends-in-a-verified-artefact.md`.
+//
+// The observable of an abandonment is the spec's own sentence — "the run abandons: one comment
+// saying so, and nothing else" — so these check the comment, the absence of a request, and the
+// absence of a release by the run. They deliberately do not check that the runner wrote nothing
+// else at all: a move or an archive queues 006's teardown, whose "worktree removed" comment is
+// not part of the ending.
 
 /** A driver that works until the run tells it to stop, then ends its session. */
 function abortableDriver(): AgentDriver {
@@ -465,6 +483,16 @@ async function whileWorking(driver: AgentDriver, phase: Phase = "spec"): Promise
   await working;
 }
 
+/** "One comment saying so, and nothing else": no request, and no release by the run. */
+function expectAbandoned(cardId: number): void {
+  const card = core.getCard(cardId);
+  expect(comments(cardId).filter((text) => text.includes("run abandoned"))).toHaveLength(1);
+  expect(card.attention).toBeNull();
+  expect(card.activity.some((e) => e.type === "released" && e.actorId === runnerMember.id)).toBe(
+    false,
+  );
+}
+
 test("a card another member claims mid-run ends the run as an abandonment", async () => {
   await initRepo();
   const crew = core.ensureMember("crew-1", "agent");
@@ -476,12 +504,11 @@ test("a card another member claims mid-run ends the run as an abandonment", asyn
   await abandoned;
   await Bun.sleep(200);
 
+  // Criterion 8: "one comment, no attention request, and the other member's claim intact".
+  expectAbandoned(1);
   const card = core.getCard(1);
   expect(card.claim?.by).toBe(crew.id);
-  expect(card.attention).toBeNull();
-  expect(comments(1).filter((text) => text.includes("run abandoned"))).toHaveLength(1);
-  expect(comments(1).some((text) => text.includes("run stopped"))).toBe(false);
-  // Once the card was taken, the run wrote the one comment and nothing else.
+  // Nothing else was queued behind the takeover, so "nothing else" is checkable outright here.
   const taken = card.activity.findLastIndex((e) => e.type === "claimed");
   expect(card.activity.slice(taken).filter((e) => e.actorId === runnerMember.id)).toHaveLength(1);
 });
@@ -496,10 +523,10 @@ test("a card moved mid-run ends the run as an abandonment, and a move supersedes
   await abandoned;
   await Bun.sleep(200);
 
-  const card = core.getCard(1);
-  expect(card.phase).toBe("pr");
-  expect(card.attention).toBeNull();
-  expect(comments(1).some((text) => text.includes("run stopped"))).toBe(false);
+  // Criterion 9: moved mid-run is an abandonment, and the move supersedes the release that
+  // preceded it — so this is not the stop of criterion 10.
+  expectAbandoned(1);
+  expect(core.getCard(1).phase).toBe("pr");
 });
 
 test("a card archived mid-run ends the run as an abandonment, and an archive supersedes a release", async () => {
@@ -512,10 +539,9 @@ test("a card archived mid-run ends the run as an abandonment, and an archive sup
   await abandoned;
   await Bun.sleep(200);
 
-  const card = core.getCard(1);
-  expect(card.archivedAt).not.toBeNull();
-  expect(card.attention).toBeNull();
-  expect(comments(1).some((text) => text.includes("run stopped"))).toBe(false);
+  // Criterion 9 again, with the archive superseding the release.
+  expectAbandoned(1);
+  expect(core.getCard(1).archivedAt).not.toBeNull();
   expect(warnings).toEqual([]);
 });
 
@@ -527,8 +553,13 @@ test("a card moved away and back mid-run is still an abandonment, not a release"
   core.moveCard(1, "pr", owner.id);
   core.moveCard(1, "spec", owner.id);
   await abandoned;
+  await Bun.sleep(200);
 
-  expect(comments(1).some((text) => text.includes("run stopped"))).toBe(false);
+  // The card is free, unarchived and back in this run's phase, which is the shape criterion
+  // 10's stop takes — but the spec's ending rule qualifies it with "and never moved away", so
+  // this is an abandonment. Without that clause the card would look released to the run.
+  expectAbandoned(1);
+  expect(core.getCard(1).phase).toBe("spec");
 });
 
 test("an explicit release stops the run with a comment and a request, and no second run starts", async () => {
@@ -551,13 +582,27 @@ test("an explicit release stops the run with a comment and a request, and no sec
   await Bun.sleep(300);
 
   const card = core.getCard(1);
+  // Criterion 10, clause by clause. "Stops the run": the agent ran once and never resumed.
   expect(runs).toBe(1);
+  // "With a comment and a request" — the request handed to the owner, which is what makes the
+  // card wait rather than be picked up again: unclaimed and unarchived, it is only the open
+  // request that keeps `isReady` false.
   expect(card.claim).toBeNull();
+  expect(card.archivedAt).toBeNull();
+  expect(card.attention?.to).toBe(owner.id);
+  expect(comments(1).at(-1)).toBe(card.attention?.note);
+  // "That is not superseded": the card is still in the phase this run was claimed in. A move
+  // after the release supersedes it and the ending is an abandonment instead — the case above.
   expect(card.phase).toBe("spec");
-  expect(comments(1).at(-1)).toContain("run stopped");
+  // The comment and the note say the run stopped: not that it was abandoned (which writes no
+  // request at all), and not that anything was verified — no contract ran on this path, and
+  // the spec attaches a phase move only to a met contract.
   expect(card.attention?.note).toContain("run stopped");
   expect(card.attention?.moves).toEqual([]);
   expect(comments(1).some((text) => text.includes("run abandoned"))).toBe(false);
+  expect(comments(1).some((text) => text === "spec ready")).toBe(false);
+  // "And no second run starts."
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
 });
 
 test("a lapsed lease abandons the run and returns the card to its queue as run_interrupted", async () => {
@@ -595,9 +640,12 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
   core.sweepClaims();
   await abandoned;
 
+  // Criterion 11: "abandons and returns the card to its queue as `run_interrupted`". The card
+  // is free and in this run's phase, which is criterion 10's shape — the lapse is what tells
+  // the two apart, and it is the reason, never the decision.
+  expectAbandoned(1);
   expect(core.getCard(1).activity.map((e) => e.type)).toContain("run_interrupted");
-  expect(comments(1).some((text) => text.includes("run stopped"))).toBe(false);
-  // The card went back to its queue: the next run picked it up and ended normally.
+  // Returned to its queue: the next run picked it up and ended normally.
   await untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
   expect(runs).toBe(2);
 });
@@ -618,9 +666,14 @@ test("an agent that moves its own card fails the run, naming what it did", async
   await done;
   await Bun.sleep(200);
 
+  // Criterion 12: "fails the run with a comment naming what it did". Failing the run is
+  // observable as the artefact never being handed on — the card carries no "ready for review"
+  // and no move to PR was offered, because the contract never ran on a card the agent moved.
   const card = core.getCard(1);
   expect(card.phase).toBe("pr");
+  expect(card.attention?.note).toContain("run failed");
   expect(card.attention?.note).toContain("moved its own card");
+  expect(card.attention?.moves).toEqual([]);
   expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
 });
 
@@ -640,9 +693,12 @@ test("an agent that releases its own card fails the run, naming what it did", as
 
   const card = core.getCard(1);
   expect(comments(1).at(-1)).toContain("released its own card");
+  expect(card.attention?.note).toContain("run failed");
   expect(card.attention?.note).toContain("released its own card");
   expect(card.attention?.moves).toEqual([]);
-  // The artefact check never ran: a card the agent released has skipped it.
+  // The artefact check never ran, though the body this run wrote would have met it: a card the
+  // agent released has skipped the check the phase exists for.
+  expect(core.getCard(1).body).toBe("# a whole spec");
   expect(comments(1).some((text) => text === "spec ready")).toBe(false);
 });
 
@@ -682,8 +738,11 @@ test("a self-action after another member takes the card lands as a comment and n
   await done;
   await Bun.sleep(200);
 
+  // Criterion 12's second sentence: "If another member holds the card by then, the comment
+  // lands and no attention request is raised" — this run's failure is not their queue to fill.
   const card = core.getCard(1);
   expect(card.claim?.by).toBe(crew.id);
+  expect(comments(1).filter((text) => text.includes("run failed"))).toHaveLength(1);
   expect(card.attention).toBeNull();
   expect(warnings).toEqual([]);
 });
@@ -729,7 +788,7 @@ test("a question stands when the contract is unmet: the failure is a comment, no
   await runCard("Blocked and empty", "spec");
 
   const card = core.getCard(1);
-  expect(comments(1).at(-1)).toBe("run finished without a spec");
+  expect(comments(1).at(-1)).toContain("run finished without a spec");
   expect(card.attention?.note).toBe("there is no check command in this repository");
   expect(lastRelease(1)).toBe("blocked");
 });
@@ -810,4 +869,67 @@ test("a question stands when the agent acted on its own card", async () => {
   await done;
 
   expect(core.getCard(1).attention?.note).toBe("the card contradicts the repository's constraints");
+});
+
+test("a question stands when the lease lapses", async () => {
+  await initRepo();
+  let at = Date.now();
+  const now = (): number => at;
+  core.close();
+  core = openCore(":memory:", { owner: "simon", now });
+  owner = core.listMembers()[0] as Member;
+  runnerMember = core.ensureMember("runner", "agent");
+  start({
+    now,
+    driver: fakeDriver(async function* (options) {
+      agentAsks(1, "the base branch has diverged since the spec was written");
+      yield { type: "text", text: "working" };
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }),
+  });
+  core.createCard({ title: "Asked, then slept through it" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working"));
+  core.moveCard(1, "spec", owner.id);
+  await working;
+
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  at += 10 * 60_000;
+  core.sweepClaims();
+  await abandoned;
+  await Bun.sleep(200);
+
+  expect(core.getCard(1).attention?.note).toBe(
+    "the base branch has diverged since the spec was written",
+  );
+});
+
+/**
+ * A raise that throws is a harness failure, not the card waiting on an answer. The two look
+ * the same from `endRun` unless they are told apart — and `ownerId()` is resolved inside the
+ * `try` on purpose, so a member lookup that throws must not relabel a finished artefact.
+ */
+test("a raise that fails is not a standing question: the met artefact still releases finished", async () => {
+  await initRepo();
+  const refuses: Core = {
+    ...core,
+    requestAttention() {
+      throw new Error("attention is down");
+    },
+  };
+  start({
+    core: refuses,
+    driver: fakeDriver(async function* () {
+      core.setBody(1, "# 1 — the spec", runnerMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Raise fails", "spec");
+
+  expect(comments(1).at(-1)).toBe("spec ready");
+  expect(core.getCard(1).attention).toBeNull();
+  expect(lastRelease(1)).toBe("finished");
+  expect(warnings.some((line) => line.includes("attention is down"))).toBe(true);
 });

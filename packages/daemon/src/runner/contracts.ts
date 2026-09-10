@@ -44,6 +44,14 @@ export interface ContractInput {
 }
 
 /**
+ * An unmet contract is read from the owner's queue, and the worktree it failed in is kept —
+ * so the note ends where the work is. Every escalation says where to `cd`.
+ */
+function withExitRamp(note: string, worktreePath: string): string {
+  return `${note}; the work is in ${worktreePath}`;
+}
+
+/**
  * Spec: a body written by this run, and a non-empty one now. What must be new is that this
  * run recorded it — a body the card already carried is a previous run's, or the owner's.
  */
@@ -56,7 +64,11 @@ function specContract(input: ContractInput): ContractOutcome {
   if (wrote && card.body.trim().length > 0) {
     return { met: true, note: "spec ready", moves: ["code"] };
   }
-  return { met: false, note: "run finished without a spec", moves: [] };
+  return {
+    met: false,
+    note: withExitRamp("run finished without a spec", input.worktreePath),
+    moves: [],
+  };
 }
 
 /**
@@ -88,7 +100,8 @@ async function codeContract(input: ContractInput): Promise<ContractOutcome> {
     unmet.push(`no commits on ${input.branch} past ${input.base}`);
   }
   if (changed.length > 0) {
-    unmet.push(`uncommitted changes in the worktree at ${input.worktreePath}`);
+    // The path is not repeated here: every unmet note ends with where the worktree is.
+    unmet.push("uncommitted changes in the worktree");
   }
   if (!recorded || prUrl === undefined) {
     unmet.push("no pull request recorded during this run");
@@ -96,7 +109,10 @@ async function codeContract(input: ContractInput): Promise<ContractOutcome> {
   if (unmet.length > 0 || prUrl === undefined) {
     return {
       met: false,
-      note: `run finished without the Code phase's artefact: ${unmet.join("; ")}`,
+      note: withExitRamp(
+        `run finished without the Code phase's artefact: ${unmet.join("; ")}`,
+        input.worktreePath,
+      ),
       moves: [],
     };
   }

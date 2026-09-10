@@ -119,11 +119,23 @@ kept as it is, and the card stays in this phase.
 condition asks is not that the URL be new — a card sent back from PR for revision pushes to
 the same branch and keeps the same pull request — but that *this* run recorded it. So on a
 branch that has no pull request yet, open one and record what it gives you; and on a branch
-that already has one, read the existing URL back and record the same value again:
+that already has one, read the existing URL back and record the same value again.
+
+Two calls, and **never one**: read the URL, then pass what it printed as a literal.
 
 ```
-skelcrew refs <id> --pr "$(gh pr view --json url --jq .url)"
+gh pr view --json url --jq .url
 ```
+
+```
+skelcrew refs <id> --pr <the URL that printed>
+```
+
+Substituting one into the other — `--pr "$(gh pr view …)"` — puts a shell operator in the
+command, and a command carrying one is put to the owner whatever the pre-allowed list says. It
+would stop this run on a permission question to satisfy the very condition that decides whether
+the phase can complete. The same goes for joining any two commands here with `&&`, `;` or a
+pipe: run them one at a time.
 
 A run that skips this hands nothing on, however much work is sitting on the branch.
 

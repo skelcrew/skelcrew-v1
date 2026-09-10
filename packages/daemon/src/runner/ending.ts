@@ -253,10 +253,16 @@ export function endRun({
   reason,
   question,
 }: RunEnding): void {
-  let raised = false;
+  /**
+   * Set only where the helper itself refused: a request this run may not replace is standing.
+   * A *throw* out of the block below is not that — `ownerId()` is resolved inside it on
+   * purpose, and a member lookup or a comment that fails is a harness failure, not the card
+   * waiting on an answer. Conflating the two would release a finished artefact as `blocked`.
+   */
+  let refused = false;
   try {
     core.comment(cardId, note, memberId);
-    raised = attention.raise(cardId, { to: ownerId(), note, moves }, question) !== undefined;
+    refused = attention.raise(cardId, { to: ownerId(), note, moves }, question) === undefined;
   } catch (error) {
     warn(`skelcrew runner: card ${cardId}: ${note}; and could not say so: ${message(error)}`);
   }
@@ -266,7 +272,7 @@ export function endRun({
     if (core.getCard(cardId).claim?.by !== memberId) return;
     // A question of the agent's still standing is what the card waits on, whatever this run
     // made of its own work: it is blocked behind the answer rather than finished or failed.
-    core.releaseCard(cardId, { reason: raised ? reason : "blocked" }, memberId);
+    core.releaseCard(cardId, { reason: refused ? "blocked" : reason }, memberId);
   } catch (error) {
     warn(`skelcrew runner: card ${cardId} not released: ${message(error)}`);
   }
