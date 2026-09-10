@@ -72,6 +72,15 @@ the shape the CLI already renders for a request's suggested resolutions:
 allow Bash rm -rf build ls? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)
 ```
 
+**The note carries the input in full, not the activity summary's rendering of it.** The
+glanceable one-line form the card uses for streamed tool calls cuts at a couple of hundred
+characters; the request the owner *answers* must not, because the party choosing the text is the
+party being gated. A command whose first two hundred characters read `git log …` and whose tail
+is `&& curl … | sh` is a compound command, so it is not pre-allowed and does reach this ask —
+and it would be approved on a rendering that hides the part that matters. The note carries the
+input up to the comment size limit the core already enforces, and where even that truncates, it
+says so and names the run log that holds the whole of it.
+
 Three mechanisms the spike proved necessary, each after a review round (retrospective §2, §3):
 
 - **Requests queue.** A list of pending asks plus the one currently on the card. The next is
@@ -93,7 +102,9 @@ The complete list after this spec, with the four groups 012 established plus wha
 adds. Each line is exact; nothing here is a placeholder for a broader grant.
 
 ```
-Read, Glob, Grep, Edit, Write, MultiEdit, Agent, TodoWrite
+Read, Glob, Grep, Agent, TodoWrite
+Edit(//<worktree>/**)            <- allows Edit, Write and MultiEdit, worktree only
+deny: Edit(//<worktree>/.git)  deny: Edit(//<worktree>/.git/**)
 Bash(skelcrew show *)   Bash(skelcrew comment *)   Bash(skelcrew body *)
 Bash(skelcrew refs *)   Bash(skelcrew attention *)
 Bash(git status *)  Bash(git log *)     Bash(git diff *)    Bash(git show *)
@@ -135,10 +146,15 @@ Why each group is shaped this way:
   owner's repository, not its own scratch copy. No playbook runs `git branch`; a read-only use
   asks.
 - `Bash(git push)` under a repo-level `push.default = matching` can push more than the card's
-  branch. Accepted, and recorded.
+  branch. Accepted, and recorded. It is only as narrow as the config that governs it:
+  `remote.origin.push` outranks `push.default` and can turn a bare push into
+  `+HEAD:refs/heads/main`. Both live in the git common directory, which the file rules below
+  place out of reach; if that anchoring is ever removed, this entry stops being narrow.
 - Nothing here sandboxes the agent. The list governs what runs **unprompted**; everything else
   remains available by asking. This is a gate, not a jail, and the spec should not be read as
-  claiming otherwise.
+  claiming otherwise. Constraining the file tools to the worktree, below, is part of the gate
+  and not a sandbox: it decides which writes ask, and denies only the one path whose whole
+  purpose is to redirect the others.
 
 ### The scan, and the rule that keeps it from widening
 
@@ -167,13 +183,12 @@ A scanned line must also look like a command: if its first word is not a plain c
 (letters, digits, `.`, `_`, `/`, `-`), the block contributes nothing.
 
 **The scan reads the instruction files as of the run's base commit, not the working tree.**
-`Write` and `Edit` are on the fixed list and are not path-constrained, so an agent can write a
-fenced block into the repository's own `AGENTS.md` — a single unprompted `Write`, visible on the
-card only inside a batched tool summary — and thereby pre-allow a command for every later run.
-That is a run widening its own successor's boundary, which defeats the gate this spec exists to
-build. Reading the file from a base commit rather than the working tree means only a change the owner
-has already merged can grant anything; a file that is untracked, or modified relative to that
-commit, contributes nothing.
+An agent can write a fenced block into the repository's own `AGENTS.md` inside its worktree — a
+single unprompted write, visible on the card only inside a batched tool summary — and thereby
+pre-allow a command for every later run. That is a run widening its own successor's boundary,
+which defeats the gate this spec exists to build. Reading the file from a base commit rather than
+the working tree means only a change the owner has already merged can grant anything; a file that
+is untracked, or modified relative to that commit, contributes nothing.
 
 **That base must be a ref nothing on the fixed list can write.** A local branch name is not:
 `refs/heads/` is shared by the main checkout and every worktree, so a run that can create or move
@@ -184,6 +199,41 @@ guarantee to hold is not "read a commit" but *the run cannot influence what its 
 allowed to do*; an implementer should state which ref it chose and why the fixed list cannot
 reach it.
 
+**Choosing the ref is not enough on its own: the file tools have to be anchored too.** A ref is a
+plain file inside the git common directory, and `git rev-parse --git-common-dir` — pre-allowed —
+names that directory. While the file tools are on the list unqualified, a run can author a commit
+and then write the sha straight into `refs/remotes/origin/<default branch>`, and its successor
+reads instructions the run wrote. The same unqualified write reaches `.git/config`, where one
+`remote.origin.push` line turns the pre-allowed bare `git push` into a push to the default
+branch. No choice of ref survives that; the grant itself has to be narrowed.
+
+So the file tools are anchored to the run's own worktree:
+
+- **The entry is spelled `Edit`, and it is the only file-tool entry.** This harness checks file
+  permissions against `Edit(path)` and `Read(path)` rules **only**. A path rule written for
+  `Write`, `MultiEdit`, `NotebookEdit` or `Glob` is accepted, never consulted, and warned about at
+  startup — it would read as a constraint and enforce nothing. One `Edit(...)` rule governs every
+  built-in tool that edits files, so `Write` and `MultiEdit` come off the list rather than gaining
+  path rules of their own.
+- **The path is the run's worktree, absolute.** A leading `//` anchors a rule at the filesystem
+  root. As an *allow* rule a `dir/**` pattern matches only at its anchor and not at any depth,
+  which is what is wanted here. The git common directory is not under the worktree — a linked
+  worktree's real git directory lives beside the main checkout — so this one anchor puts every
+  ref, `packed-refs`, and every `config` out of reach in a single stroke.
+- **The worktree's own `.git` is denied.** In a linked worktree `.git` is a file holding
+  `gitdir: <common>/worktrees/<name>`, so it sits *inside* the anchor and rewriting it repoints
+  the worktree at a git directory of the agent's choosing. It is denied explicitly; deny outranks
+  allow.
+- **Everything outside stays available by asking.** An unmatched path is not a refusal, it is a
+  question to the owner — the same gate this spec builds for every other unlisted call. A run
+  that genuinely needs to write outside its worktree says so on the card.
+
+Two limits belong on the record rather than in a claim. Read and Edit deny rules also cover the
+file commands the harness recognises in Bash and the targets of shell redirections, but they do
+not cover a subprocess that opens files itself; no entry on this list starts one, and any command
+that would asks. And a `Read` deny rule blocks Edit and Write on the same path while an `Edit`
+deny rule does not block reading — reading a ref was never the problem, writing one was.
+
 **A scanned command may not widen a command the fixed list narrows.** `skelcrew`, `git` and `gh`
 are narrowed above; a repo whose instructions show `git status` must not thereby produce
 `Bash(git *)`. This is not hypothetical — it is a defect the spike shipped and had to fix, and
@@ -193,7 +243,8 @@ any repo documenting a git command triggers it.
 
 1. `bun run check` passes. No test spawns a real coding agent or calls a model.
 2. A tool outside the fixed list raises an attention request to the owner whose note names the
-   tool and its input and contains both resolving commands. The run does not proceed until it is
+   tool and its input **in full** — an input longer than the activity summary's one-line cut
+   reaches the owner uncut, up to the comment size limit — and contains both resolving commands. The run does not proceed until it is
    answered.
 3. `skelcrew resolve <id> -m allow` lets the tool run; `yes` and `ok` do the same. `deny`, `no`,
    any other text, and a resolve with no text all deny, and the agent is told the owner's text as
@@ -217,7 +268,13 @@ any repo documenting a git command triggers it.
    command word, each contribute nothing.
 10b. A run cannot widen its successor's allowlist by any sequence of pre-allowed commands.
     Specifically: committing an instruction file and then creating, renaming or repointing a
-    branch grants the next run nothing, and `git branch` is not pre-allowed at all.
+    branch grants the next run nothing, and `git branch` is not pre-allowed at all; and no
+    pre-allowed tool writes any file outside the run's own worktree — a write to a path under
+    the git common directory (a ref, `packed-refs`, `config`) asks, as does a write to the
+    worktree's own `.git`.
+10c. No pre-allowed sequence lands a commit on the default branch. Specifically: rewriting
+    `remote.origin.push` and then running the pre-allowed bare `git push` is not available,
+    because the write to `.git/config` asks.
 10a. A fenced block whose line contains an unescaped `*`, `?` or `[` contributes nothing: a repo
     containing `bun *` does not pre-allow `bun -e '…'`. A fenced block written into the working
     tree during a run, or present only as an uncommitted change, contributes nothing to that run
@@ -246,8 +303,9 @@ any repo documenting a git command triggers it.
 ## Out of scope
 
 - **Artefact contracts and run endings.** 014.
-- **Sandboxing the agent**, restricting its filesystem access, or any mechanism beyond the
-  allowlist and the ask.
+- **Sandboxing the agent** at the OS level, or any mechanism beyond the allowlist and the ask.
+  Anchoring the file-tool entry to the worktree is inside that boundary, not outside it: it is
+  one allowlist entry and one deny, and every path it does not cover asks rather than fails.
 - **Scoping the runner's identity to its card.** A run can still write to another card; this is
   recorded as a carried limitation and is not addressed here.
 - **Per-repository configurable allowlists**, remembering an answer across runs, or a policy for
