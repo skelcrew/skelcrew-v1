@@ -276,19 +276,97 @@ teardown that never destroys work: a dirty worktree is salvaged (left in place a
 or WIP-committed), never force-removed. Process management and crash recovery are the
 substance; a runner that leaks worktrees or strands claims fails the milestone.
 
-## 007 — Runner runs the phase playbooks
+## 007 — Runner runs the phase playbooks — spiked, superseded by 011–014
 
-The runner spawns a coding agent in the card's worktree, running the built-in playbook for
-the card's phase with the card as input, and streams its activity back to the card as it
-works. Driven through the Agent SDK, not fire-and-forget `-p`: `canUseTool` becomes an
-attention request with Approve/Deny that resumes the run, and streaming input lets card
-comments reach the running agent mid-run. Playbooks ship with skelcrew — extracted from this
-repo's `.claude/` skills and agents — and are injected at spawn time, never committed to the
-target repository; project specifics come from the target repo's own `AGENTS.md`, and the
-runner pre-allows the check commands named there. The runner relays; it calls no model APIs.
-A finish is verified against the phase's artefact contract before any handoff — a develop
-finish with no commits on the branch is a failed run → attention request with the reason,
-never a handoff. Output posted to the card is excerpts and status, never a code dump.
+**Built, reviewed eight times, and parked rather than merged.** The spec is
+`docs/specs/007-runner-runs-playbooks.md`, left unchanged as the record of what was intended;
+the work is branch `worktree-runner-playbooks` on `origin` (tip `3cb6d64`, 14 commits, green
+at 359 tests with every finding landed). It is reference material, not a base to build on —
+the same standing as the `prototype` branch.
+
+It aimed at the whole of it at once: the agent boundary with the SDK behind it, the shim, the
+permission allowlist, both playbooks, activity streaming, the transcript, permission routing,
+both artefact contracts, and the entire claim lifecycle — 3,576 insertions across 25 files, and
+the first spec where skelcrew touches subprocesses, the network, and actions that cannot be
+undone. Four internal review rounds and four external ones (a different vendor's model, reading
+the same spec) found about twenty-one real defects and no invented ones. They converged rather
+than scattered, but a spec needing eight rounds is a spec that could not be reviewed in one.
+
+**Read `docs/plans/007-spike-retrospective.md` before specifying any of 011–014.** It carries
+what the spike bought: what it settled and should not reopen, the domain facts that each cost a
+round (the core queues nested mutations; `moveCard` emits its own `released`; member identity
+cannot tell the agent's `skelcrew attention` from the runner's own note; `refs/tags/<name>`
+outranks `refs/heads/<name>`; the SDK stream is not the display projection), the invariants and
+every place they were violated, and the two defects that were in the spec itself. The run
+record and all three conformance reviews are in `docs/plans/` alongside it.
+
+Three lessons already applied to `.claude/` (`/spec`, reviewer, implementer): a permission
+grant is a security boundary; "spec defects, faithfully implemented" is a finding class; a fix
+changes exactly what the finding names. Two not yet applied anywhere: a fix is done when the
+cases *next to* the reported one have been looked at — five half-fixes survived multiple rounds
+because "fixed" in a run record reads as settled — and each review round should be its own
+commit, since a squashed history cannot evidence red-before-green.
+
+## 011 — Artefact refs: the card records what it produced
+
+`CardRefs` carries `branch`, `commits` and `prUrl`, and nothing for the spec the Code phase
+commits. Three rounds of playbook prose failed to substitute for that: matching the card's spec
+by number deadlocked revision runs, matching by content broke the moment the owner revised the
+text, and matching by "number or content" shipped a stale spec in the PR. Identity has to be
+recorded when the artefact is made, not re-derived afterwards by heuristic.
+
+So: `refs` gains the committed spec's path, with the CLI flag to set it, and `refs_set` records
+**which keys a call set** rather than only the merged result — today "did this run record a PR?"
+cannot be answered precisely, so a run writing any other ref while a `prUrl` sits on the card
+satisfies the same check. Small, and 014 depends on both halves. This is also where the
+"objects" instinct cashes out: the card stays one object with a phase, and its artefacts get
+honest references — not an entity model.
+
+## 012 — The runner spawns an agent and the card shows what it does
+
+The agent boundary as one interface with the SDK behind a single file, `SKELCREW_AGENT`
+selecting `claude` or `none`, and `bunfig.toml`'s `peer = false` keeping the SDK's peer
+packages — an actual model client among them — off disk. The generated shim on the agent's
+`PATH`, speaking as the `runner` member, `exec`ing this daemon's own Bun so it survives a
+minimal launchd environment. Playbooks loaded and injected at spawn. The agent's turns and tool
+activity streamed onto the card as excerpts and summaries, never a code dump, with the full SDK
+message stream written to a run log at the driver boundary — not projected from what the card
+displays, which silently drops whole message kinds.
+
+Ends when: an agent runs in the card's worktree and everything it did is visible on the card.
+A tool that is not pre-allowed is denied, visibly; asking is 013. No artefact contract yet —
+the run hands back the way 006 does.
+
+## 013 — The agent asks the owner
+
+`canUseTool` becomes an attention request carrying the resolving choices, answered by the
+owner's `resolve -m`, and the run continues. Requests queue: one on the card at a time, and a
+question the agent raised itself outranks them. Plus the allowlist — the fixed list of what
+needs no asking, and the scan that adds the check commands a target repo names in its own
+instructions.
+
+**This is a security spec and must be reviewed as one.** 007 specified `Bash(gh pr *)` and
+`Bash(git *)`; both were implemented faithfully and each dissolved the gate the same spec
+existed to build, because `Bash(x *)` matches every command beginning with `x` — including
+`gh pr merge`, `git push origin HEAD:main`, and arbitrary execution through `git -c`. Name the
+verbs against the real matching semantics, say what must ask, and forbid the repo scan from
+widening anything the fixed list narrowed.
+
+## 014 — A phase ends in a verified artefact
+
+The contracts and the endings. Spec: a body written by this run, and a non-empty one. Code:
+commits past the base — with **both** ends of the range qualified as `refs/heads/…`, since a
+tag sharing the base branch's name silently replaces it — a clean worktree, and the card's spec
+and PR recorded by this run (011). Meeting it is an attention request carrying the move; failing
+it names every unmet condition, keeps the worktree, and asks.
+
+And the endings, which is where most of the spike's pain lived: what happens when the card moves,
+is archived, is released, is claimed by someone else, or the agent acts on its own card. The rule
+that finally worked is **derive the ending from the card's state at completion**, consulting the
+recorded events only for the *reason* — never for the *decision*. Flags maintained by an event
+switch were half-implemented five times over, each round finding the next unhandled case. A run
+must never write to a card whose claim it has lost, and a question the agent raised must never be
+replaced by the run's own note.
 
 ## 008 — The full loop
 
@@ -310,8 +388,10 @@ card's branch; a conflicted card auto-bounces to Code with a rebase brief and
 re-passes the in-run review before its PR updates. Includes failure and abandonment paths
 (worktree salvaged, card returned with a reason, attention request to the owner).
 Cross-member review — a different runner reviewing than the one that implemented — is
-deferred until a second runner exists. Depends on what 006 and 007 turn out to need —
-expect this entry to be rewritten from their findings before it is specified. When this
+deferred until a second runner exists. Depends on what 006 and 011–014 turn out to need —
+expect this entry to be rewritten from their findings before it is specified, and to be split
+the way 007 should have been: the in-run review loop with its cycle budget, and the
+default-branch/rebase machinery, are separable from the loop itself. When this
 lands, skelcrew can start building skelcrew.
 
 ## Later, deliberately unplanned
