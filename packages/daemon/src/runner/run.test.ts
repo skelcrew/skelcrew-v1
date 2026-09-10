@@ -735,6 +735,43 @@ test("a question the core refuses denies the tool rather than leaving the agent 
   expect(comments(1).some((text) => text.includes("time limit"))).toBe(false);
 });
 
+/**
+ * The comment `resolveAttention` records is the decision, and is consumed as such: forwarding
+ * it as well would have the agent read its own answer as a fresh instruction from the owner.
+ * The case next to this one asserts the opposite direction — the answer to a question the
+ * *agent* raised is a message to it — so without this one, consuming the comment could be
+ * dropped and every test would stay green.
+ */
+test("the owner's answer to a permission request is not also delivered to the agent", async () => {
+  await initRepo();
+  const received: string[] = [];
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      // Read the inbox for as long as the run lasts, so anything forwarded is seen.
+      void (async () => {
+        for await (const text of options.input) received.push(text);
+      })();
+      decision = await options.canUseTool("Bash", { command: "rm -rf build" });
+      await Bun.sleep(50);
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Answered once" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+
+  expect(decision).toEqual({ behavior: "allow" });
+  // The card, and nothing else: the answer decided the tool call and stopped there.
+  expect(received).toHaveLength(1);
+  expect(received[0]).toContain(`Card ${card.id}`);
+  expect(received.some((text) => text.includes("allow"))).toBe(false);
+});
+
 test("a question the agent raised itself outranks the run's; the permission request waits", async () => {
   await initRepo();
   const received: string[] = [];

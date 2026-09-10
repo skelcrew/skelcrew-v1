@@ -311,6 +311,11 @@ export async function runPlaybook(input: RunInput): Promise<void> {
    * here can fail with the buffer removed. It stays because the spec names the mechanism and
    * because it leaves this side's ordering independent of the core's — but the guarantee it
    * doubles is the core's.
+   *
+   * One thing about it is *not* belt and braces: `answerTo` splices the owner's answer out of
+   * this list rather than reading it, which is what stops that comment also reaching the agent
+   * as a message. The buffer is where that consumption happens, so removing it, or turning the
+   * splice into a lookup, changes behaviour rather than only ordering.
    */
   const held: Comment[] = [];
   const flushHeld = (): void => {
