@@ -645,6 +645,46 @@ test("a question the agent raised itself outranks the run's; the permission requ
   expect(received[1]).toBe("use main");
 });
 
+/** The case next to the one above: the agent asks *after* the run's question is on the card. */
+test("an agent's question raised over the run's is answered first, and the run's comes back", async () => {
+  await initRepo();
+  let decision: ToolDecision | undefined;
+  let raised: (() => void) | undefined;
+  const onCard = new Promise<void>((resolve) => {
+    raised = resolve;
+  });
+  start({
+    driver: fakeDriver(async function* (options) {
+      const answer = options.canUseTool("Write", { file_path: "/repo/x.ts", content: "x" });
+      await onCard;
+      agentAsks(1, "the spec contradicts CLAUDE.md");
+      decision = await answer;
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Asks over the run" }, owner.id);
+  const permission = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await permission;
+  (raised as () => void)();
+
+  // The agent's question replaced the run's, and it is the one the owner sees.
+  const back = untilEvent(asked(card.id));
+  await Bun.sleep(100);
+  expect(core.getCard(card.id).attention?.note).toBe("the spec contradicts CLAUDE.md");
+  expect(decision).toBeUndefined();
+
+  // Answering it puts the run's question back on the card, rather than losing it.
+  core.resolveAttention(card.id, "rewrite the spec", owner.id);
+  await back;
+  expect(core.getCard(card.id).attention?.note).toContain("/repo/x.ts");
+  core.resolveAttention(card.id, "deny", owner.id);
+  await done;
+  expect(decision?.behavior).toBe("deny");
+  expect(deniedMessage(decision)).toContain("deny");
+});
+
 test("a claim whose run is waiting on a question does not lapse", async () => {
   await initRepo();
   let at = Date.now();
