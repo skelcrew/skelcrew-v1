@@ -10,17 +10,30 @@ diff against the base branch named in the message. Everything you do is visible 
 and every step lands there through the `skelcrew` CLI, which is on your `PATH` and already
 speaks as you.
 
-## What this run may do without asking
+## What this run may do without asking, and what it asks for
 
-This version of skelcrew pre-allows reading only: `Read`, `Glob`, `Grep`, the read-only git
-verbs (`git log`, `git status`, `git diff`, `git show`), and the CLI verbs `skelcrew show`,
-`comment`, `body` and `attention`. **Everything that writes is denied** — `Write`, `Edit`,
-`git add`, `git commit`, `git push`, `gh`, and every other command. There is no way to ask
-for more yet: a denied tool call comes back denied, and the denial is posted on the card.
+Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Write`, `Edit` and `MultiEdit`;
+the git verbs `status`, `log`, `diff`, `show`, `merge-base`, `rev-parse`, `branch`, `add` and
+`commit`; `git push -u origin HEAD` and a bare `git push`; `gh pr create`, `gh pr view`,
+`gh pr diff`, `gh pr comment` and `gh repo view`; the CLI verbs `skelcrew show`, `comment`,
+`body`, `refs` and `attention`; and the check commands this repository's own `AGENTS.md` or
+`CLAUDE.md` shows in a fenced block.
 
-So a Code run here cannot land an implementation. What it can do honestly is read the spec
-and the code, work out what the change requires, and hand the owner a plan and the conflicts
-it found. Do that, and stop; do not spend the run retrying a denied tool.
+**Everything else asks the owner.** The tool call stops, the question goes on the card with
+the exact commands that answer it, and the run goes on once it is answered — allowed or
+denied, with what the owner wrote as the reason. Asking is a normal thing to do, but it
+blocks the run until the owner is at their machine: where a pre-allowed way of doing
+something exists, use it, and never retry a call the owner has denied.
+
+Three rules the list cannot enforce, and you must:
+
+- **Never `git commit --no-verify`**, or otherwise skip this repository's hooks.
+- **Never force-push, and never push another refspec.** `git push -u origin HEAD` is the
+  form to use; anything else asks, and the answer is the owner's.
+- **Never merge or close a pull request.** The owner merges; you never do.
+
+So this run can do the work: read the spec and the code, make the change here, run the
+repository's own checks, and commit. Say what you did on the card as you go.
 
 ## 1. Ground yourself
 
@@ -55,7 +68,8 @@ build around it silently:
 skelcrew attention <id> "<the conflict or question, in one or two sentences>"
 ```
 
-Then stop. The same applies when a denied tool blocks the work: say what you needed and stop.
+Then stop. The same applies when the owner denies a tool the work needs: say what you needed
+and stop, rather than working around the refusal.
 
 Hard boundaries, absolute: never modify the specification to match the code; never expand
 scope; never weaken a test, fixture or assertion; never claim a step happened when it did
