@@ -183,8 +183,8 @@ set is exactly `allowedTools` plus `canUseTool`. This is part of the same bounda
 and is not a detail: a list that another file can widen is not a list.
 
 **One exception is the harness's own, and cannot be closed here.** Claude Code self-approves a
-set of read-only Bash commands (`ls`, `cat`, `grep`, `find` without `-exec`, and similar) before
-rule matching, so those never reach `canUseTool` either. That is a documented divergence from
+set of read-only Bash commands (`ls`, `cat`, `grep`, `find` without `-exec`, and similar) — after
+rule matching and before it would otherwise ask — so those never reach `canUseTool` either. That is a documented divergence from
 the list rather than a hole this spec opens: `Read` is itself pre-allowed above, so the agent
 can already read any file the owner can. Whether an unattended run should have unbounded read
 access at all is a real question, and it belongs to 013 alongside asking — where deny rules and

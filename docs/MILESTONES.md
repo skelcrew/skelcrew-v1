@@ -405,6 +405,19 @@ the run hands back the way 006 does.
   cause that is not discoverable from the card. Whichever spec first meets a non-OAuth login
   decides deliberately what to pass through, rather than discovering this by accident.
 
+- **Carried from 012, for 013: `settingSources: []` does not close every settings channel.**
+  It disables the user, project and local `.claude/settings.json` tiers, which is what stops a
+  target repository granting itself permissions. Two things survive it. The SDK's `settings`
+  option — the `--settings` flag layer — is separate, accepts a permissive `permissions.allow`,
+  and is unaffected; skelcrew must never set it. And `managedSettings`, the restrictive policy
+  tier, still applies and looks like the right home for deny rules — except that on a machine
+  with an IT-managed tier it is dropped unless that admin opts into merging, so a deny there can
+  silently not apply. If 013 uses deny rules, `canUseTool` has to stay authoritative rather than
+  relying on them. Note also that the isolation cuts the owner's own harness configuration —
+  a `model`, an `env` block, `apiKeyHelper` — so an owner who authenticates through
+  `~/.claude/settings.json` rather than a stored login has runs that cannot start, with a cause
+  no test here can see. Related to the four-variable environment finding above.
+
 ## 013 — The agent asks the owner
 
 `canUseTool` becomes an attention request carrying the resolving choices, answered by the
