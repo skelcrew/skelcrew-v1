@@ -101,7 +101,7 @@ Bash(git merge-base *)  Bash(git rev-parse *)  Bash(git branch *)
 Bash(git add *)     Bash(git commit *)
 Bash(git push -u origin HEAD)   Bash(git push)
 Bash(gh pr create *)  Bash(gh pr view *)  Bash(gh pr diff *)  Bash(gh pr comment *)
-Bash(gh repo view*)
+Bash(gh repo view *)
 ```
 
 **The matching rule this list is written against.** `Bash(x *)` is wildcard matching: it matches
@@ -139,9 +139,22 @@ Why each group is shaped this way:
 ### The scan, and the rule that keeps it from widening
 
 `allowlist.ts` reads `AGENTS.md` and `CLAUDE.md` at the target repository root and adds the
-first token of the first line of each fenced block whose info string is empty or names a shell
-(`sh`, `bash`, `shell`, `zsh`, `console`), stripping a leading `$ `. A block in another language
-is skipped whole. That is how `bun run check` becomes pre-allowed for this repository.
+first line of each fenced block whose info string is empty or names a shell (`sh`, `bash`,
+`shell`, `zsh`, `console`), stripping a leading `$ ` and trimming. A block in another language is
+skipped whole. That is how `bun run check` becomes pre-allowed for this repository.
+
+**The scan grants the command line it found, not its first word.** `bun run check` yields
+`Bash(bun run check *)`, never `Bash(bun *)`. This is the same rule the fixed list follows and it
+matters more here, not less: the entry is derived from a file **the target repository controls**,
+so the widest form of it is the widest thing a repository can grant itself. `Bash(bun *)` would
+match `bun -e '<any code>'` — arbitrary execution, unprompted — and the equivalent holds for
+`node -e`, `python -c`, `npm`, and `make`. A first-word grant would make the one attacker-
+influenced entry the loosest in the list, three paragraphs after the spec explains why
+`Bash(git *)` is intolerable for exactly that reason.
+
+A scanned line must also look like a command: if its first word is not a plain command word
+(letters, digits, `.`, `_`, `/`, `-`), the block contributes nothing. Otherwise a block opening
+with `*` yields a pattern the harness compiles to "every command containing a space".
 
 **A scanned command may not widen a command the fixed list narrows.** `skelcrew`, `git` and `gh`
 are narrowed above; a repo whose instructions show `git status` must not thereby produce
@@ -170,8 +183,10 @@ any repo documenting a git command triggers it.
    `gh pr merge 42 --squash`, `gh pr close 42`, `skelcrew mv 1 code`, `skelcrew release 1`,
    `skelcrew claim 1`, `skelcrew archive 1`, `skelcrew resolve 1 -m allow`.
 9. A target repository whose `AGENTS.md` shows `bun run check` in a fenced block yields
-   `Bash(bun *)` in addition to the fixed list; a repository with neither instruction file
-   yields exactly the fixed list; a fenced block in another language contributes nothing.
+   `Bash(bun run check *)` in addition to the fixed list — **not** `Bash(bun *)`, and a call to
+   `bun -e '…'` therefore still asks. A repository with neither instruction file yields exactly
+   the fixed list; a fenced block in another language, and one whose first word is not a plain
+   command word, each contribute nothing.
 10. A target repository whose instructions show `git status`, `gh pr view` or a `skelcrew`
     command in a fenced block does **not** cause `Bash(git *)`, `Bash(gh *)` or
     `Bash(skelcrew *)` to appear in the resulting list.
