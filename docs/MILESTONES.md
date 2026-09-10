@@ -20,7 +20,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 7 | 006 Runner skeleton | landed, PR #7 |
 | — | 007 Runner runs the phase playbooks | **spiked, not merged** — PR #8 closed, split into 011–014 |
 | 8 | 011 Which refs a run set; spec export bookmark | landed, PR #9 |
-| 9 | 012 Spawn an agent, show what it does | planned |
+| 9 | 012 Spawn an agent, show what it does | landed, PR #10 |
 | 10 | 013 The agent asks the owner | planned |
 | 11 | 014 A phase ends in a verified artefact | planned |
 | 12 | 015 Control characters can't repaint the record | planned |
@@ -214,6 +214,87 @@ Findings and decisions from the spec workflow itself, newest last:
   requires the gitdir's grandparent to be named `.git`, so a main repository initialised
   with `--separate-git-dir` does not resolve and its runner worktrees fall back to their
   own directory as the root.
+
+Findings from reading two neighbouring harnesses end to end (2026-09-10): herdr, a terminal
+runtime that owns agents' panes and has no work item at all, and orca, which is the closest
+thing to a controlled experiment against skelcrew's design. Orca's model — Run → Task →
+Dispatch in SQLite, an attempt carrying a spec, artefacts checked against git — is nearly
+skelcrew's, with one substitution: **an agent orchestrates.** A coordinator agent decomposes the
+work, dispatches the workers, answers their questions, and resolves the decision gates — the
+`decision_gates` table has no human column and no UI to answer one; the human arrives at review.
+Skelcrew puts the phase table where that agent sits, and the owner where its gate-resolve call
+sits. Nearly everything below is downstream of that one difference: orca must make a plan held
+in a context window survivable, and skelcrew's plan is rows. Both harnesses also arrived
+independently at the CLI-as-agent-surface delivered as a skill, at worktree isolation, and at
+durable identity over disposable runs — corroboration rather than news. What follows is what
+they know that skelcrew's entries did not yet say:
+
+- **An outcome is derived from evidence, never reported (014).** Orca never stores "this
+  attempt succeeded". It appends observations on separate facets — is the process running, did
+  files actually change under git, did the worker send a report, did the terminal exit — each
+  stamped with which host observed it and when, and projects the outcome from all of them. The
+  projection has a state 014 currently lacks a name for: *finished but unverified*, the run
+  ended and no report was ever accepted. That is exactly the spike's failure — "branch ready for
+  review" over zero commits — generalized past the one case 014 checks. 014's contracts are
+  already the right predicates; the finding is that the phase's status should be *computed from*
+  them at completion rather than written when an agent claims an ending, and that the unmet
+  conditions are the reason attached to the attention request, not a separate bookkeeping flag.
+- **Evidence goes stale, and not knowing is never permission to act (009).** Orca degrades a
+  `live` observation older than its freshness window to `unverifiable`, and holds one rule over
+  every recovery path: absence authorizes nothing — not stop, not retry, not release. Only a
+  positive verdict does. 009 currently reads a lapsed lease as grounds to re-queue, which is the
+  opposite reading: the lease lapsing means *the daemon stopped hearing*, which on a slept laptop
+  or during a long non-heartbeating step is not death. The visible `run_interrupted` event is
+  still right; what needs saying is what it asserts. Re-queuing on absence is defensible for a
+  single-player local daemon — but only once the next finding is true, and it should be a stated
+  decision rather than an unexamined default.
+- **A lapsed claim must be fenced by the core, not by the run's own diligence (009/012).** 012
+  has the run re-check its claim after every git call and 014 forbids writing to a card whose
+  claim was lost — both rely on the run behaving. Orca fences from the other side: every
+  re-point of an attempt bumps a generation counter, and the displaced worker learns it lost
+  through a distinct error on its next call (`consumer_fenced`), which its playbook answers with
+  stop, do not report, do not retry. One integer on the claim and one dedicated error code across
+  every mutating verb make the re-check an optimization instead of the guarantee, which matters
+  because the case that breaks discipline is exactly the run that stopped heartbeating.
+- **A retried command must not act twice (004).** Every orca mutation takes a request id and
+  the daemon remembers which ones it has completed, so a lost response replays to the original
+  receipt instead of claiming twice or double-posting. Their guidance is explicit that a caller
+  whose response vanished must ask what happened rather than replay blind. Agent members make
+  this sharper than it is for humans: a person re-reads the card first, an agent just runs the
+  command again.
+- **The last thing a run does before finishing is read its card (012/013).** A comment does not
+  interrupt a running agent, so mid-run feedback only lands if the agent looks. Orca's worker
+  contract requires a check at natural checkpoints *and once more immediately before reporting
+  done*, so a redirect arrives before the phase settles rather than after it. This is a line in
+  a playbook, not machinery, and it is what makes 012's streamed card comments actually
+  load-bearing for feedback rather than only for answering questions.
+- **A playbook is a short kernel plus pages fetched at named decision points (012).** Orca's
+  orchestration instructions are a two-page kernel that always loads — role, authority, the
+  safety floor, the loop — followed by a table mapping situations ("a failed or unknown attempt",
+  "a remote host") to reference pages the agent pulls only when it is in that situation, served
+  by the binary itself so guidance and CLI cannot drift. Their recovery page is a table of
+  *proven state → safe action*, which is a far better artefact for an agent than prose. Two
+  things to copy when the playbooks get extracted from `.claude/`: the kernel carries an explicit
+  safe-failure default (preserve work, report unknown, act only on positive proof), and the
+  daemon serves them so a playbook can never describe a CLI the daemon no longer has.
+- **Nobody has a good answer for alive-but-stuck except watching it (012/013).** AGENTS.md
+  names this as the one Gas Town part with no counterpart here, and both neighbours confirm it:
+  each solved it by observation rather than trust. Herdr classifies every pane `working |
+  blocked | idle | done | unknown` from ~21 hot-updatable manifests of regexes matched against
+  a bottom-of-screen snapshot, and orca keeps process liveness and agent liveness as separate
+  verdicts because a live terminal can hold a dead agent. Herdr needs that machinery only
+  because it does not own the spawn; 013's `canUseTool` covers the same ground properly for
+  everything the agent can report. The residual case is the one it cannot — the harness blocking
+  below the agent — where owning the subprocess makes silence on a live process the cheap signal,
+  and the permission posture 013 settles is the real fix.
+- **What the coordinator agent costs (008).** Orca's orchestration is ~24k lines over a schema
+  rebuilt 40 times: durable typed mail between workers, mailbox fencing, idempotent mutations,
+  federation to remote hosts, takeover of adopted runs, a whole compatibility lane for attempts
+  started under an older contract. Almost none of it is the price of orchestration — it is the
+  price of a plan that lives in a context window and must stay reconstructable when that context
+  dies or goes wrong. Rows do not need reconstructing, so the bill does not transfer: the
+  findings above come to a few hundred lines between them. Worth remembering when 008 tempts a
+  card into dispatching other cards.
 
 ## 001 — Project scaffold
 
