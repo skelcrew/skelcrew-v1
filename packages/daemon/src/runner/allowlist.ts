@@ -850,9 +850,11 @@ export interface RunAllowlist {
  *   were listed as wildcards; rule 3 deleted the entries, and the harness's own read-only check
  *   refuses the flag. That is the third leg, and all three are needed.
  *
- * So only a commit the owner has pushed to the default branch can grant anything. A ref or a
- * file that cannot be read contributes nothing rather than failing the run — the fixed list is
- * the floor, and the agent asks.
+ * So no *tool call* on this list can make the scan read a commit the owner has not pushed to the
+ * default branch. Three legs hold that up and a subprocess steps over all three: the check
+ * command this function itself pre-allows can write the ref directly, and *What a subprocess
+ * reaches* above is where that is recorded. A ref or a file that cannot be read contributes
+ * nothing rather than failing the run — the fixed list is the floor, and the agent asks.
  */
 export async function allowlistFor(
   git: Pick<Git, "showFile" | "revParse">,

@@ -298,10 +298,11 @@ export function startRunner(options: RunnerOptions): Runner {
         return;
       }
       step = "read the allowlist";
-      // Read from the remote-tracking head of the default branch — a ref nothing the list
-      // pre-allows can write — so an instruction file a run writes, commits, or points a
+      // Read from the remote-tracking head of the default branch — a ref no *tool call* the
+      // list pre-allows can write — so an instruction file a run writes, commits, or points a
       // branch at grants nothing to it or to the next run. The file tools are anchored at
-      // this worktree, which is what keeps that ref out of reach.
+      // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
+      // call and is not bound by any of it; see *What a subprocess reaches* in `./allowlist`.
       const allowlist = await allowlistFor(git, repoRoot, base.name, path);
       stillHeld();
       step = "open run log";
