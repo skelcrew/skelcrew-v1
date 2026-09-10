@@ -72,7 +72,7 @@ export const FIXED_ALLOWLIST: readonly string[] = [
   "Bash(gh pr view *)",
   "Bash(gh pr diff *)",
   "Bash(gh pr comment *)",
-  "Bash(gh repo view*)",
+  "Bash(gh repo view *)",
 ];
 
 /** `Tool` or `Tool(content)`; anything else is not an entry this module knows how to read. */
@@ -88,8 +88,11 @@ const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
  *   — the harness compiles a rule ending in a single ` *` to `^<prefix>( .*)?$`, so the
  *   arguments are optional.
  * - `Bash(<prefix>*)`, with no space, is not that shape: it compiles to `^<prefix>.*$`, a
- *   prefix with no separator, so it also covers `<prefix>` run into a longer word.
- *   `Bash(gh repo view*)` is the one entry of this shape.
+ *   prefix with no separator, so it also covers `<prefix>` run into a longer word —
+ *   `Bash(gh repo view*)` would cover `gh repo viewer`. No entry has that shape; the case is
+ *   modelled anyway, because reading such an entry as an exact command instead would make the
+ *   model narrower than the harness, which is the direction a "this is not allowed" assertion
+ *   cannot afford.
  * - Any other content is the exact command.
  * - Comparison is case-insensitive, as the harness's is.
  *

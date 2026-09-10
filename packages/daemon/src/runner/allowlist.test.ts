@@ -35,7 +35,7 @@ test("the fixed list is exactly what the spec names, in its order", () => {
     "Bash(gh pr view *)",
     "Bash(gh pr diff *)",
     "Bash(gh pr comment *)",
-    "Bash(gh repo view*)",
+    "Bash(gh repo view *)",
   ]);
 });
 
@@ -147,6 +147,9 @@ test("a wildcard entry matches the whole subcommand it names, not a longer word"
   // `Bash(git log *)` covers `git log` and its arguments: `git logs` is neither.
   expect(allowsTool(...bash("git logs --all"))).toBe(false);
   expect(allowsTool(...bash("skelcrew showcase 1"))).toBe(false);
+  // Every entry has the space before the `*`, including this one: `Bash(gh repo view*)`
+  // would compile to `^gh repo view.*$`, a prefix with no separator.
+  expect(allowsTool(...bash("gh repo viewer --json name"))).toBe(false);
 });
 
 test("a wildcard entry covers the subcommand bare, the way the harness's comparator does", () => {
