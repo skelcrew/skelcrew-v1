@@ -695,3 +695,51 @@ Left open by the spec, decided here: the every-word check compares words literal
 path-qualified `/usr/bin/git push` is not caught. That is inside the limit *What a scan cannot
 be* states — a hostile instruction file has `sh` — and normalising basenames would be a claim
 the spec does not make.
+
+### Checks
+
+`bun run check` green after each of rounds 6 and 7: Biome clean, `tsc` clean in all three
+packages, 445 then 448 tests passing.
+
+## Round 8 — final verification
+
+Scoped to verification rather than a hunt, by the owner's decision. Seven rounds had each
+proved an escalation, and rounds 5 and 7 turned out to be the same fact from two sides — a
+repository that pre-allows its own commands can pre-allow anything — which is not closable at
+this layer and is milestone 016. Continuing to hunt was hardening the layer already proved
+unable to hold.
+
+**Verdict: VERIFICATION FAILED on one item, everything else passing.** Every acceptance
+criterion met, 448 tests green, no unrelated changes, and the prose sweep found the round 6-7
+scoping holding up. The failure was the spec copy: stale for the **third** time, one commit
+behind `main`'s `b82c803`, which landed after this round took it. The implementation already
+matched what that commit describes — only the export was behind.
+
+That is worth recording as a process finding rather than a one-off. A spec amended on `main`
+while a branch is mid-round goes stale by default, and it went stale three times in seven
+rounds. Each time the code was right and the exported copy was wrong, which is the direction
+CLAUDE.md's *the card is the source of truth* predicts: the copy is not authority, and nothing
+notices when it drifts. Under skelcrew the same amendment would be a card body edit with no
+copy to re-take.
+
+Fixed in this round, off the back of verification:
+
+1. **The spec re-taken from `main`**, and `git diff main -- docs/specs/013-…` asserted empty.
+2. **`code.md`'s one remaining absolute.** "Everything the harness does not recognise as
+   read-only asks the owner" is false quoted alone — `git commit -m x` is not recognised as
+   read-only and does not ask, and a tool defining no permission check is allowed outright.
+   Now "Past the list above and that recognition, a call asks the owner."
+3. **`words()`'s literal comparison recorded where a reader of the module will find it.** The
+   `/usr/bin/git push` gap lived only in this record; `narrowedCommands` is otherwise exhaustive
+   about its own limits, down to naming `sh`. Verification judged the decision sound and the
+   documentation gap real.
+4. **The maintenance contract** for everything transcribed from the harness, added above
+   `TRANSCRIBED_FROM`: what ages (four models), what does not (everything with a production
+   caller — containment, not enumeration), that a stale model yields a wrong test and never a
+   boundary that opens quietly, and the three legitimate responses to a failure, none of which
+   is adjusting a model until its test passes again.
+
+Verification also settled the two calls left open in round 7: the literal comparison is sound
+for the reason above, and the truncation test is not flaky — its four pads sweep all four
+residues mod 4, so exactly one lands the cut on a line boundary at every log-path length tried,
+and the guard it exercises genuinely regresses without the fix.

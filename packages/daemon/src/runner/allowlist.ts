@@ -916,7 +916,16 @@ function firstWord(line: string): string {
   return line.split(/\s+/)[0] ?? "";
 }
 
-/** Every word of a scanned line, which is what the no-widening rule is read against. */
+/**
+ * Every word of a scanned line, which is what the no-widening rule is read against.
+ *
+ * The comparison is **literal**, so a path-qualified `/usr/bin/git push` is not caught while
+ * `/usr/bin/env git push` is. That is deliberate and it is inside the limit `narrowedCommands`
+ * states rather than an oversight: basename normalisation buys nothing against an instruction
+ * file written to attack, since a fenced `sh` already yields `Bash(sh *)`, and the rule's real
+ * subject is good-faith documentation, where `env`, `nice` and `command` appear in real READMEs
+ * and a path-qualified `git` does not.
+ */
 function words(line: string): string[] {
   return line.split(/\s+/).filter((word) => word.length > 0);
 }
