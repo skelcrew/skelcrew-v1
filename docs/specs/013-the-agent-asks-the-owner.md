@@ -107,13 +107,20 @@ Edit(//<worktree>/**)            <- allows Edit, Write and MultiEdit, worktree o
 deny: Edit(//<worktree>/.git)  deny: Edit(//<worktree>/.git/**)
 Bash(skelcrew show *)   Bash(skelcrew comment *)   Bash(skelcrew body *)
 Bash(skelcrew refs *)   Bash(skelcrew attention *)
-Bash(git status *)  Bash(git log *)     Bash(git diff *)    Bash(git show *)
-Bash(git merge-base *)  Bash(git rev-parse *)
 Bash(git add *)     Bash(git commit *)
 Bash(git push -u origin HEAD)   Bash(git push)
 Bash(gh pr create *)  Bash(gh pr view *)  Bash(gh pr diff *)  Bash(gh pr comment *)
 Bash(gh repo view *)
 ```
+
+**A trailing wildcard is not a boundary; it is the command's entire flag surface.** `Bash(x *)`
+grants every flag `x` has, present and future, including the ones that write files or run other
+programs. Four review rounds found four escalations and every one was this: `gh pr *` reaching
+`merge`, `git *` reaching `push` and `-c`, a bare `Write` reaching a ref file, and `git log *`
+reaching `--output`. Before any entry is written as `x *`, its flag set must be enumerated and
+the write-capable and exec-capable flags named. If they cannot be excluded — and a prefix pattern
+cannot exclude a flag — the entry does not belong on the list in that form. Each surviving
+wildcard entry below carries that check.
 
 **The matching rule this list is written against.** `Bash(x *)` is wildcard matching: it matches
 every command beginning with `x`, including options inserted after `x`. `Bash(x:*)` is the
@@ -129,6 +136,21 @@ Why each group is shaped this way:
   pre-allow `git push origin HEAD:main` — landing work on the default branch with no gate — and,
   because a wildcard before the subcommand also matches inserted options, `git -c
   <anything> log`, which is arbitrary unprompted execution.
+- **The read-only git verbs are not listed at all, and that is the safer choice.** `git status`,
+  `git log`, `git diff`, `git show`, `git merge-base` and `git rev-parse` were on this list as
+  wildcards until a review round proved `Bash(git log *)` an arbitrary-file-write primitive:
+  `git log`, `git diff` and `git show` all accept `--output=<any absolute path>`, so
+  `git log -1 --format=%H --output=<common>/refs/remotes/origin/main` forges the very ref the
+  scan reads, and the same flag rewrites `.git/config` so the pre-allowed bare `git push` lands
+  on the default branch. Both were reproduced end to end. A trailing wildcard cannot exclude a
+  flag, so there was no narrower wildcard to write.
+  What closes it is deleting the entries. This harness carries a per-subcommand **safe-flag
+  allowlist** for exactly these six verbs and self-approves a call only when every flag is on it;
+  `--output` is on none of them. An explicit `Bash(git log *)` rule *bypasses* that validator —
+  listing the verb replaced a curated flag allowlist with "any flag at all". Unlisted, the safe
+  forms still run unprompted through the harness's own check, and `--output` asks. An implementer
+  must verify both halves of that against the harness in use, because the ergonomics of every
+  playbook depend on the first and the boundary depends on the second.
 - **`push` is allowed only in the exact form the playbook runs** and its bare follow-up, so any
   other refspec, and any force push, asks.
 - **`gh pr` is named verb by verb.** `Bash(gh pr *)` would pre-allow `gh pr merge` and
@@ -272,6 +294,14 @@ any repo documenting a git command triggers it.
     pre-allowed tool writes any file outside the run's own worktree — a write to a path under
     the git common directory (a ref, `packed-refs`, `config`) asks, as does a write to the
     worktree's own `.git`.
+10d. No entry on the fixed list writes a file through a flag. Specifically:
+    `git log --output=<path>`, `git diff --output=<path>` and `git show --output=<path>` are not
+    pre-allowed for any path, inside the worktree or out; the six read-only git verbs are absent
+    from the list; and each surviving wildcard entry has had its write-capable and exec-capable
+    flags enumerated, with the finding recorded beside it.
+10e. Removing those six verbs does not make the playbooks ask. A plain `git status`, `git log
+    --oneline`, `git diff`, `git show <sha>`, `git merge-base` and `git rev-parse` each still run
+    unprompted, through the harness's own read-only check rather than through this list.
 10c. No pre-allowed sequence lands a commit on the default branch. Specifically: rewriting
     `remote.origin.push` and then running the pre-allowed bare `git push` is not available,
     because the write to `.git/config` asks.
