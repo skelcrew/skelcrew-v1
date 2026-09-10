@@ -395,6 +395,16 @@ Ends when: an agent runs in the card's worktree and everything it did is visible
 A tool that is not pre-allowed is denied, visibly; asking is 013. No artefact contract yet —
 the run hands back the way 006 does.
 
+- **Carried from 012: the spawned agent's environment is exactly four variables.** `PATH`,
+  `HOME`, `SKELCREW_AS`, `SKELCREW_DIR` — and the harness SDK *replaces* the environment rather
+  than merging, so a run loses `TMPDIR`, `LANG`, `SHELL`, `TERM`, and any proxy, CA-bundle or
+  `ANTHROPIC_*` configuration the owner relies on. That is the right rule — a minimal
+  environment is what "skelcrew holds no credentials" means in practice, and it is deliberately
+  not being relaxed. But an owner whose harness login is an environment variable rather than an
+  OAuth session, or who is behind a proxy, will have every run fail at authentication with a
+  cause that is not discoverable from the card. Whichever spec first meets a non-OAuth login
+  decides deliberately what to pass through, rather than discovering this by accident.
+
 ## 013 — The agent asks the owner
 
 `canUseTool` becomes an attention request carrying the resolving choices, answered by the

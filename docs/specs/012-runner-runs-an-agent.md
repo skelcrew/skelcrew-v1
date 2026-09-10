@@ -171,6 +171,27 @@ Three rules behind that list, each from a defect the spike shipped and had to fi
    `Edit`, `Bash(git commit …)`, `Bash(git push …)` and `gh` are 013's business, together with
    asking.
 
+**The run must not inherit permissions from anywhere else.** The harness loads
+`~/.claude/settings.json`, the target repository's `.claude/settings.json`, and its
+`settings.local.json` by default, merges their `permissions.allow` rules into the same rule set
+as the list above, and matches them *before* `canUseTool` is consulted — so a tool allowed there
+is never denied, never asked about, and never appears on the card as refused. A target
+repository could therefore grant an unattended run `Write`, `Edit` or `git push` by committing a
+settings file. The driver must disable filesystem settings explicitly (the SDK's
+`settingSources: []`, documented as "disable filesystem settings"), so the effective permission
+set is exactly `allowedTools` plus `canUseTool`. This is part of the same boundary as the list
+and is not a detail: a list that another file can widen is not a list.
+
+**One exception is the harness's own, and cannot be closed here.** Claude Code self-approves a
+set of read-only Bash commands (`ls`, `cat`, `grep`, `find` without `-exec`, and similar) before
+rule matching, so those never reach `canUseTool` either. That is a documented divergence from
+the list rather than a hole this spec opens: `Read` is itself pre-allowed above, so the agent
+can already read any file the owner can. Whether an unattended run should have unbounded read
+access at all is a real question, and it belongs to 013 alongside asking — where deny rules and
+the harness's policy tier are available. What matters here is that the divergence is written
+down rather than contradicted: any claim that the fixed list is the *complete* set of what runs
+unprompted would be false.
+
 The consequence is deliberate and should be stated in the playbooks: **a Spec-phase run works
 end to end under this list**, and a Code-phase run will hit denials until 013 gives the agent a
 way to ask. That is why this spec is worth shipping alone, and why the denial has to be visible
@@ -207,6 +228,10 @@ rather than silent.
 11. The harness SDK is imported by exactly one file. With `bunfig.toml`'s `peer = false` and a
     clean install, the SDK's peer packages — `@anthropic-ai/sdk` among them — are absent from
     `node_modules`, and the daemon still starts with `SKELCREW_AGENT=claude`.
+15. The driver disables filesystem settings, so a `permissions.allow` rule in a user, project or
+    local `.claude/settings.json` cannot widen what the run may do without asking. Asserted on
+    the options the driver builds, which is the one part of the real driver testable without
+    spawning anything.
 12. `SKELCREW_AGENT=none` reproduces 006's behaviour exactly: the existing `runner.test.ts`
     suite passes unmodified, including its `no playbook` assertions. An unrecognised value
     stops the daemon at startup with a message naming the variable.
