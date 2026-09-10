@@ -12,11 +12,11 @@ speaks as you.
 
 ## What this run may do without asking, and what it asks for
 
-Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`,
-`Agent`, `TodoWrite`; `git status`, `git log`, `git diff`, `git show`, `git merge-base`,
-`git rev-parse`, `git add`, `git commit`, `git push -u origin HEAD`, `git push`;
-`gh pr create`, `gh pr view`, `gh pr diff`, `gh pr comment`, `gh repo view`; `skelcrew show`,
-`skelcrew comment`, `skelcrew body`, `skelcrew refs`, `skelcrew attention`.
+Pre-allowed, so they run unprompted: `Read`, `Glob`, `Grep`, `Agent`, `TodoWrite`;
+`git status`, `git log`, `git diff`, `git show`, `git merge-base`, `git rev-parse`, `git add`,
+`git commit`, `git push -u origin HEAD`, `git push`; `gh pr create`, `gh pr view`,
+`gh pr diff`, `gh pr comment`, `gh repo view`; `skelcrew show`, `skelcrew comment`,
+`skelcrew body`, `skelcrew refs`, `skelcrew attention`.
 
 Editing files runs unprompted **inside this worktree**, and only there. A write anywhere else
 asks — including the repository's git directory, which is not under this worktree — and the
