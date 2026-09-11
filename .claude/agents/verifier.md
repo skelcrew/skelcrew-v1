@@ -55,6 +55,19 @@ specific evidence you used. No other verdict values.
 Whether unrelated changes are present. If yes, list them by path. State explicitly whether
 tests and fixtures were modified beyond what the spec required.
 
+## Absolutes are checked by running, not by reading
+
+The run record and the changed prose will contain absolutes — "red first", "no other test
+changed", "unreachable", "cannot", "every". Across specs 013, 014 and 016, the record was
+wrong about one of these on every verification pass that failed, and every time the fix was
+found by executing the claim: restore the base commit in a scratch copy and run the new
+tests; run the command through the real path; count what the diff actually contains.
+
+Do that for every absolute the record makes about the tests or the change. "Red first" means
+you run the new cases against the base and confirm they fail; "green first" means you confirm
+they pass; "enumerated" means you count against the diff. A claim you could have run and did
+not is not established, and you say so. The record's accuracy is a criterion of its own.
+
 ## Verdict
 
 End your message with exactly one of these, alone on the final line:

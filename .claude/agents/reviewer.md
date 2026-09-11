@@ -99,6 +99,22 @@ Every finding, in every group, states:
   input that does it.
 - **Expected** — what it should do instead
 
+## Absolutes are checked by running, not by reading
+
+Across specs 013, 014 and 016, every Critical and most Importants were a sentence — in the
+spec, a doc comment, a playbook or the run record — that asserted an absolute and was wrong:
+"cannot", "never", "nothing", "no other test changes", "red first", "the CLI cannot be red".
+None was a lie; each was written without being run. Every one was caught the same way: by
+executing the thing the sentence was about — the harness's real matcher, the suite against
+the base commit, the command through the CLI.
+
+So: for every absolute in the changed files and the spec — *always, never, every, only,
+cannot, nothing, no other* — decide whether you can check it by execution in under a few
+minutes. If you can, do, and say what you ran. If you cannot, say so and mark the claim as
+unverified rather than accepted. A claim you accepted on reading is not a finding you can
+stand behind, and a false absolute in prose is the finding class most likely to survive
+review here.
+
 ## Verdict
 
 End your message with exactly one of these, alone on the final line:
