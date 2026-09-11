@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   existsSync,
@@ -1382,4 +1383,107 @@ test("from inside a runner worktree the CLI reaches the repo's daemon with no SK
   expect(moved.stdout).toContain("#1");
   expect(repoCore.getCard(1).phase).toBe("code");
   expect(existsSync(join(worktree, ".skelcrew"))).toBe(false);
+});
+
+// --- control characters (015) ---
+
+/**
+ * Criterion 5. A file's line endings are the machine that wrote it talking, not the author:
+ * CRLF becomes LF on the way in. A lone `\r` is the repaint character and is refused.
+ */
+test("body --file normalises a file's CRLF; a lone carriage return in it is refused", async () => {
+  core.createCard({ title: "b" }, member("simon").id);
+  const crlf = join(dir, "crlf.md");
+  writeFileSync(crlf, "# Goal\r\n\r\nwritten on another machine\r\n");
+
+  await ok(["body", "1", "--file", crlf]);
+  expect(core.getCard(1).body).toBe("# Goal\n\nwritten on another machine\n");
+
+  const lone = join(dir, "lone.md");
+  writeFileSync(lone, "# Goal\r\n\rRESOLVED: approved\r\n");
+  const stderr = await failed(1, ["body", "1", "--file", lone]);
+  expect(stderr).toContain("U+000D");
+  expect(core.getCard(1).body).toBe("# Goal\n\nwritten on another machine\n");
+});
+
+/**
+ * Criterion 6, the second layer: rows written straight into the database, as every row
+ * predating this spec was. The core refuses these values now, so SQL is the only way to put
+ * them there — and the sink is what keeps them off the terminal's hands.
+ */
+test("a control character already in the database is shown escaped, not acted on", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(home);
+  const dbPath = join(home, "skelcrew.db");
+  const fileCore = openCore(dbPath, { owner: "simon" });
+  const fileServer = startServer({ core: fileCore, socketPath: join(home, "skelcrew.sock") });
+  extraServers.push({
+    stop() {
+      fileServer.stop();
+      fileCore.close();
+    },
+  });
+  const ownerId = (fileCore.listMembers()[0] as Member).id;
+  fileCore.createCard({ title: "clean" }, ownerId);
+
+  const CLEAR = "\x1b[2J";
+  const raw = new Database(dbPath);
+  raw.query("UPDATE cards SET title = ?, body = ?, refs = ?, attention = ? WHERE id = 1").run(
+    `Paint${CLEAR}ed`,
+    `bo${CLEAR}dy`,
+    JSON.stringify({ branch: `br${CLEAR}anch` }),
+    JSON.stringify({
+      to: ownerId,
+      note: `note${CLEAR}here`,
+      moves: [],
+      raisedBy: ownerId,
+      raisedAt: Date.now(),
+    }),
+  );
+  raw.query("UPDATE members SET name = ? WHERE id = ?").run(`simon${CLEAR}`, ownerId);
+  const insert = raw.query(
+    "INSERT INTO activity (card_id, actor_id, type, data, created_at) VALUES (?, ?, ?, ?, ?)",
+  );
+  insert.run(1, ownerId, "comment", JSON.stringify({ text: `cleared${CLEAR}` }), Date.now());
+  insert.run(1, ownerId, "released", JSON.stringify({ reason: `stopped${CLEAR}` }), Date.now());
+  raw.close();
+
+  const shown = await ok(["show", "1"], { dataDir: home });
+  for (const fragment of [
+    "Paint\\x1b[2Jed",
+    "bo\\x1b[2Jdy",
+    "br\\x1b[2Janch",
+    "note\\x1b[2Jhere",
+    "cleared\\x1b[2J",
+    "stopped\\x1b[2J",
+    "simon\\x1b[2J",
+  ]) {
+    expect(shown.stdout).toContain(fragment);
+  }
+  expect(shown.stdout).not.toContain(CLEAR);
+
+  const listed = await ok(["ls"], { dataDir: home });
+  expect(listed.stdout).toContain("Paint\\x1b[2Jed");
+  expect(listed.stdout).not.toContain(CLEAR);
+
+  const waiting = await ok(["queue"], { dataDir: home });
+  expect(waiting.stdout).toContain("note\\x1b[2Jhere");
+  expect(waiting.stdout).not.toContain(CLEAR);
+});
+
+/**
+ * Criterion 7. An error that echoes what the caller typed goes out through the same sink as
+ * everything else, so a rejected call cannot repaint the terminal through its own message.
+ */
+test("an error message echoing the caller's input is printed with the sequence escaped", async () => {
+  core.createCard({ title: "a card" }, member("simon").id);
+
+  const usage = await failed(2, ["mv", "1", "\x1b[2J"]);
+  expect(usage).toContain("\\x1b[2J");
+  expect(usage).not.toContain("\x1b");
+
+  // And the daemon's own refusal, on the way back out through the same path.
+  const refused = await failed(1, ["ls"], { env: { SKELCREW_AS: "crew\x1b[2J" } });
+  expect(refused).toContain("U+001B");
+  expect(refused).not.toContain("\x1b");
 });

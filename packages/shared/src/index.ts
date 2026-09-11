@@ -34,6 +34,12 @@ export {
   type Result,
 } from "./protocol";
 export {
+  type ControlCharacter,
+  escapeControlCharacters,
+  findControlCharacter,
+  type TextKind,
+} from "./text";
+export {
   type Activity,
   type ActivityEvent,
   type ActivityType,

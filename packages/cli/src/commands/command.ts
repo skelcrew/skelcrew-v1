@@ -68,10 +68,17 @@ export function parsePhase(raw: string | undefined): Phase {
   return phase.id;
 }
 
-/** A file named by a flag. An unreadable one is a usage error naming the path and the reason. */
+/**
+ * A file named by a flag. An unreadable one is a usage error naming the path and the reason.
+ *
+ * CRLF becomes LF: a file's line endings belong to the machine that wrote it, not to the
+ * author, and refusing a whole spec for them would send the owner to `dos2unix`. This is the
+ * one place a control character is transformed rather than refused — a lone `\r` is still the
+ * repaint character and is still refused, by the daemon.
+ */
 export function readFile(path: string): string {
   try {
-    return readFileSync(path, "utf8");
+    return readFileSync(path, "utf8").replaceAll("\r\n", "\n");
   } catch (error) {
     // Node's message ends in `, open '<path>'`; the path is already named once.
     const reason = (error instanceof Error ? error.message : String(error)).replace(

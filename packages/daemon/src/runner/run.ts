@@ -30,6 +30,7 @@ import {
   type Activity,
   type Card,
   COMMENT_MAX_BYTES,
+  escapeControlCharacters,
   type Member,
   type Phase,
 } from "@skelcrew/shared";
@@ -222,8 +223,20 @@ function cutMarked(text: string, budget: number): string {
   return `${cutBytes(text, budget - Buffer.byteLength(ELLIPSIS, "utf8"))}${ELLIPSIS}`;
 }
 
+/**
+ * Text the run relays but did not write — a turn, a tool's input, a batch's summary — with
+ * every control character rendered visible, by the same definition the core refuses them by.
+ * The run keeps the record rather than losing it to a refusal, and nothing an agent produced
+ * can repaint the line it lands on. `\n` and `\t` stay: a comment and a note are multi-line.
+ * The run log is untouched by this; it records the stream verbatim, and it is not a terminal.
+ */
+function relayed(text: string): string {
+  return escapeControlCharacters(text, "multi-line");
+}
+
 /** A text turn as the card shows it: whole under the limit, else cut with a marker. */
-function excerpt(text: string, logPath: string): string {
+function excerpt(raw: string, logPath: string): string {
+  const text = relayed(raw);
   const bytes = Buffer.byteLength(text, "utf8");
   if (bytes <= TEXT_EXCERPT_BYTES) return text;
   return `${cutBytes(text, TEXT_EXCERPT_BYTES)}\n… [truncated: ${bytes} bytes; the full turn is in the run log at ${logPath}]`;
@@ -249,7 +262,9 @@ function inputOf(tool: string, input: Record<string, unknown>): string {
  * the owner answers, which carries the input whole (`questionFor`).
  */
 function describeInput(tool: string, input: Record<string, unknown>): string {
-  return oneLine(inputOf(tool, input), INPUT_LINE_MAX);
+  // `oneLine` first, as it always has: it collapses the newlines, and what survives that is
+  // what has to be made visible.
+  return relayed(oneLine(inputOf(tool, input), INPUT_LINE_MAX));
 }
 
 /**
@@ -271,7 +286,8 @@ function summarizeTools(calls: Array<{ name: string; input: Record<string, unkno
   });
   const listed = [...parts.values()].map((p) => (p.count > 1 ? `${p.label} ×${p.count}` : p.label));
   const summary = `ran ${calls.length} tool${calls.length === 1 ? "" : "s"}: ${listed.join(", ")}`;
-  return cutMarked(summary, SUMMARY_MAX_BYTES);
+  // Escaped before the cut, so the cap is measured on what is actually posted.
+  return cutMarked(relayed(summary), SUMMARY_MAX_BYTES);
 }
 
 /** The user messages the driver reads: pushed as comments arrive, closed when the run ends. */
@@ -439,7 +455,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
    */
   const questionFor = (pending: Ask): string => {
     const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\ninput:\n`;
-    const raw = inputOf(pending.tool, pending.input);
+    // Escaped where it is composed, before it is quoted or measured: the payload is the
+    // agent's text, and a control character in it would otherwise be refused by the core —
+    // losing the question — or repaint the queue view that prints the note verbatim.
+    const raw = relayed(inputOf(pending.tool, pending.input));
     const text = quoted(raw);
     const fixed = Buffer.byteLength(frame, "utf8");
     if (fixed + Buffer.byteLength(text, "utf8") <= COMMENT_MAX_BYTES) return `${frame}${text}`;
