@@ -191,8 +191,14 @@ This spec grants a role — the `crew` member — so the check applies.
    resolve a request not addressed to it, or release or claim a card another member holds.
 3. **Composed.** `crew` raising a request *to itself* and resolving it crosses nothing — the
    owner's gate is the owner's request. `crew` raising a request to the owner with `--move pr`
-   is the intended handoff; the owner executes the move. `crew` setting `refs --pr` is the
-   intended recording. `crew` claiming a *different* free card is the carried limitation from
+   is the intended handoff; the owner executes the move. But nothing limits the destination
+   `crew` may *propose*: `validateMoves` accepts any phase, `Bash(skelcrew attention *)` is
+   pre-allowed, so `crew` can raise `--move done` from Code and the owner's queue prints
+   `skelcrew mv <id> done` as a ready-to-run line beside the agent's own note. Nothing is
+   crossed — the owner is the gate and the queue shows who raised it — but the queue does not
+   distinguish a move a met contract attached (always `pr` or `code`) from one the agent chose.
+   Recorded; closing it is a spec of its own. `crew` setting `refs --pr` is the intended
+   recording. `crew` claiming a *different* free card is the carried limitation from
    014 ("the runner's identity is unscoped"), now the crew's: out of scope, still recorded.
    `crew` setting the body of a card it does not hold is the same limitation.
 4. **The enforcer is the core**, and it is run directly by every test in this spec; there is
@@ -204,8 +210,11 @@ This spec grants a role — the `crew` member — so the check applies.
    display collision, not a gate crossing, and 015's ground. Out of scope, recorded.
 
 **What remains open, and is not this spec's to close:** identity is an assertion over a local
-socket with no auth; a process the run spawned that outlives it is still `crew` (or whatever it
-says it is) after the runner releases; `crew` is not scoped to its card. Each is written down in
+socket with no auth — and `runner` and `crew` are names any caller can assert and thereby
+*join*, so a live session speaking `--as crew` shares one member id with every spawned run,
+its `skelcrew body` satisfies a Spec contract and its comments are swallowed by the self-echo
+filter; a process the run spawned that outlives it is still `crew` (or whatever it says it is)
+after the runner releases; `crew` is not scoped to its card. Each is written down in
 `allowlist.ts`'s record.
 
 ## Acceptance criteria
