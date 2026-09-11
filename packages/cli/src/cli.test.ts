@@ -330,26 +330,87 @@ test("mv moves the card, case-insensitively, and posts -m after a successful mov
   expect(tail.map((e) => e.actorId)).toEqual([member("simon").id, member("simon").id]);
 });
 
-test("an agent's move through a crew gate succeeds; through an owner gate it is refused and posts nothing", async () => {
+test("an agent's move through an owner gate is refused and posts nothing", async () => {
   core.createCard({ title: "g" }, member("simon").id);
   core.moveCard(1, "spec", member("simon").id);
   core.moveCard(1, "code", member("simon").id);
 
-  await ok(["mv", "1", "pr", "-m", "note", "--as", "crew-1"]);
+  // 016: every phase is the owner's to leave, Code included.
+  const stderr = await failed(1, ["mv", "1", "pr", "-m", "send on", "--as", "crew-1"]);
+  expect(stderr).toContain("forbidden");
   const crew = member("crew-1");
   expect(crew.kind).toBe("agent");
-  const tail = core.getCard(1).activity.slice(-2);
-  expect(tail.map((e) => e.type)).toEqual(["card_moved", "comment"]);
-  expect(tail.map((e) => e.actorId)).toEqual([crew.id, crew.id]);
-
-  const stderr = await failed(1, ["mv", "1", "code", "-m", "send back", "--as", "crew-1"]);
-  expect(stderr).toContain("forbidden");
   const detail = core.getCard(1);
-  expect(detail.phase).toBe("pr");
-  expect(detail.activity.some((e) => e.type === "comment" && e.data.text === "send back")).toBe(
+  expect(detail.phase).toBe("code");
+  expect(detail.activity.some((e) => e.type === "comment" && e.data.text === "send on")).toBe(
     false,
   );
-  expect(detail.activity.at(-1)?.type).toBe("move_rejected");
+  expect(detail.activity.at(-1)).toMatchObject({
+    type: "move_rejected",
+    actorId: crew.id,
+    data: { from: "code", to: "pr" },
+  });
+
+  // The owner's own move goes through, and posts its note.
+  await ok(["mv", "1", "pr", "-m", "note"]);
+  const tail = core.getCard(1).activity.slice(-2);
+  expect(tail.map((e) => e.type)).toEqual(["card_moved", "comment"]);
+  expect(tail.map((e) => e.actorId)).toEqual([member("simon").id, member("simon").id]);
+});
+
+/**
+ * 016, criteria 3-7 where the agent meets them: the CLI, speaking as `crew`, against a live
+ * daemon holding a card the `runner` member has claimed. The five verbs are the ones the
+ * allowlist withholds from the agent's tool calls — reachable anyway from a subprocess, and
+ * refused by the daemon on its own facts whatever called.
+ */
+test("the five gate verbs as crew are refused by the daemon on a card the runner holds", async () => {
+  const runner = core.ensureMember("runner", "agent");
+  const card = core.createCard({ title: "held by the runner" }, member("simon").id);
+  core.moveCard(card.id, "code", member("simon").id);
+  const claimed = core.claimCard(card.id, {}, runner.id);
+  core.requestAttention(card.id, { to: member("simon").id, note: "allow Bash?" }, runner.id);
+  const before = core.getCard(card.id);
+
+  const refusals = [
+    ["mv", "1", "pr"],
+    ["mv", "1", "done"],
+    ["mv", "1", "idea"],
+    ["release", "1"],
+    ["archive", "1"],
+    ["claim", "1"],
+    ["resolve", "1", "-m", "allow"],
+  ];
+  for (const args of refusals) {
+    const stderr = await failed(1, [...args, "--as", "crew"]);
+    expect([args, stderr.includes("forbidden") || stderr.includes("conflict")]).toEqual([
+      args,
+      true,
+    ]);
+  }
+
+  // The card is where it was: same phase, the runner's claim, the owner's request still open.
+  const after = core.getCard(card.id);
+  expect(after.phase).toBe("code");
+  expect(after.claim).toEqual(claimed.claim);
+  expect(after.archivedAt).toBeNull();
+  expect(after.attention).toEqual(before.attention);
+  expect(json<OpenAttention[]>(await ok(["queue", "--json"])).map((a) => a.cardId)).toEqual([1]);
+  // The only thing recorded is the rejected moves, each attributed to crew.
+  const crew = member("crew");
+  expect(after.activity.filter((e) => e.seq > (before.activity.at(-1)?.seq ?? 0))).toHaveLength(3);
+  expect(after.activity.slice(-3).map((e) => [e.type, e.actorId])).toEqual([
+    ["move_rejected", crew.id],
+    ["move_rejected", crew.id],
+    ["move_rejected", crew.id],
+  ]);
+
+  // A free card is no different for archive: "done" is the owner's call either way.
+  const free = core.createCard({ title: "free" }, member("simon").id);
+  expect(
+    (await failed(1, ["archive", String(free.id), "--as", "crew"])).includes("forbidden"),
+  ).toBe(true);
+  expect(core.getCard(free.id).archivedAt).toBeNull();
 });
 
 test("usage errors exit 2 and daemon errors exit 1, with stdout empty", async () => {
@@ -1201,6 +1262,7 @@ test("queue shows the runner's request with the worktree path; show prints the b
       repoRoot: repo,
       git: createGit({ env: gitEnv }),
       member: core.ensureMember("runner", "agent"),
+      crew: core.ensureMember("crew", "agent"),
       warn: (line) => warnings.push(line),
     }),
   );
@@ -1290,6 +1352,7 @@ test("from inside a runner worktree the CLI reaches the repo's daemon with no SK
       repoRoot: repo,
       git: createGit({ env: gitEnv }),
       member: repoCore.ensureMember("runner", "agent"),
+      crew: repoCore.ensureMember("crew", "agent"),
       warn: () => {},
     }),
   );

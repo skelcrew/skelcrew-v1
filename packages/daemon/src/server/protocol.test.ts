@@ -533,15 +533,21 @@ describe("methods through the shared client", () => {
       "forbidden",
     );
     core.moveCard(card.id, "code", owner.id);
-    const moved = await client.call("moveCard", { id: card.id, phase: "pr" });
-    expect(moved.phase).toBe("pr");
+    // 016: every phase is the owner's to leave, Code included, and archiving is the owner's.
+    // Both methods are on the wire and both refuse an agent, which is the gate.
+    await expectRpcError(
+      client.call("moveCard", { id: card.id, phase: "pr" }),
+      -32003,
+      "forbidden",
+    );
     const bodied = await client.call("setBody", { id: card.id, body: "# spec" });
     expect(bodied.body).toBe("# spec");
     const commented = await client.call("comment", { id: card.id, text: "note" });
     expect(commented.actorId).toBe(agent.id);
     const refd = await client.call("setRefs", { id: card.id, refs: { commits: ["abcdef0"] } });
     expect(refd.refs).toEqual({ commits: ["abcdef0"] });
-    const archived = await client.call("archiveCard", { id: card.id });
+    await expectRpcError(client.call("archiveCard", { id: card.id }), -32003, "forbidden");
+    const archived = core.archiveCard(card.id, owner.id);
     expect(archived.archivedAt).not.toBeNull();
     const since = await client.call("activitySince", { seq: 0 });
     // The agent's own join is attributed to the agent, then everything it did.
@@ -549,11 +555,10 @@ describe("methods through the shared client", () => {
       "member_joined",
       "card_created",
       "move_rejected",
-      "card_moved",
+      "move_rejected",
       "body_set",
       "comment",
       "refs_set",
-      "card_archived",
     ]);
     const members = await client.call("listMembers", {});
     expect(members.map((m) => m.name)).toEqual(["simon", "crew-2"]);
@@ -799,11 +804,13 @@ describe("claims on the wire", () => {
       "forbidden",
       "crew-2",
     );
+    // Since 016 the refusal an agent meets on a move is the phase's rather than the claim's:
+    // no phase is an agent's to leave, so it is turned away before the claim is looked at.
     await expectRpcError(
       second.call("moveCard", { id: card.id, phase: "pr" }),
-      -32009,
-      "conflict",
-      "crew-1",
+      -32003,
+      "forbidden",
+      "crew-2",
     );
     expect(core.getCard(card.id).claim).toEqual(claimed.claim);
 
@@ -818,16 +825,25 @@ describe("claims on the wire", () => {
     await expectRpcError(first.call("heartbeat", { id: card.id }), -32009, "conflict");
     await expectRpcError(first.call("claimCard", { id: 999 }), -32001, "not_found", "999");
 
-    // Now free: the second agent takes it and moves it, which releases it.
+    // Now free: the second agent takes it, and the owner's move is what releases it — since
+    // 016 no agent may move a card out of any phase, its own claim included.
     expect((await second.call("claimCard", { id: card.id })).claim?.by).not.toBe(crew1.id);
-    const moved = await second.call("moveCard", { id: card.id, phase: "pr" });
+    await expectRpcError(
+      second.call("moveCard", { id: card.id, phase: "pr" }),
+      -32003,
+      "forbidden",
+      "crew-2",
+    );
+    const moved = await ownerClient.call("moveCard", { id: card.id, phase: "pr" });
     expect(moved.claim).toBeNull();
     expect(core.getCard(card.id).activity.map((e) => e.type)).toEqual([
       "card_created",
       "card_moved",
       "claimed",
+      "move_rejected",
       "released",
       "claimed",
+      "move_rejected",
       "card_moved",
       "released",
     ]);

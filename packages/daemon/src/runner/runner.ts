@@ -5,6 +5,13 @@
  * or, with no driver, hands the card to the owner as 006 did. Every step lands on the card;
  * nothing here reaches into the database or the target repository except through `git` and
  * the agent.
+ *
+ * **The agent it spawns is a member of its own, `crew`, and the claim stays the runner's.**
+ * Everything the runner does as itself — the claim, the heartbeat, the branch it records, the
+ * run-start comment, the permission question, the ending — is `runner`'s; everything the agent
+ * does through the CLI is `crew`'s. That split is what makes the gates hold: the core already
+ * refuses a non-human actor acting on another member's live claim, and the agent is now on the
+ * other side of those refusals whatever process it calls from.
  */
 import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -35,6 +42,14 @@ import { agentEnvironment, writeShim } from "./shim";
 import { branchName } from "./slug";
 
 export const RUNNER_MEMBER_NAME = "runner";
+/**
+ * The member a spawned agent speaks as, distinct from the runner so that the claim's holder
+ * and the agent's identity are two members: with the claim held by `runner`, the core's own
+ * refusals bite on every gate `crew` tries, whatever process is calling. Durable rather than
+ * one member per run — runs are disposable, identity is durable — so the crew's history across
+ * runs is attributable to one name.
+ */
+export const CREW_MEMBER_NAME = "crew";
 /** The lease a run holds, and how often it is renewed while the run lasts. */
 export const RUN_CLAIM_TTL_SECONDS = 120;
 export const RUN_HEARTBEAT_MS = 30_000;
@@ -46,8 +61,13 @@ export interface RunnerOptions {
   dataDir: string;
   repoRoot: string;
   git: Git;
-  /** The `runner` member every action is attributed to; joined by the daemon at startup. */
+  /** The `runner` member every action of the runner's own is attributed to; joined at startup. */
   member: Member;
+  /**
+   * The `crew` member the spawned agent speaks as, and whose writes the phase's contract counts
+   * as this run's. Joined at startup beside `member`, and never the holder of the claim.
+   */
+  crew: Member;
   /** Where what has no card to land on goes. Defaults to stderr. */
   warn?: (line: string) => void;
   /** The clock readiness reads a claim's expiry against; the core's, so the two agree. */
@@ -130,7 +150,7 @@ function within(text: string): string {
 }
 
 export function startRunner(options: RunnerOptions): Runner {
-  const { core, dataDir, repoRoot, git, member, agent } = options;
+  const { core, dataDir, repoRoot, git, member, crew, agent } = options;
   const warn = options.warn ?? ((line: string) => console.error(line));
   const now = options.now ?? Date.now;
   const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
@@ -344,6 +364,7 @@ export function startRunner(options: RunnerOptions): Runner {
       await runPlaybook({
         core,
         member,
+        crew,
         attention,
         ownerId,
         warn,
@@ -359,7 +380,7 @@ export function startRunner(options: RunnerOptions): Runner {
         base: base.name,
         driver: agent.driver,
         playbook,
-        env: agentEnvironment(baseEnv, dataDir),
+        env: agentEnvironment(baseEnv, dataDir, crew.name),
         allowedTools: allowlist.tools,
         deniedTools: allowlist.denied,
         question,

@@ -33,6 +33,7 @@ let dataDir: string;
 let core: Core;
 let owner: Member;
 let runnerMember: Member;
+let crewMember: Member;
 let runner: Runner | undefined;
 let git: Git;
 const warnings: string[] = [];
@@ -47,6 +48,7 @@ beforeEach(() => {
   core = openCore(":memory:", { owner: "simon" });
   owner = core.listMembers()[0] as Member;
   runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
   git = createGit({ env: GIT_ENV });
   warnings.length = 0;
 });
@@ -102,6 +104,7 @@ function start(options: StartOptions): Runner {
     repoRoot: repo,
     git,
     member: runnerMember,
+    crew: crewMember,
     warn: (line) => warnings.push(line),
     agent: { driver: options.driver, playbooks },
     env: { PATH: "/usr/bin", HOME: join(tmp, "home") },
@@ -164,7 +167,7 @@ test("a Spec run that writes a body hands the card on with the move into Code", 
   await initRepo();
   start({
     driver: fakeDriver(async function* () {
-      core.setBody(1, "# 1 — the spec\n\nGoal: ship it.", runnerMember.id);
+      core.setBody(1, "# 1 — the spec\n\nGoal: ship it.", crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -213,7 +216,7 @@ test("a Spec run that writes an empty body has written no spec", async () => {
   await initRepo();
   start({
     driver: fakeDriver(async function* () {
-      core.setBody(1, "   \n", runnerMember.id);
+      core.setBody(1, "   \n", crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -229,7 +232,7 @@ test("a Code run that commits, leaves the worktree clean and records its PR hand
   start({
     driver: fakeDriver(async function* (options) {
       await commitIn(options.cwd, "feature.ts");
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -254,7 +257,7 @@ test("a Code run with no commits fails, names the condition, and keeps the workt
   await initRepo();
   start({
     driver: fakeDriver(async function* () {
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -277,7 +280,7 @@ test("a Code run that leaves the worktree dirty fails and names that condition",
     driver: fakeDriver(async function* (options) {
       await commitIn(options.cwd, "feature.ts");
       writeFileSync(join(options.cwd, "scratch.txt"), "left behind\n");
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -355,7 +358,7 @@ test("a revision run that re-records the same PR and makes new commits passes", 
     driver: fakeDriver(async function* (options) {
       run += 1;
       await commitIn(options.cwd, `feature-${run}.ts`);
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -382,7 +385,7 @@ test("a revision run that records nothing fails, though the card carries a PR an
       run += 1;
       if (run === 1) {
         await commitIn(options.cwd, "feature.ts");
-        core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       }
       yield { type: "result", ok: true };
     }),
@@ -416,7 +419,7 @@ test("a revision run that records the same PR but commits nothing fails: the bra
       run += 1;
       if (run === 1) await commitIn(options.cwd, "feature.ts");
       // Every run records, first or revision — which is what the playbook prescribes.
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -451,7 +454,7 @@ test("a tag named after the base branch does not make an empty branch look like 
   await sh(repo, "tag", "main", "HEAD~1");
   start({
     driver: fakeDriver(async function* () {
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -468,7 +471,7 @@ test("a tag named after the card's branch does not make an empty branch look lik
   await sh(repo, "update-ref", "refs/heads/main", "HEAD~1");
   start({
     driver: fakeDriver(async function* () {
-      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
@@ -502,11 +505,13 @@ function abortableDriver(): AgentDriver {
 }
 
 /**
- * What `skelcrew attention <id> "<the question>"` does from the worktree: the shim's CLI
- * speaks as the `runner` member, so the raiser is indistinguishable from the run itself.
+ * What `skelcrew attention <id> "<the question>"` does from the worktree: the shim's CLI,
+ * speaking as the `crew` member the run spawned the agent as. What tells this request from the
+ * run's own permission question is still the value the run recorded when it raised, never the
+ * raiser — see `ending.ts`.
  */
 function agentAsks(cardId: number, question: string): void {
-  core.requestAttention(cardId, { to: owner.id, note: question }, runnerMember.id);
+  core.requestAttention(cardId, { to: owner.id, note: question }, crewMember.id);
 }
 
 function commentContaining(cardId: number, text: string): (event: Activity) => boolean {
@@ -656,6 +661,7 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
   core = openCore(":memory:", { owner: "simon", now });
   owner = core.listMembers()[0] as Member;
   runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
 
   let runs = 0;
   start({
@@ -694,37 +700,51 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
 });
 
 // --- the agent acting on its own card ---
+//
+// 014 drove all three self-actions as the `runner` member, because the agent spoke as the
+// runner and the core let a holder move and archive its own card. 016 closed both of those at
+// the core — every phase is the owner's to leave, and archiving is the owner's — and the two
+// rules know nothing about which agent member is asking, so the *runner* is refused as well.
+// The two cases below therefore assert the refusal where they used to assert the ending, and
+// the release, which the holder may still make, keeps the ending covered as 014 wrote it.
+// `classifyEnding` keeps its move and archive branches: nothing in the core can reach them now,
+// and they cost nothing — defence in depth, not the boundary.
 
-test("an agent that moves its own card fails the run, naming what it did", async () => {
+test("the core refuses even the runner's own move out of Code, and the run still ends on its contract", async () => {
   await initRepo();
+  let refused: string | undefined;
   start({
-    driver: fakeDriver(async function* () {
-      core.moveCard(1, "pr", runnerMember.id);
+    driver: fakeDriver(async function* (options) {
+      try {
+        core.moveCard(1, "pr", runnerMember.id);
+      } catch (error) {
+        refused = (error as Error).message;
+      }
+      await commitIn(options.cwd, "feature.ts");
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
-  const done = untilEvent(commentContaining(1, "moved its own card from code to pr"));
-  core.createCard({ title: "Moved itself" }, owner.id);
-  core.moveCard(1, "code", owner.id);
-  await done;
-  await Bun.sleep(200);
+  await runCard("Tried to move itself", "code");
 
-  // Criterion 12: "fails the run with a comment naming what it did". Failing the run is
-  // observable as the artefact never being handed on — the card carries no "ready for review"
-  // and no move to PR was offered, because the contract never ran on a card the agent moved.
+  expect(refused).toContain("only the owner may move a card out of code");
   const card = core.getCard(1);
-  expect(card.phase).toBe("pr");
-  expect(card.attention?.note).toContain("run failed");
-  expect(card.attention?.note).toContain("moved its own card");
-  expect(card.attention?.moves).toEqual([]);
-  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+  expect(card.phase).toBe("code");
+  expect(card.activity.filter((e) => e.type === "move_rejected")).toMatchObject([
+    { actorId: runnerMember.id, data: { from: "code", to: "pr" } },
+  ]);
+  // The gate held, so the phase ended the way it is supposed to: the artefact checked, and the
+  // move into PR offered to the owner rather than taken.
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(card.attention?.moves).toEqual(["pr"]);
+  expect(lastRelease(1)).toBe("finished");
 });
 
 test("an agent that releases its own card fails the run, naming what it did", async () => {
   await initRepo();
   start({
     driver: fakeDriver(async function* () {
-      core.setBody(1, "# a whole spec", runnerMember.id);
+      core.setBody(1, "# a whole spec", crewMember.id);
       core.releaseCard(1, { reason: "done here" }, runnerMember.id);
       yield { type: "result", ok: true };
     }),
@@ -745,23 +765,77 @@ test("an agent that releases its own card fails the run, naming what it did", as
   expect(comments(1).some((text) => text === "spec ready")).toBe(false);
 });
 
-test("an agent that archives its own card fails the run, and nothing is raised on it", async () => {
+/**
+ * The spec's own claim, end to end: the agent, speaking as itself, cannot cross the gate by any
+ * call it can make. Each attempt is refused on the daemon's facts — the claim is the runner's —
+ * and the run ends where it was always going to, with the artefact checked and the move offered.
+ */
+test("the agent as crew cannot move, release or archive the card it is working: the run ends on its contract", async () => {
   await initRepo();
+  const refusals: string[] = [];
   start({
     driver: fakeDriver(async function* () {
-      core.archiveCard(1, runnerMember.id);
+      for (const attempt of [
+        () => core.moveCard(1, "code", crewMember.id),
+        () => core.releaseCard(1, { reason: "done here" }, crewMember.id),
+        () => core.archiveCard(1, crewMember.id),
+        () => core.claimCard(1, {}, crewMember.id),
+      ]) {
+        try {
+          attempt();
+        } catch (error) {
+          refusals.push((error as Error).message);
+        }
+      }
+      core.setBody(1, "# the spec", crewMember.id);
       yield { type: "result", ok: true };
     }),
   });
-  const done = untilEvent(commentContaining(1, "archived its own card"));
-  core.createCard({ title: "Archived itself" }, owner.id);
-  core.moveCard(1, "spec", owner.id);
-  await done;
-  await Bun.sleep(200);
+  await runCard("Tries every gate", "spec");
+
+  expect(refusals).toHaveLength(4);
+  expect(refusals[0]).toContain("only the owner may move a card out of spec");
+  expect(refusals[1]).toContain("may not release it");
+  expect(refusals[2]).toContain("only the owner may archive a card");
+  expect(refusals[3]).toContain("claimed by runner");
 
   const card = core.getCard(1);
-  expect(card.archivedAt).not.toBeNull();
-  expect(card.attention).toBeNull();
+  expect(card.phase).toBe("spec");
+  expect(card.archivedAt).toBeNull();
+  expect(comments(1).at(-1)).toBe("spec ready");
+  expect(card.attention).toMatchObject({ to: owner.id, moves: ["code"] });
+  expect(lastRelease(1)).toBe("finished");
+  // The claim was the runner's from first to last, and the release is the run's own ending.
+  expect(card.activity.filter((e) => e.type === "claimed").map((e) => e.actorId)).toEqual([
+    runnerMember.id,
+  ]);
+  expect(card.activity.filter((e) => e.type === "released").map((e) => e.actorId)).toEqual([
+    runnerMember.id,
+  ]);
+});
+
+test("the core refuses even the runner's own archive, and the card is still there at the end", async () => {
+  await initRepo();
+  let refused: string | undefined;
+  start({
+    driver: fakeDriver(async function* () {
+      try {
+        core.archiveCard(1, runnerMember.id);
+      } catch (error) {
+        refused = (error as Error).message;
+      }
+      core.setBody(1, "# the spec", crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Tried to archive itself", "spec");
+
+  expect(refused).toContain("only the owner may archive a card");
+  const card = core.getCard(1);
+  expect(card.archivedAt).toBeNull();
+  expect(card.activity.some((e) => e.type === "card_archived")).toBe(false);
+  expect(comments(1).at(-1)).toBe("spec ready");
+  expect(card.attention?.moves).toEqual(["code"]);
   expect(warnings).toEqual([]);
 });
 
@@ -799,7 +873,7 @@ test("a question stands when the artefact is complete: the run says so, offers n
     driver: fakeDriver(async function* () {
       runs += 1;
       if (runs === 1) {
-        core.setBody(1, "# the spec, with one open question", runnerMember.id);
+        core.setBody(1, "# the spec, with one open question", crewMember.id);
         agentAsks(1, "should this replace the old flow, or sit beside it?");
       }
       yield { type: "result", ok: true };
@@ -922,6 +996,7 @@ test("a question stands when the lease lapses", async () => {
   core = openCore(":memory:", { owner: "simon", now });
   owner = core.listMembers()[0] as Member;
   runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
   start({
     now,
     driver: fakeDriver(async function* (options) {
@@ -965,7 +1040,7 @@ test("a raise that fails is not a standing question: the met artefact still rele
   start({
     core: refuses,
     driver: fakeDriver(async function* () {
-      core.setBody(1, "# 1 — the spec", runnerMember.id);
+      core.setBody(1, "# 1 — the spec", crewMember.id);
       yield { type: "result", ok: true };
     }),
   });

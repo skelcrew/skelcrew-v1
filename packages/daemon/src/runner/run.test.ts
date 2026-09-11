@@ -34,6 +34,7 @@ let dataDir: string;
 let core: Core;
 let owner: Member;
 let runnerMember: Member;
+let crewMember: Member;
 let runner: Runner | undefined;
 let git: Git;
 const warnings: string[] = [];
@@ -48,6 +49,7 @@ beforeEach(() => {
   core = openCore(":memory:", { owner: "simon" });
   owner = core.listMembers()[0] as Member;
   runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
   git = createGit({ env: GIT_ENV });
   warnings.length = 0;
 });
@@ -115,6 +117,7 @@ function start(options: StartOptions): Runner {
     repoRoot: repo,
     git,
     member: runnerMember,
+    crew: crewMember,
     warn: (line) => warnings.push(line),
     agent: { driver: options.driver, playbooks },
     env: { PATH: "/usr/bin", HOME: join(tmp, "home") },
@@ -261,8 +264,95 @@ test("a Spec run: the log path, the turn, the batched tools, and the handoff, in
   expect(options.allowedTools).toEqual(spawnedWith(path));
   expect(options.disallowedTools).toEqual(deniedTools(path));
   expect(options.env).toEqual(
-    agentEnvironment({ PATH: "/usr/bin", HOME: join(tmp, "home") }, dataDir),
+    agentEnvironment({ PATH: "/usr/bin", HOME: join(tmp, "home") }, dataDir, crewMember.name),
   );
+});
+
+// --- who the agent speaks as (016) ---
+
+/**
+ * Criterion 2. The run spawns the agent as `crew`, a member of its own, and keeps the claim as
+ * `runner` — which is what puts the agent on the other side of the core's existing refusals.
+ * The driver here does what `skelcrew comment` from the worktree does: it speaks as whoever
+ * the environment says it is.
+ */
+test("the agent speaks as crew, the claim stays the runner's, and the run's own lines stay the runner's", async () => {
+  await initRepo();
+  let spokeAs: string | undefined;
+  let heldDuringRun: number | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      spokeAs = options.env.SKELCREW_AS;
+      const me = core.ensureMember(spokeAs as string, "agent");
+      core.comment(1, "read the card", me.id);
+      heldDuringRun = core.getCard(1).claim?.by;
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Speaks for itself");
+
+  const crew = core.listMembers().find((m) => m.name === "crew") as Member;
+  expect(spokeAs).toBe("crew");
+  expect(crew.kind).toBe("agent");
+  expect(crew.id).not.toBe(runnerMember.id);
+
+  // The claim was the runner's for the whole run, and is the runner's release that ends it.
+  expect(heldDuringRun).toBe(runnerMember.id);
+  const activity = core.getCard(1).activity;
+  expect(activity.filter((e) => e.type === "claimed").map((e) => e.actorId)).toEqual([
+    runnerMember.id,
+  ]);
+
+  // The agent's comment is the crew's on the feed; everything the runner did is the runner's.
+  const said = activity.filter((e) => e.type === "comment");
+  expect(said.find((e) => e.data.text === "read the card")?.actorId).toBe(crew.id);
+  expect(activity.filter((e) => e.actorId === crew.id).map((e) => e.type)).toEqual(["comment"]);
+  expect(new Set(activity.filter((e) => e.actorId !== crew.id).map((e) => e.actorId))).toEqual(
+    new Set([owner.id, runnerMember.id]),
+  );
+  expect(activity.filter((e) => e.actorId === runnerMember.id).map((e) => e.type)).toEqual([
+    "claimed",
+    "refs_set",
+    "comment",
+    "comment",
+    "attention_requested",
+    "released",
+  ]);
+});
+
+/**
+ * The run must not feed the agent its own activity, and after 016 the agent's own activity is
+ * the crew's rather than the runner's: a comment the agent posts with `skelcrew comment` would
+ * otherwise come straight back to it as a user message.
+ */
+test("a comment the agent posts as crew is not fed back to it; another member's still is", async () => {
+  await initRepo();
+  const received: string[] = [];
+  let posted: () => void = () => {};
+  const said = new Promise<void>((resolve) => {
+    posted = resolve;
+  });
+  start({
+    driver: fakeDriver(async function* (options) {
+      const reader = options.input[Symbol.asyncIterator]();
+      received.push((await reader.next()).value as string);
+      const me = core.ensureMember(options.env.SKELCREW_AS as string, "agent");
+      core.comment(1, "my own note", me.id);
+      posted();
+      received.push((await reader.next()).value as string);
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Its own note" }, owner.id);
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await said;
+  core.comment(card.id, "keep going", owner.id);
+  await done;
+
+  expect(comments(card.id)).toContain("my own note");
+  expect(received[1]).toBe("keep going");
+  expect(received).not.toContain("my own note");
 });
 
 test("the first user message is the card: id, title, branch, base and body", async () => {
@@ -396,6 +486,7 @@ test("a second run of the same card writes its own log, and the card names both"
   core = openCore(":memory:", { owner: "simon", now });
   owner = core.listMembers()[0] as Member;
   runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
   let run = 0;
   start({
     now,
@@ -533,6 +624,40 @@ async function askAndAnswer(
   await done;
   return decision as ToolDecision;
 }
+
+/**
+ * Criterion 7. The permission question is the runner's, raised to the owner, so the core
+ * refuses `crew` — the member the agent speaks as — from answering it: the request stands and
+ * the tool call the agent is waiting on is still waiting. 013 kept the agent from *trying* by
+ * leaving `resolve` off the allowlist; what refuses it now is the daemon.
+ */
+test("the agent may not answer its own permission question: the request stands and the call waits", async () => {
+  await initRepo();
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      decision = await options.canUseTool("Bash", { command: "rm -rf build" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Answers itself" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+  const raised = core.getCard(card.id).attention;
+
+  expect(() => core.resolveAttention(card.id, "allow", crewMember.id)).toThrow("may not resolve");
+
+  await Bun.sleep(100);
+  expect(core.getCard(card.id).attention).toEqual(raised);
+  expect(decision).toBeUndefined();
+
+  // The owner's answer is the one that decides it.
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+  expect(decision).toEqual({ behavior: "allow" });
+});
 
 test("a tool outside the fixed list becomes a question on the card, and the run waits for it", async () => {
   await initRepo();
@@ -943,6 +1068,7 @@ test("a claim whose run is waiting on a question does not lapse", async () => {
   core = openCore(":memory:", { owner: "simon", now });
   owner = core.listMembers()[0] as Member;
   runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
   start({
     now,
     heartbeatMs: 10,

@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   allowlistFor,
   allowsTool,
@@ -71,6 +80,27 @@ test("the CLI verbs that move a card past a gate are absent", () => {
   for (const verb of ["mv", "claim", "release", "archive", "resolve"]) {
     expect(FIXED_ALLOWLIST).not.toContain(`Bash(skelcrew ${verb} *)`);
   }
+});
+
+/**
+ * 016, criterion 11. This module's own record is the artefact 013's criterion 10f binds: it may
+ * not claim a boundary a subprocess does not respect. A subprocess reaches all five verbs — the
+ * list cannot reach inside one — and what refuses them is the daemon, which decides from the
+ * claim on the card rather than from what the caller says. So the record says reachable and
+ * refused, and no longer says the list withholds them or that a subprocess obtains them.
+ */
+test("the record says a subprocess reaches the five verbs and the daemon refuses them", () => {
+  const source = readFileSync(fileURLToPath(new URL("./allowlist.ts", import.meta.url)), "utf8");
+  const at = source.indexOf("## What a subprocess reaches");
+  expect(at).toBeGreaterThanOrEqual(0);
+  const record = source.slice(at, source.indexOf("*/", at)).replace(/\s+\*\s+/g, " ");
+  for (const verb of ["mv", "claim", "release", "archive", "resolve"]) {
+    expect(record).toContain(`skelcrew ${verb}`);
+  }
+  expect(record).toContain("the daemon refuses");
+  expect(record).toContain("whatever called");
+  expect(record).not.toContain("obtained anyway");
+  expect(record).not.toContain("are obtained");
 });
 
 /**

@@ -13,9 +13,11 @@
  * has no `requestAttention` at all, so a call site that tried to raise around the helper would
  * not compile.
  *
- * **Which request the run may replace is recorded, not inferred.** No identity check is
- * involved or possible: the agent raises attention as the `runner` member too, so `raisedBy`
- * cannot tell its question from the run's own. The one request the rule does not protect is
+ * **Which request the run may replace is recorded, not inferred.** What the core recorded for
+ * the run's own call is the mark, and nothing else is consulted. Since 016 the agent raises as
+ * `crew` and the run as `runner`, so `raisedBy` would now agree — but a second signal that
+ * agrees is not a reason to start deciding by it: the construction is the point, and it held
+ * when identity could not decide this at all. The one request the rule does not protect is
  * the run's *own* permission question: a run that ends while waiting on the owner leaves a
  * question nothing will ever answer — `skelcrew resolve -m allow` then allows no tool, it only
  * clears the request — and the ending's reason would never reach the owner's queue. Which
@@ -66,11 +68,11 @@ import type { Core } from "../core/core";
 export type RunCore = Omit<Core, "requestAttention">;
 
 /**
- * The run's own permission question, while it is the card's open request. Only the run can
- * know which request that is: the agent's `skelcrew attention` runs as the same `runner`
- * member, so `raisedBy` cannot tell the two apart, and what the core recorded for the run's
- * own call is the only mark. Held as a value so that the run and every ending read the same
- * one — an ending is never asked to remember a rule.
+ * The run's own permission question, while it is the card's open request. What the core
+ * recorded for the run's own call is the mark — the construction 013 built when the agent's
+ * `skelcrew attention` ran as the same member and `raisedBy` could not tell the two apart.
+ * Since 016 it could, and the recorded value stays what decides. Held as a value so that the
+ * run and every ending read the same one — an ending is never asked to remember a rule.
  */
 export interface RunQuestion {
   /** What the core recorded for the run's own `requestAttention`, or nothing once it is gone. */
@@ -143,7 +145,14 @@ export type RunOutcome =
 export interface EndingInput {
   core: RunCore;
   cardId: number;
+  /** The `runner` member: the claim's holder. */
   memberId: number;
+  /**
+   * The `crew` member the agent spoke as. A self-action is looked for by either member: since
+   * 016 the core refuses `crew` every one of them, and refuses the runner all but its own
+   * release, so this branch is defence in depth — it costs nothing and it is not the boundary.
+   */
+  crewId: number;
   /** The phase the run was claimed in. */
   phase: Phase;
   /** The last sequence number before the run began: what "during this run" means. */
@@ -160,13 +169,16 @@ export function classifyEnding({
   core,
   cardId,
   memberId,
+  crewId,
   phase,
   sinceSeq,
   now,
 }: EndingInput): RunOutcome {
   const card = core.getCard(cardId);
   const since = during(card.activity, sinceSeq);
-  const byRun = (event: Activity): boolean => event.actorId === memberId;
+  // Either member: what the run did, and what the agent it spawned did.
+  const byRun = (event: Activity): boolean =>
+    event.actorId === memberId || event.actorId === crewId;
 
   // What the agent itself did comes first, because the card cannot report it: the state the
   // card is in is the agent's own doing, and a phase whose card the agent moved has skipped

@@ -74,7 +74,13 @@ export class RunAbandoned extends Error {
 export interface RunInput {
   /** No `requestAttention`: every raise a run makes goes through `attention`, by construction. */
   core: RunCore;
+  /** The `runner` member: the claim's holder, and who everything this module writes is. */
   member: Member;
+  /**
+   * The `crew` member the agent speaks as. Its writes are what the phase's contract counts as
+   * this run's, and its activity is no more fed back to the agent than the runner's own is.
+   */
+  crew: Member;
   /** The one helper this run raises attention through. */
   attention: RunAttention;
   /** Who an ending hands the card to; resolved by `ending.ts`, inside its own guard. */
@@ -314,7 +320,7 @@ function describeLimit(ms: number): string {
 type Comment = Activity & { type: "comment" };
 
 export async function runPlaybook(input: RunInput): Promise<void> {
-  const { core, member, ownerId, warn, card, path, logPath } = input;
+  const { core, member, crew, ownerId, warn, card, path, logPath } = input;
   const id = card.id;
 
   const abort = new AbortController();
@@ -571,8 +577,9 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (event.cardId !== id) return;
     switch (event.type) {
       case "comment":
-        // Never the run's own: an agent must not be fed its own activity.
-        if (event.actorId === member.id) return;
+        // Never the run's own, and never the agent's: an agent must not be fed its own
+        // activity, and after 016 its own comments are `crew`'s rather than the runner's.
+        if (event.actorId === member.id || event.actorId === crew.id) return;
         held.push(event);
         if (held.length === 1) queueMicrotask(flushHeld);
         return;
@@ -735,7 +742,8 @@ export async function runPlaybook(input: RunInput): Promise<void> {
           branchHead: input.branchHead,
           base: input.base,
           cardId: id,
-          memberId: member.id,
+          // The artefact is the agent's to produce, and the agent is `crew`.
+          memberId: crew.id,
           sinceSeq: input.sinceSeq,
         });
 
@@ -743,6 +751,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     core,
     cardId: id,
     memberId: member.id,
+    crewId: crew.id,
     phase: input.phase,
     sinceSeq: input.sinceSeq,
     now: input.now(),

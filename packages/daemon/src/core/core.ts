@@ -585,6 +585,8 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
         }
         const at = now();
         // Someone else's live claim is their half-done work: an agent may not hand it off.
+        // Unreachable while every phase's exit is the owner's — a non-human actor is turned
+        // away above — and kept because it is the rule, not the phase table, that says so.
         const live = liveClaim(card, at);
         if (live !== null && live.by !== actorId && actor.kind !== "human") {
           throw claimConflict(card, live);
@@ -644,9 +646,20 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
         const actor = getMember(actorId);
         const card = readCard(id);
         if (card.archivedAt !== null) return card;
+        // Archiving is the owner's, held or free: "done" is a human's call the way merging is,
+        // and archiving is the other way a card stops. Refused after the no-op above, which
+        // changes nothing and so crosses nothing.
+        if (actor.kind !== "human") {
+          throw new CoreError(
+            "forbidden",
+            `only the owner may archive a card; ${actor.name} may not archive card ${id}`,
+          );
+        }
         const at = now();
-        // Archiving ends the holder's run outright; like a move, an agent may not do that
-        // to someone else's live claim. The owner may.
+        // Archiving ends the holder's run outright; like a move, an agent may not do that to
+        // someone else's live claim. The owner may. Unreachable while the rule above stands —
+        // and kept for that reason: the rule above is one an owner can drop without touching
+        // anything else, and dropping it must not also drop this.
         const live = liveClaim(card, at);
         if (live !== null && live.by !== actorId && actor.kind !== "human") {
           throw claimConflict(card, live);

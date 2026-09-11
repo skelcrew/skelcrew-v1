@@ -182,14 +182,17 @@ test("the Code playbook says the read-only git verbs go through the harness's ow
 });
 
 /**
- * Criterion 10f. The pre-allowed check command is a subprocess, and no rule in the allowlist
- * reaches inside one — so the verbs the CLI group withholds are reachable anyway, and an agent
- * told the list is a boundary has been told something false. The assertion is the record and the
- * list agreeing rather than the record's prose: each verb the playbook names as reachable has to
- * be one the list really does withhold, so an entry added for one of them later fails here
+ * Criterion 10f of 013, and criterion 11 of 016. The pre-allowed check command is a subprocess,
+ * and no rule in the allowlist reaches inside one — so the five verbs are reachable from one
+ * whatever the list says. What stops them is the daemon: the card's claim is the runner's and
+ * the agent speaks as `crew`, so the core refuses every one of them on its own facts. The
+ * paragraph has to say exactly that and not that the list withholds them, because an agent told
+ * the list is a boundary has been told something false. The assertion is the record and the list
+ * agreeing rather than the record's prose alone: each verb the playbook names as reachable has
+ * to be one the list really does leave off, so an entry added for one of them later fails here
  * instead of leaving the paragraph quietly wrong.
  */
-test("the Code playbook records what a subprocess reaches, naming the withheld verbs", () => {
+test("the Code playbook says a subprocess reaches the five verbs and the daemon refuses them", () => {
   const code = loadPlaybooks().code;
   const at = code.indexOf("Those check commands are a subprocess");
   expect(at).toBeGreaterThanOrEqual(0);
@@ -198,6 +201,12 @@ test("the Code playbook records what a subprocess reaches, naming the withheld v
     expect(paragraph).toContain(`skelcrew ${verb}`);
     expect(FIXED_ALLOWLIST).not.toContain(`Bash(skelcrew ${verb} *)`);
   }
+  // The refusal is the daemon's, and it holds whatever process is calling.
+  expect(paragraph).toContain("the daemon refuses");
+  expect(paragraph).toContain("whatever called");
+  // And the list is not claimed as what stops them.
+  expect(paragraph).not.toContain("withheld");
+  expect(paragraph).not.toContain("obtain");
 });
 
 test("an empty playbook is refused at load, naming the file", () => {

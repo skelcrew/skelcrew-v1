@@ -5,7 +5,7 @@ import { createGit } from "./runner/git";
 import { selectAgent } from "./runner/none";
 import { loadPlaybooks, type Playbooks } from "./runner/playbooks";
 import { runLimitFromEnv } from "./runner/run";
-import { RUNNER_MEMBER_NAME, type Runner, startRunner } from "./runner/runner";
+import { CREW_MEMBER_NAME, RUNNER_MEMBER_NAME, type Runner, startRunner } from "./runner/runner";
 import { daemonAnswers, dataPaths, prepareDataDir, resolveDataDir } from "./server/paths";
 import { startServer } from "./server/server";
 import { sweepTick } from "./sweep";
@@ -77,7 +77,10 @@ if (process.env.SKELCREW_RUNNER !== "0") {
       dataDir: dir,
       repoRoot,
       git: createGit(),
+      // Two members, because the mechanism is that the claim's holder and the agent's identity
+      // differ: the runner claims as itself and the agent it spawns speaks as the crew.
       member: core.ensureMember(RUNNER_MEMBER_NAME, "agent"),
+      crew: core.ensureMember(CREW_MEMBER_NAME, "agent"),
       warn: (line) => console.error(line),
       runLimitMs,
       ...(agent === undefined ? {} : { agent }),

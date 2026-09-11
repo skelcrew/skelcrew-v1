@@ -48,19 +48,29 @@ test("the spawned environment is exactly PATH, HOME, SKELCREW_AS and SKELCREW_DI
   const env = agentEnvironment(
     { PATH: "/usr/bin", HOME: "/home/simon", SECRET: "s", SKELCREW_AS: "someone" },
     dir,
+    "crew",
   );
   expect(env).toEqual({
     PATH: `${shimDir(dir)}${delimiter}/usr/bin`,
     HOME: "/home/simon",
-    SKELCREW_AS: "runner",
+    SKELCREW_AS: "crew",
     SKELCREW_DIR: dir,
   });
 });
 
 test("with no PATH to inherit the shim's directory is the whole PATH, and an absent HOME is not invented", () => {
-  expect(agentEnvironment({}, dir)).toEqual({
+  expect(agentEnvironment({}, dir, "crew")).toEqual({
     PATH: shimDir(dir),
-    SKELCREW_AS: "runner",
+    SKELCREW_AS: "crew",
     SKELCREW_DIR: dir,
   });
+});
+
+/**
+ * 016: the agent speaks as a member of its own, so the name is the caller's to choose rather
+ * than this module's to know — and what it is for is that the claim's holder and the agent's
+ * identity are two members.
+ */
+test("the member the agent speaks as is the one it was given", () => {
+  expect(agentEnvironment({}, dir, "someone-else").SKELCREW_AS).toBe("someone-else");
 });

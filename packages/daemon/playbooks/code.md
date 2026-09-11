@@ -40,11 +40,13 @@ unprompted too, as the repository states them.
 Those check commands are a subprocess, and none of the rules above reaches inside one. What a
 check runs — this repository's own test files, the ones you just wrote — runs outside the
 permission layer entirely: it can write where a tool call of yours would have had to ask, and
-it can reach `skelcrew mv`, `skelcrew claim`, `skelcrew release`, `skelcrew archive` and
-`skelcrew resolve`, the five verbs deliberately withheld from you above. That is a fact about
-this harness, not permission. Those moves are the owner's — moving your own card past a gate,
-or answering your own question, is out of bounds however it is reached, and a check command is
-not a way round the withholding.
+it can call `skelcrew mv`, `skelcrew claim`, `skelcrew release`, `skelcrew archive` and
+`skelcrew resolve`, the five verbs that are not on the list above. Calling them changes
+nothing: the daemon refuses all five to you, whatever called. The card you are working is
+claimed by the runner and you are not the runner, no phase is yours to leave, archiving is the
+owner's, and a permission question is addressed to the owner. So these are gates rather than
+omissions — moving your own card past one, or answering your own question, is out of bounds
+however it is reached, and a check command is no way round it.
 
 **Past the list above and that recognition, a call asks the owner.** That recognition is
 the same flag-by-flag check the git verbs above go through, and it reaches a plain read of the

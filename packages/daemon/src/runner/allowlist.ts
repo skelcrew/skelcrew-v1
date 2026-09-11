@@ -52,8 +52,13 @@
  *    its allow-rule layer runs *before* its read-only self-approval, and its deny rules before
  *    both. See `SAFE_GIT_FLAGS`.
  * 4. **The CLI is allowed verb by verb.** `mv`, `claim`, `release`, `archive` and `resolve`
- *    are absent deliberately: they would let the agent move its own card past the runner's
- *    artefact check, or answer its own question. They ask.
+ *    are absent deliberately: they are the gates — moving a card past the runner's artefact
+ *    check, taking or dropping the claim on it, ending it, answering its own question. They
+ *    ask. What *stops* them is not the omission: since 016 the daemon refuses all five to the
+ *    member a run's agent speaks as, from state it holds rather than from what the caller says
+ *    (the claim on the card is the `runner` member's, and the agent is `crew`). The omission
+ *    keeps the agent from trying in the ordinary course, visibly; see *What a subprocess
+ *    reaches*.
  * 5. **`push` is allowed only in the exact form the playbook runs**, and its bare follow-up,
  *    so any other refspec — and any force push — asks.
  * 6. **The scan grants the command line it found, not its first word, and may not widen a
@@ -168,22 +173,27 @@
  *   anything the daemon's user can write, refs and `.git/config` included. Rule 8 makes those
  *   writes *ask when a tool makes them*; it does not make them impossible. The same goes for
  *   rule 7's ref and for `deniedTools`.
- * - **The verbs rule 4 withholds are obtained anyway.** The subprocess inherits `PATH` with the
- *   shim and `SKELCREW_AS=runner` (`agentEnvironment` in `./shim`), so `skelcrew mv`, `claim`,
- *   `release`, `archive` and `resolve` are all reachable — the run can move its own card past
- *   the artefact check and answer its own permission question. Withholding them from the list is
- *   worth doing (it keeps the agent from taking those actions *as itself*, visibly, in the
- *   ordinary course) and it is not a boundary.
+ * - **The five verbs rule 4 leaves off are reachable from a subprocess, and the daemon refuses
+ *   them.** The subprocess inherits `PATH` with the shim and `SKELCREW_AS=crew`
+ *   (`agentEnvironment` in `./shim`), so `skelcrew mv`, `skelcrew claim`, `skelcrew release`,
+ *   `skelcrew archive` and `skelcrew resolve` all run — and every one of them is refused by the
+ *   core on the daemon's own facts, whatever called: the card's claim belongs to the `runner`
+ *   member and not to `crew`, no phase is a non-human member's to leave, archiving is the
+ *   owner's, and the run's permission question is addressed to the owner. The refusal does not
+ *   know what process is calling, so a check command is no way round it. What defeats it is a
+ *   caller asserting another identity — `skelcrew --as runner`, or no `--as` at all, which is
+ *   the owner — and single-player with no auth cannot tell that lie from the truth. That is a
+ *   gate, not a boundary, and it is 016's own limit rather than something this list could fix.
  * - **Criteria 10b and 10c are true of tool calls and false of subprocesses**, which is how 013
  *   words them. `allowsTool` and `runsUnprompted` answer "does this tool call ask", and no
  *   assertion built on them says anything about what a process does once one has started. They
  *   are bounded against the fixed list rather than against whatever a repository pre-allows for
  *   itself, which is the same limit read from the scan's side: see `narrowedCommands`.
  *
- * The rules that must survive this belong in the daemon, not in a list: the daemon knows which
- * member is asking and which run holds the claim, and can refuse a gate-crossing move on its own
- * authority whatever called it. That is **milestone 016**, and it is the reason this is recorded
- * here rather than papered over. Out of scope for it and for 013: OS-level sandboxing of the
+ * The rules that must survive this belong in the daemon, not in a list, and **016 put them
+ * there**: the daemon knows which member is asking and which run holds the claim, and refuses a
+ * gate-crossing call on its own authority whatever called it. That is why this is recorded here
+ * rather than papered over. Out of scope for it and for 013: OS-level sandboxing of the
  * subprocess, which is the only thing that would make the first bullet false.
  */
 import { realpathSync } from "node:fs";
@@ -725,7 +735,8 @@ export function allowsTool(
  * **The general lesson, for whoever extends this.** Prefer containment to enumeration wherever
  * the choice exists. Each enumeration bought a maintenance obligation; each containment bought
  * none. Milestone 016 is the containment that makes the gates hold whatever the agent runs, and
- * it does not appear in this list because it will not need to.
+ * it does not appear in this list because it does not need to: it is the core refusing on the
+ * claim it holds, and nothing there is transcribed from anything.
  */
 export const TRANSCRIBED_FROM = {
   /** The agent SDK this package depends on; `claude.test.ts` checks it against what is installed. */
@@ -956,7 +967,8 @@ function words(line: string): string[] {
  * true against an instruction file written to attack; criteria 10b and 10c inherit that limit.
  * What keeps the owner's pre-merge reading of a target repository meaningful is the base-commit
  * read below: what grants anything is what the owner merged. The rules that must survive a
- * repository the owner has not read belong in the daemon, which is milestone 016.
+ * repository the owner has not read belong in the daemon, and 016 put them there — the gates
+ * are refusals the core makes from the claim on the card, whatever a scanned command runs.
  */
 function narrowedCommands(): Set<string> {
   const out = new Set<string>();

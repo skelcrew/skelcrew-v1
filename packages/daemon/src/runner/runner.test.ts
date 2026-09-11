@@ -92,6 +92,7 @@ function start(overrides: { git?: Git } = {}): Runner {
     repoRoot: repo,
     git: overrides.git ?? git,
     member: runnerMember,
+    crew: core.ensureMember("crew", "agent"),
     warn: (line) => warnings.push(line),
   });
   return runner;
@@ -845,6 +846,7 @@ test("a claim that lapsed by the injected clock during git is treated as lost: t
     repoRoot: repo,
     git: gated.git,
     member: runnerMember,
+    crew: core.ensureMember("crew", "agent"),
     warn: (line) => warnings.push(line),
     now,
   });
@@ -906,6 +908,7 @@ test("readiness uses the injected clock: a claim lapsed by that clock is claimed
     repoRoot: repo,
     git,
     member: runnerMember,
+    crew: core.ensureMember("crew", "agent"),
     warn: (line) => warnings.push(line),
     now,
   });
