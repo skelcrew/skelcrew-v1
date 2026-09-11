@@ -11,3 +11,6 @@ should flow into the playbooks under `.claude/`; an entry stays here until it ha
   the run was in flight. That is the shape the live pipeline needs: an agent never edits the
   card's spec to match its code; it raises an attention request naming the conflict, and the
   owner's resolution is a spec edit plus a comment the run continues from.
+
+See also `docs/prototype-vs-specs.md`, which measures the same idea built twice — vibe-coded
+on the `prototype` branch, and specced on `main` — and says what the difference bought.

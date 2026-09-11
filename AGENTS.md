@@ -252,5 +252,6 @@ in `docs/MILESTONES.md`; its code is reference material, not a base to build on.
   findings that shape it and points at the evidence
 - `docs/research/` — what other harnesses do, one file per subject; evidence, never a plan
 - `docs/prototype-findings.md` — the 2026-09-07 spike's record, in its own vocabulary
+- `docs/prototype-vs-specs.md` — the same idea built twice, vibe-coded and specced, measured
 - `docs/workflow-findings.md` — what building here teaches about `/spec` and `/develop`
 - `packages/` — Bun workspaces (created by the scaffold spec)
