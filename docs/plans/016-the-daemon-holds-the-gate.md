@@ -18,8 +18,10 @@ Run record for `docs/specs/016-the-daemon-holds-the-gate.md`.
 3. **The records.** `allowlist.ts`'s *What a subprocess reaches* and rule 4, and
    `playbooks/code.md`'s subprocess paragraph: the five verbs are reachable and the daemon
    refuses them.
-4. **Tests**, red first, each refusal its own case through the real core, and all five through
-   the CLI as `crew` against a running daemon.
+4. **Tests**: each refusal its own case through the real core, and all five through the CLI as
+   `crew` against a running daemon. Red first where a rule changed — and **not** where one did
+   not, which is most of the gates: see *Red, and the eight cases that were green first* below,
+   which says of every new case whether it was red before the change it covers.
 
 ## Files expected to change
 
@@ -44,6 +46,78 @@ Run record for `docs/specs/016-the-daemon-holds-the-gate.md`.
 - **A comment the agent posts as `crew` is not fed back to it.** `run.ts` already refuses to
   feed the run its own activity; with the identity split that filter has to know both members,
   or every `skelcrew comment` the agent makes returns to it as a user message.
+
+## Red, and the eight cases that were green first
+
+This spec changes **two** rules and one identity. Only tests of the two rules could be red
+before the implementation; a test of a gate whose rule already existed passes on the base
+commit the moment it is written, because what 016 changes for it is *who the agent is*, not
+what the core does. Both groups are listed in full below, and nothing was made red by reverting
+an implementation.
+
+**Red first, with the failure quoted when it was run** — each was written, run and seen to fail
+for the intended reason before the code that makes it pass:
+
+- `phases.test.ts` "every phase is the owner's to leave" — `- "code": "owner" / + "code": "any"`.
+- `core.test.ts:287` "an agent may not move a card out of code; the owner moves it…" and the
+  `test.each` over all four destinations — the move succeeded on the base commit.
+- `core.test.ts` "crew may not move the runner's card to pr|done|idea" (×3) —
+  `Expected: "forbidden" / Received: "conflict"`: on the base commit the refusal is the claim's,
+  and it records no `move_rejected`, which is what criterion 3 asks for.
+- `core.test.ts` "crew may not archive a card the runner holds, nor a free one" — same shape for
+  the held card; the free card was archived outright.
+- `shim.test.ts` ×3 — `Expected: "crew" / Received: "runner"`.
+- `run.test.ts` "the agent speaks as crew, the claim stays the runner's…" — `Expected: "crew" /
+  Received: "runner"`.
+- `run.test.ts` "a comment the agent posts as crew is not fed back to it…" — red in the
+  intermediate state (identity split in, filter not yet): `Expected: "keep going" / Received:
+  "my own note"`. It passes at both ends and would not have failed on the base commit, which is
+  why the intermediate run is the one quoted.
+- `contracts.test.ts`'s thirteen re-pointed contract writes — `Expected: "spec ready" /
+  Received: "run finished without a spec…"` once the contract counted the crew's writes.
+- `allowlist.test.ts` and `playbooks.test.ts`'s two record assertions — `Expected to contain:
+  "the daemon refuses"`.
+
+**Green when written, and why each could not be red.** A copy of the worktree with `core.ts`
+and `phases.ts` restored to base runs the new `describe("the daemon holds the gate")` block at
+4 pass / 4 fail; these are the four that pass, and four more beside them:
+
+- `core.test.ts` "crew may not release the runner's claim" — `releaseCard` already threw
+  `forbidden` to a non-human actor who is not the holder (`core.ts`, before 016). 016 changes
+  only that the agent is no longer the holder. **The red for criterion 4 is the identity**, in
+  `run.test.ts` "the agent speaks as crew…" and `shim.test.ts`, above.
+- `core.test.ts` "crew may not claim a card the runner holds" — `claimCard` already threw
+  `conflict` on another member's live claim. Same reading: criterion 6's red is the identity.
+- `core.test.ts` "crew may not resolve the request the runner raised to the owner" —
+  `resolveAttention` already refused anyone but the addressee or the owner; 013 says as much in
+  so many words. Criterion 7's red is the identity.
+- `core.test.ts` "crew still comments, sets the body and records refs…" — this is the *absence*
+  of a rule, by design (the spec's red-team lists exactly these as what `crew` reaches). Nothing
+  could make it red without adding a rule the spec does not ask for.
+- `run.test.ts` "the agent may not answer its own permission question: the request stands and
+  the call waits" — criterion 7 again, one level up: it composes the pre-existing refusal with
+  013's pending-ask machinery, neither of which this spec changes.
+- `contracts.test.ts` "the agent as crew cannot move, release or archive the card it is
+  working…" — the end-to-end composition. Its move and archive halves would have been red on the
+  base commit; its release and claim halves would not, and it was written after the rules were
+  in, so it is listed here whole rather than credited with a red it was not run against.
+- `cli.test.ts` "the five gate verbs as crew are refused by the daemon on a card the runner
+  holds" — the same criteria at the surface the agent meets them. The CLI cannot be red for
+  rules already in the core; the spec asks for this path so the refusal is seen where the agent
+  sees it, not as a second proof.
+- `server/process.test.ts`'s widened `listMembers` assertion — a guard over `main.ts`'s two
+  `ensureMember` calls, written after them.
+
+**Rewrites of tests the change made fail**, which are neither: `core.test.ts:287`,
+`cli.test.ts:333`, `contracts.test.ts:713` and `:817`, and the nine plumbing cases listed under
+*Where the spec is wrong*. Their previous form failed — that is what forced the rewrite, and the
+failures are in the list above where the criterion is 016's — and their new assertions were
+written against the implemented rule.
+
+What this means for `CLAUDE.md`'s red-then-green: it applied to the two rules and the identity,
+and it could not apply to the five gates that are 016's subject but not 016's change. That is
+the spec's own thesis — "the mechanism is identity, not new rules" — and the record says so
+rather than claiming a red for all of it.
 
 ## Where the spec is wrong
 
@@ -147,6 +221,23 @@ Two spec defects with nothing to fix in the code: the run-start comment criterio
 never named the five verbs, so that clause is vacuous; and the red-team's "what remains open"
 list says three limits are recorded in `allowlist.ts` where only one was.
 
+**The spec was amended four times over these rounds**, each time by the coordinator, and each
+correction is one this work forced:
+
+1. `261af08` — the self-action paragraph and criterion 10: the runner cannot move its own card
+   out of Code or archive it either, because the two rules key on the actor's *kind*.
+2. `261af08` — criterion 12: more than one existing assertion changes, and what those changes
+   may be (subject kept, only the actor or the expected refusal changed, nothing weaker), with
+   each to be enumerated here.
+3. `f152b4d`, first half — the red-team's *what the grant reaches*, which claimed to enumerate
+   and did not: `crew` can also **create a card** (it lands in Idea, a phase `crew` cannot
+   leave) and its raise **overwrites the card's one open request**, the runner's own permission
+   question included — which 013 designed for, since the run re-queues the ask it was waiting
+   on. Neither crosses a gate; both belong in a list that says it is complete.
+4. `f152b4d`, second half — criterion 11's run-start-comment clause dropped as vacuous.
+5. `279c90f` — the red-team's compositions: `--move done` on a request `crew` raises, and the
+   `runner`/`crew` name-join. Recorded in `allowlist.ts` too, by Minor 4 of round 2.
+
 Both claim-conflict guards — in `moveCard` and in `archiveCard` — are now unreachable, because
 a non-human actor is turned away before either is read. Both are kept and commented as such:
 the spec says an owner may drop the archive rule "without touching anything else", and dropping
@@ -201,3 +292,35 @@ Disposition of the five:
    owner still executes the move.
 5. **The record's arithmetic** — three tests changed for `agentEnvironment`'s new parameter, not
    two; items 15-18 are now split one per test and the count reads eighteen.
+
+## Verification — failed on this record's fidelity, and on nothing else
+
+All twelve acceptance criteria **PASS**, checked against the code rather than against this
+record: the identity split and the two rules do what criteria 2-9 describe; 014's endings hold
+where they still can (criterion 10, as amended); the two records say reachable-and-refused
+(criterion 11); every changed existing test keeps its subject with nothing weaker (criterion 12,
+as amended); `bun run check` is green and no test spawns an agent or calls a model (criterion 1).
+Scope is clean, and every absolute in the new prose traces to a check in `core.ts` that cannot
+see what transport the call arrived on.
+
+**What failed was this file.** Step 4 above said "Tests, red first" without exception, and the
+two reports on this work named two green-first tests. The verifier copied the worktree, restored
+`core.ts` and `phases.ts` to base, and ran the new `describe("the daemon holds the gate")` block:
+**4 pass / 4 fail**. Four cases in that block — release, claim, resolve, and the
+comment/body/refs case — were green before any implementation, and none was disclosed.
+
+The finding is about the record, not the tests: those four characterise rules the core already
+had, under the new identity, and could not be made red without weakening the core. But
+red-then-green was claimed where it did not and could not apply. Corrected here:
+
+- *Red, and the eight cases that were green first* now says of **every** new case which it was,
+  with the quoted failure for each red one and the reason each green one could not be red — the
+  verifier's four, plus `run.test.ts`'s permission-question case and `contracts.test.ts`'s
+  end-to-end composition (both of which my reports also missed), plus the CLI refusal test and
+  the `process.test.ts` assertion (which they disclosed).
+- Step 4's claim is replaced by one that points at that section.
+- Rewrites of tests the change made fail are named as a third category, credited with neither.
+
+`f152b4d`'s first half — the red-team's *what the grant reaches* widened to include `crew`
+creating a card and `crew`'s raise overwriting the card's one open request — was missing from
+the list of spec amendments above, and is now item 3 there.
