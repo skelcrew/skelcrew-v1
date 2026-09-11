@@ -212,7 +212,12 @@ and bodies. They are not in this spec's set; see *Out of scope*.
     escaped, and no line of the watch output reads as an activity entry.
 8c. The Code playbook's §5 reads the body for export through `skelcrew show <id> --json`, and
     `playbooks.test.ts` pins that sentence.
-9. Existing tests pass unchanged, including `core.test.ts`'s `specPath` newline and NUL cases.
+9. Existing tests pass unchanged, including `core.test.ts`'s `specPath` newline and NUL cases —
+   with the one exception criterion 6a creates: the two `cli.test.ts` assertions that the body
+   appears verbatim in `skelcrew show` ("show prints the card, the body by line…" and "body
+   replaces the body from stdin or a file…") now assert the marked layout, and each also
+   asserts the stored value is byte-identical, which is stronger than before. No other existing
+   assertion changes.
 10. The refused set is defined once, in `@skelcrew/shared`, and the daemon, the CLI and the
     runner all use it: no second list of characters exists in any of the three.
 
