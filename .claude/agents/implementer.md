@@ -2,7 +2,7 @@
 name: implementer
 description: Implements an approved specification from docs/specs/. Use when a spec has been approved and needs to become code, or when a reviewer or verifier has returned concrete findings that need fixing. Expects the spec path and, for a fix round, the exact findings.
 tools: Read, Write, Edit, Bash, Grep, Glob
-model: inherit
+model: opus
 color: blue
 ---
 

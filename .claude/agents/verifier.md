@@ -3,7 +3,7 @@ name: verifier
 description: Final independent verification before shipping. Use after review is APPROVED. Runs the repository's tests, lint, type checks, and build, verifies every acceptance criterion against the final diff, confirms no unrelated changes, and ends with VERIFIED or VERIFICATION FAILED. Never modifies code.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: inherit
+model: opus
 color: green
 ---
 
