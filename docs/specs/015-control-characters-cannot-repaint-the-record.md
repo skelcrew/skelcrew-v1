@@ -223,8 +223,13 @@ and bodies. They are not in this spec's set; see *Out of scope*.
    sentence, so the pin is re-written to match the **amended** sentence contiguously — both
    halves, "overwrite that path … from the card's body" and "Do not allocate a new number", in
    one assertion, so that relocating either half still fails it. A pin that asserts the halves
-   separately is a weakening and is not accepted. No other existing assertion changes: **four**
-   removed `expect` lines in the diff, at those three sites, and the count is what checks it.
+   separately is a weakening and is not accepted. No other existing assertion changes. What
+   checks it: the diff against base removes exactly **three** `expect` lines, all in
+   `cli.test.ts` at the two named tests, each replaced by something stronger; and exactly
+   **one** further existing assertion has its text changed without its `expect` line moving —
+   the `playbooks.test.ts` pin, whose new string is the amended sentence. Four changed
+   assertions at three sites, no more. (An earlier wording of this criterion counted removed
+   lines alone and got a number that depended on how the pin was fixed; it was wrong twice.)
 10. The refused set is defined once, in `@skelcrew/shared`, and the daemon, the CLI and the
     runner all use it: no second list of characters exists in any of the three.
 
