@@ -198,7 +198,16 @@ Against the scripted driver and real temporary git repositories, asserting what 
 - Criterion 13 on each path separately. This is the invariant that was half-implemented five
   times; a test per path is the point, not redundancy.
 - Criterion 14 including the re-dispatch after the answer.
-- Existing 012 and 013 coverage must pass unchanged.
+- Existing 012 and 013 coverage must pass unchanged, with one exception, which is a genuine
+  collision between two specs' rules rather than a test bending to fit code. 013's
+  release-while-waiting case asserts an abandonment, and criterion 10 above reclassifies that
+  path as a **stop** — an explicit release nothing supersedes leaves the card waiting on the
+  owner rather than back in the queue a moment after they took it by hand. Once it is a stop the
+  run raises an ending, and 013's own rule then applies: the one open request an ending may
+  replace is the run's *own* permission question, which nothing can answer after the run is over
+  (`resolve -m allow` would allow no tool, only clear the request). So that case must assert the
+  stop, and must assert the question still stands on the activity feed where it was raised. No
+  other 012 or 013 assertion changes.
 
 ## Out of scope
 
