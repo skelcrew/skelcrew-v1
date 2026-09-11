@@ -82,6 +82,21 @@ test("revParse is undefined for a missing ref and a GitError outside a repositor
   await expect(git.revParse(bare, "HEAD")).rejects.toBeInstanceOf(GitError);
 });
 
+test("showFile reads a path as of a commit, not as it is in the working tree", async () => {
+  await initRepo("main");
+  writeFileSync(join(repo, "AGENTS.md"), "committed\n");
+  await sh(repo, "add", "AGENTS.md");
+  await sh(repo, "commit", "-q", "-m", "add AGENTS.md");
+  const committed = await sh(repo, "rev-parse", "HEAD");
+
+  writeFileSync(join(repo, "AGENTS.md"), "changed since\n");
+  writeFileSync(join(repo, "CLAUDE.md"), "never committed\n");
+  expect(await git.showFile(repo, committed, "AGENTS.md")).toBe("committed\n");
+  // Untracked at that commit, and a ref that is not there: both are undefined.
+  expect(await git.showFile(repo, committed, "CLAUDE.md")).toBeUndefined();
+  expect(await git.showFile(repo, "0".repeat(40), "AGENTS.md")).toBeUndefined();
+});
+
 test("a failing command is a GitError naming the command and git's own message", async () => {
   await initRepo("main");
   const error = await git.createBranch(repo, "main", "main").catch((e: unknown) => e);

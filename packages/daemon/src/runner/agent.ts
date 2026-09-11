@@ -24,6 +24,12 @@ export interface AgentRunOptions {
   systemPrompt: string;
   /** Tool patterns the agent may use without asking. Everything else calls `canUseTool`. */
   allowedTools: string[];
+  /**
+   * Deny rules, which outrank `allowedTools` — the only way a path an allow entry covers can
+   * still be refused. A driver that drops these silently widens the boundary: `canUseTool` is
+   * never reached for a call an allow entry matches, so a deny that does not land is no deny.
+   */
+  disallowedTools: string[];
   canUseTool(tool: string, input: Record<string, unknown>): Promise<ToolDecision>;
   /**
    * The user messages, in order and as they arrive: the card first, then every card comment

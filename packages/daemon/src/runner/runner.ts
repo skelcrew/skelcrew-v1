@@ -19,8 +19,8 @@ import {
 } from "@skelcrew/shared";
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
-import { FIXED_ALLOWLIST } from "./allowlist";
-import { endRun } from "./ending";
+import { allowlistFor } from "./allowlist";
+import { endRun, runAttention, runQuestion } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
@@ -65,6 +65,8 @@ export interface RunnerOptions {
   abortGraceMs?: number;
   /** The window a run batches tool calls into one comment over. Defaults to 30 s. */
   summaryMs?: number;
+  /** How often a live run renews its lease. Defaults to 30 s. */
+  heartbeatMs?: number;
 }
 
 export interface Runner {
@@ -134,11 +136,23 @@ export function startRunner(options: RunnerOptions): Runner {
   const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
   const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS_DEFAULT;
   const summaryMs = options.summaryMs ?? TOOL_SUMMARY_MS;
+  const heartbeatMs = options.heartbeatMs ?? RUN_HEARTBEAT_MS;
   const baseEnv = options.env ?? process.env;
   /** Fired by `stop()`: a live run is told to stop rather than waited out. */
   const stopping = new AbortController();
-  const dir = worktreesDir(dataDir);
-  mkdirSync(dir, { recursive: true });
+  /** The one helper every raise a run makes goes through; see `ending.ts`. */
+  const attention = runAttention(core, member.id);
+  const worktrees = worktreesDir(dataDir);
+  mkdirSync(worktrees, { recursive: true });
+  /**
+   * Spelled the way the filesystem spells it, because a run's cwd and the file-tool rules
+   * anchored at it have to agree: `resolveDataDir` absolutises `SKELCREW_DIR` lexically, so a
+   * data directory reached through a link (`/tmp` and `/var` on macOS) otherwise leaves the two
+   * spelled differently — where the harness maps one spelling to the other when it looks a
+   * write up against an allow rule and does not when it looks the same write up against a deny
+   * rule. See `anchor` in `./allowlist`. This is also the spelling git prints back.
+   */
+  const dir = realpath(worktrees);
   // The agent's `skelcrew`: written once, before any run could need it.
   if (agent !== undefined) writeShim(dataDir);
 
@@ -219,13 +233,17 @@ export function startRunner(options: RunnerOptions): Runner {
       warn(`skelcrew runner: card ${id} not claimed: ${message(error)}`);
       return;
     }
+    // Where this run's own record starts: the `claimed` event just written. Everything past
+    // it is what happened during the run — the contracts' "recorded by this run", and the
+    // ending's reason.
+    const sinceSeq = core.getCard(id).activity.at(-1)?.seq ?? 0;
     const heartbeat = setInterval(() => {
       try {
         core.heartbeat(id, member.id);
       } catch (error) {
         warn(`skelcrew runner: heartbeat on card ${id} failed: ${message(error)}`);
       }
-    }, RUN_HEARTBEAT_MS);
+    }, heartbeatMs);
     const path = worktreePath(id);
     const branch = branchName(id, card.title);
     /**
@@ -258,13 +276,28 @@ export function startRunner(options: RunnerOptions): Runner {
         warn(`skelcrew runner: card ${id}: run abandoned; and could not say so: ${message(inner)}`);
       }
     };
+    /**
+     * This run's own permission question, made here so that the run and every ending share
+     * one value: the run records what it asked, and an ending — `run.ts`'s or the failed
+     * step below — replaces that request and leaves any other standing (`ending.ts`).
+     */
+    const question = runQuestion();
     let step = "resolve base branch";
     try {
       const base = await git.defaultBranch(repoRoot);
       stillHeld();
       step = "create branch";
-      if ((await git.revParse(repoRoot, `refs/heads/${branch}`)) === undefined) {
+      /**
+       * Where the branch stood before the agent started. The Code contract compares its own
+       * end against this: commits past the base are not this run's work unless the branch
+       * moved, since a revision run that records the pull request and commits nothing would
+       * otherwise hand the card on using the previous run's. A branch this run creates starts
+       * at the base, so a run that commits nothing leaves it there and fails the same way.
+       */
+      let branchHead = await git.revParse(repoRoot, `refs/heads/${branch}`);
+      if (branchHead === undefined) {
         await git.createBranch(repoRoot, branch, base.sha);
+        branchHead = base.sha;
       }
       stillHeld();
       step = "add worktree";
@@ -272,11 +305,12 @@ export function startRunner(options: RunnerOptions): Runner {
       stillHeld();
       step = "update card";
       core.setRefs(id, { branch }, member.id);
+      // Narrowed here, not in the run: a phase with a playbook is a phase with a contract,
+      // and a new claimable phase without either does not compile into a run.
+      const phase = card.phase === "spec" || card.phase === "code" ? card.phase : undefined;
       const playbook =
-        agent !== undefined && (card.phase === "spec" || card.phase === "code")
-          ? agent.playbooks[card.phase]
-          : undefined;
-      if (agent === undefined || playbook === undefined) {
+        agent !== undefined && phase !== undefined ? agent.playbooks[phase] : undefined;
+      if (agent === undefined || playbook === undefined || phase === undefined) {
         // 006's handoff, kept verbatim: nothing has run in the worktree, so this is not the
         // ending of a run and does not go through `ending.ts`. Every ending does.
         core.comment(id, `worktree ready at ${path} on ${branch} (from ${base.name})`, member.id);
@@ -288,27 +322,47 @@ export function startRunner(options: RunnerOptions): Runner {
         core.releaseCard(id, { reason: "no playbook" }, member.id);
         return;
       }
+      step = "read the allowlist";
+      // Read from the remote-tracking head of the default branch — a ref no *tool call* on
+      // the fixed list can write — so an instruction file a run writes, commits, or points a
+      // branch at grants nothing to it or to the next run. The file tools are anchored at
+      // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
+      // call and is not bound by any of it, and neither is a command the target repository's
+      // own instructions pre-allow for it; see *What a subprocess reaches* and
+      // `narrowedCommands` in `./allowlist`. What keeps the base commit meaningful is that
+      // the owner merged it.
+      const allowlist = await allowlistFor(git, repoRoot, base.name, path);
+      stillHeld();
       step = "open run log";
       const logPath = createRunLog(dataDir, id, now());
       core.comment(
         id,
-        `worktree ready at ${path} on ${branch} (from ${base.name}); run log at ${logPath}`,
+        `worktree ready at ${path} on ${branch} (from ${base.name}); ${allowlist.scanned}; run log at ${logPath}`,
         member.id,
       );
       step = "run playbook";
       await runPlaybook({
         core,
         member,
+        attention,
         ownerId,
         warn,
         card,
+        phase,
+        sinceSeq,
+        now,
+        git,
+        repoRoot,
         path,
         branch,
+        branchHead,
         base: base.name,
         driver: agent.driver,
         playbook,
         env: agentEnvironment(baseEnv, dataDir),
-        allowedTools: [...FIXED_ALLOWLIST],
+        allowedTools: allowlist.tools,
+        deniedTools: allowlist.denied,
+        question,
         logPath,
         limitMs: runLimitMs,
         graceMs: abortGraceMs,
@@ -332,12 +386,15 @@ export function startRunner(options: RunnerOptions): Runner {
       // `run.ts`, so this ending goes through the same one in `ending.ts`.
       endRun({
         core,
+        attention,
         cardId: id,
         memberId: member.id,
         ownerId,
         warn,
         note: within(`${step} failed: ${message(error)}`),
+        moves: [],
         reason: "failed",
+        question,
       });
     } finally {
       clearInterval(heartbeat);
