@@ -212,6 +212,11 @@ which runs, in order: Biome's lint and format check (`bun run lint`, i.e. `biome
 `tsc` per package (`bun run typecheck`), and `bun test` (`bun run test`). `check` never
 writes files; `bun run fix` applies Biome's formatting and safe fixes.
 
+`bun run check:harness` sits beside it rather than inside it, because it spawns the pinned
+coding agent: it puts every command the playbooks instruct through the harness's own permission
+evaluation, against a local stub that plays the model, and fails naming any that would stop to
+ask. Run it after changing a playbook, or when `claude.test.ts`'s SDK version pin fails.
+
 - Red, then green. Write the failing test first, run it, and confirm it fails for the
   intended reason — an import error or fixture error is a broken test, not red. Then write
   the smallest implementation that passes, and refactor with the test still green. Never

@@ -1,6 +1,7 @@
 /**
- * The Agent SDK driver: the only file in this repository that imports
- * `@anthropic-ai/claude-agent-sdk`. The SDK is a harness driver, not a model client — it
+ * The Agent SDK driver: the only file the daemon *runs* that imports
+ * `@anthropic-ai/claude-agent-sdk` (`harness-check.ts`, which `bun run check:harness` spawns and
+ * nothing else imports, is the other one). The SDK is a harness driver, not a model client — it
  * spawns Claude Code under the owner's own login, and skelcrew passes it no key and reaches
  * no model API. What the run needs from it is exactly the two things `claude -p` could not
  * give: `canUseTool` as a decision the run makes, and streaming input so comments reach the

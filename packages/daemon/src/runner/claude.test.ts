@@ -37,7 +37,15 @@ test("the driver conforms to the boundary", () => {
   expect(typeof driver.run).toBe("function");
 });
 
-test("the harness SDK is named by exactly one source file, and imported by exactly one", async () => {
+/**
+ * One driver, and one check that spawns the harness deliberately. 017 added the second: it runs
+ * the pinned binary against a local stub to find out whether a playbook's commands ask, which
+ * needs `query` with a `permissionMode` the builder below hard-codes — so it cannot go through
+ * the driver. Both lists stay exact, so a third importer is a decision someone makes on purpose
+ * rather than a drift. The daemon's own run path is still `claude.ts` alone: `harness-check.ts`
+ * is not imported by anything the daemon runs, and `bun run check` does not execute it.
+ */
+test("the harness SDK is named by exactly one source file, and imported by exactly two", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
   const naming: string[] = [];
@@ -46,15 +54,32 @@ test("the harness SDK is named by exactly one source file, and imported by exact
     const text = readFileSync(join(root, file), "utf8");
     if (!text.includes("@anthropic-ai/")) continue;
     naming.push(file);
-    // A type-only import is erased: the file that pulls the SDK in at runtime is the driver.
+    // A type-only import is erased: the files that pull the SDK in at runtime are these.
     if (!/^import type .* from "@anthropic-ai\//m.test(text)) importing.push(file);
   }
-  expect(importing).toEqual(["packages/daemon/src/runner/claude.ts"]);
+  expect(importing.sort()).toEqual([
+    "packages/daemon/src/runner/claude.ts",
+    "packages/daemon/src/runner/harness-check.ts",
+  ]);
   expect(naming.sort()).toEqual([
     // This file, for the message literals its translation tests are written over.
     "packages/daemon/src/runner/claude.test.ts",
     "packages/daemon/src/runner/claude.ts",
+    "packages/daemon/src/runner/harness-check.ts",
   ]);
+});
+
+/** The daemon's own path to the harness is one file, and the check is not on it. */
+test("nothing the daemon runs imports the harness check", async () => {
+  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
+  const importers: string[] = [];
+  for await (const file of sources) {
+    if (file.endsWith("harness-check.ts")) continue;
+    const text = readFileSync(join(root, file), "utf8");
+    if (/from "\.\/harness-check";/.test(text)) importers.push(file);
+  }
+  expect(importers).toEqual(["packages/daemon/src/runner/harness-check.test.ts"]);
 });
 
 /**

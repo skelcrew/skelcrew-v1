@@ -738,9 +738,18 @@ export function allowsTool(
  * **What to do when one fires.** Exactly one of three, and the third is a decision someone makes
  * on purpose:
  *
- * 1. **Re-verify.** Extract the named function from the new binary the way each doc comment says
- *    it was extracted, diff it against the transcription, update both the model and its
- *    divergence record, and move the version here.
+ * 1. **Re-verify**, and for two of these that now means **running `bun run check:harness`**
+ *    (017). It puts every command the playbooks instruct through the new binary itself and says
+ *    which ones would ask, so it answers directly what `SAFE_GIT_FLAGS` and the operator set are
+ *    modelled *for*: whether the playbooks' `git status`, `git log`, `git diff`, `git show`,
+ *    `git merge-base` and `git rev-parse` still run unprompted, and whether any command a
+ *    playbook names is refused. It is not a re-derivation — it re-checks the conclusions that
+ *    matter, not the tables — so where it passes, a drifted table is no longer load-bearing for
+ *    the commands the playbooks run, and a note under (3) is enough. Extraction by hand stays
+ *    the method for `splitEntries` and `filePaths`, which nothing spawns, and it is what the
+ *    check sends you back to when it *fails*: extract the named function from the new binary the
+ *    way each doc comment says it was extracted, diff it against the transcription, update both
+ *    the model and its divergence record, and move the version here.
  * 2. **Delete the model and the assertions that rest on it**, accepting the loss of coverage and
  *    saying so where the criterion is listed. A missing assertion that is written down beats a
  *    present one that lies.
