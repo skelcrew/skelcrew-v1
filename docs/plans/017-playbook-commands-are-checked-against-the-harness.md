@@ -35,9 +35,9 @@ So the rest of the spec is buildable.
    not match — holding: the stub model, the stub `PATH` builder, the pass/fail logic, and a
    `main()` behind `import.meta.main` that builds a temporary repository and worktree, calls
    `allowlistFor` and `buildSdkOptions`, and runs one harness session per command.
-3. Unit-test the stub model, the stub `PATH` builder, the moved harvesters and the pass/fail
-   logic in `harness-check.test.ts` / `playbook-commands.test.ts` — collected by `bun test`, and
-   spawning no harness.
+3. Unit-test the stub model, the stub `PATH` builder and the pass/fail logic in
+   `harness-check.test.ts`, and the moved harvesters where their assertions already live, in
+   `playbooks.test.ts` — both collected by `bun test`, and spawning no harness.
 4. Root script `check:harness`, naming the file explicitly.
 5. Records: `CLAUDE.md`'s *Definition of done*, and `allowlist.ts`'s maintenance contract.
 
@@ -70,14 +70,16 @@ So the rest of the spec is buildable.
   verbatim out of `playbooks.test.ts`) and `instructedCommands()`, which is `commandsNamed()`
   over the paragraphs that instruct, keeping only a command word with an argument, with
   `<…>` placeholders filled. Checked against the harvester it replaces: for both playbooks it
-  yields exactly the same list `playbooks.test.ts`'s `commandsIn` did — nothing lost, nothing new.
+  yields the same commands `playbooks.test.ts`'s `commandsIn` did — nothing lost, nothing new,
+  as a multiset. The *order* differs, since `commandsNamed` yields a playbook's fenced lines
+  before its inline ones where `commandsIn` walked the document; nothing asserts on order.
 - `packages/daemon/src/runner/harness-check.ts` — the stub model, the stub `PATH` builder, the
   pass/fail logic, and a `main()` behind `import.meta.main`.
 - `packages/daemon/src/runner/harness-check.test.ts` — 13 tests over those parts; no harness.
 - `package.json` — `check:harness`; `AGENTS.md` (`CLAUDE.md` is a symlink to it) — the sentence
   in *Definition of done*; `allowlist.ts` — what "re-verify" now means.
 
-## The check's own output
+## The check's own output (round 1; superseded by the round-2 run below)
 
 ```
 playbooks: spec, code
@@ -133,3 +135,148 @@ A sampling loop watched for a process matching the SDK's native binary
 whose command line reads `… --setting-sources= --permission-mode dontAsk` with the run's own
 `--allowedTools`, the anchored `Edit(//<worktree>/**)`, the scanned `Bash(bun run check *)` and
 the two `--disallowedTools` `.git` rules.
+
+# Round 2 — review round 1's findings
+
+The spec was amended twice while round 1 was reviewed (`577053f`, `d7a5933`); both amendments
+are implemented here.
+
+## Important 2 — the fixed list is now run through the harness
+
+`instructedCommands()` excludes the "Pre-allowed, so they run unprompted:" paragraph, and the
+reason it gives is sound for `playbooks.test.ts` and false for this check: a model built from the
+list proves nothing about itself, but *the binary* is not the list. Six entries a Code run's
+artefact contract depends on — `git add`, `git commit`, `gh pr create`, `gh pr diff`,
+`gh pr comment`, `gh repo view` — are instructed in prose only and were therefore never
+evaluated. `FIXED_LIST_REPRESENTATIVES` now carries one command per `Bash(...)` entry (a
+representative argument for a wildcard entry, the command itself for an exact one), the check
+runs them with everything else, and `problemsIn` fails a run in two new ways: an entry no
+representative covers, and a representative this run did not put through the harness.
+
+## Important 1 — the loopback assertion is now about the socket
+
+`startStubModel` composed `url` from the literal it passed to `Bun.serve`, so the assertion could
+not see a bind to `0.0.0.0`. `hostname` and `port` are read back off the server (a server with
+neither is an error, not a default), and the test asserts the read-back bind *and* that a
+connection to this machine's own non-loopback address on the stub's port is refused.
+
+## Minor 3, 4, 5, 6
+
+- `executed` is now a non-error tool result carrying the stub's own `tool_use_id`
+  (`ranTheCommand`), since a denial produces a tool result too.
+- The import pin matches any specifier ending in `harness-check`, not the `./` spelling alone.
+- `instructedCommands` blanks an excluded paragraph's content and **keeps its fence lines**, so
+  an odd fence count in an excluded paragraph can no longer invert the in-fence state of
+  everything after it.
+- The stub records `authorization` and `proxy-authorization` beside `x-api-key`, `Bearer ` off,
+  and any credential that is not the dummy fails the check.
+
+## Red, and the cases that were green first
+
+Every test added by this spec, and what it did before the code it covers existed. "Red" means it
+failed on its assertion, not on an import.
+
+Round 1, in `playbooks.test.ts` (against `instructedCommands` stubbed to `[]`):
+
+| test | red? |
+| --- | --- |
+| every command the playbooks run goes unprompted (repointed at the new harvester) | red: `Expected: > 0  Received: 0` |
+| the criterion-11 check reads the playbook's instructions (repointed) | red: `Expected to contain: "skelcrew show PLACEHOLDER"  Received: []` |
+| the instructed commands are the playbook's commands, not its nouns, prose or prohibitions | red: `Expected to contain: "skelcrew body PLACEHOLDER <<'SPEC'"  Received: []` |
+
+Round 1, in `harness-check.test.ts` (against a skeleton whose stub answered 500, whose `PATH`
+builder wrote nothing and whose `problemsIn` returned `[]`) — 10 of 12 red:
+
+| test | red? |
+| --- | --- |
+| the stub answers a prompt with one Bash tool call carrying the command | red |
+| the stub ends the turn on a tool result | red |
+| the stub records every request it saw | red |
+| every command word gets an executable that exits 0 and writes nothing | red |
+| a prescribed command the harness denied fails the check | red |
+| a control command the harness did not deny fails the check | red |
+| a check that never ran the control command fails | red |
+| a command the stub saw no request for fails the check | red |
+| a command that reached canUseTool fails the check | red |
+| a command that ended without executing and without a denial fails the check | red |
+| a session where the harness presented a credential other than the dummy fails | red, after the export it needed was added (its first run was an import error, which is a broken test rather than a red one) |
+| **the stub listens on the loopback address only** | **green first** — the skeleton already passed `127.0.0.1` to `Bun.serve`, and the assertion read a string built from that literal. This is the hole review round 1 found; the round-2 test below is the fix. |
+| **a run where every prescribed command executed and the control was denied passes** | **green first**, vacuously: `problemsIn` returned `[]`. Its partner cases (the rows above) were all red, which is what gives it meaning. |
+
+Round 1, in `claude.test.ts`:
+
+| test | red? |
+| --- | --- |
+| the harness SDK is named by exactly one source file, imported by exactly two | red: the existing one-element assertion failed the moment the check imported the SDK (`+ "packages/daemon/src/runner/harness-check.ts"`), and was updated deliberately |
+| **nothing the daemon runs imports the harness check** | **green first**: it asserts an existing fact. Made red on purpose in round 2 — see below. |
+
+Round 2:
+
+| test | red? |
+| --- | --- |
+| the stub listens on the loopback address **and refuses every other** | red: `Expected: "127.0.0.1"  Received: undefined` against the round-1 stub, which had no readable bind. Then re-run against the reviewer's break (`Bun.serve` bound to `0.0.0.0`) → `Expected: "127.0.0.1"  Received: "0.0.0.0"`. The connection half was checked to discriminate too: bound to `127.0.0.1`, `192.168.111.4:<port>` is **refused**; bound to `0.0.0.0` it is **answered**. |
+| the stub records every request it saw, with the credentials it was given | red: `- credentials: ["the-dummy-key"]  + apiKey: "the-dummy-key"` |
+| the stub records a credential in any of the three headers it could arrive in | red: `TypeError: undefined is not an object (evaluating 'stub.requests[0]?.credentials.toSorted')` — the field did not exist yet |
+| the command ran when its own tool call came back as a result that is not an error | green first against the loose stub (`type === "user"`), which is the one case the old reading got right |
+| a denied call did not run, however much of a tool result its refusal is | red: `Expected: false  Received: true` |
+| another tool call's result is not this command running | red: `Expected: false  Received: true` |
+| an excluded paragraph holding a lone fence does not swallow the instructions after it | red against the committed round-1 harvester: `Expected to contain: "git commit -m PLACEHOLDER"  Received: []` |
+| every Bash entry of the fixed list has a representative command | red: `Expected: 14  Received: 0` against an empty representative list |
+| a fixed-list entry whose representative is missing is named | red: `Expected ["Bash(git add *)"]  Received: []` |
+| a fixed-list entry with no representative fails the check | red: `Expected: 1  Received: 0` |
+| a representative the run never put through the harness fails the check | red: `Expected [ "`git add -A` is a representative…" ]  Received: []` |
+| nothing the daemon runs imports the harness check (round 2 rewrite) | red on demand: with `import { CONTROL_COMMAND } from "../runner/harness-check";` temporarily in `runner.ts`, the round-1 regex passed and the round-2 one failed with `+ "packages/daemon/src/runner/runner.ts"`. The import was removed; `runner.ts` is unchanged in the diff. |
+
+## `bun run check:harness`, round 2
+
+```
+playbooks: spec, code
+commands: 30 (the playbooks' own instructions, one representative per fixed-list entry, and the repository's fenced `bun run check`), plus the control command
+allowlist: pre-allowed from the repository's instructions: bun run check
+stub executables: skelcrew, git, gh, bun
+PATH: <scratch>/bin:<scratch>/data/bin:/usr/bin:/bin:/usr/sbin:/sbin
+HOME: <scratch>/home, holding 0 files
+the harness's environment: ANTHROPIC_API_KEY, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, HOME, PATH, SKELCREW_AS, SKELCREW_DIR, and the stub's ANTHROPIC_BASE_URL, which is a fresh loopback port per session
+ANTHROPIC_API_KEY: the dummy key; the owner's is set here and not passed on
+
+ran     skelcrew attention PLACEHOLDER "PLACEHOLDER"
+ran     skelcrew body PLACEHOLDER <<'SPEC'
+ran     skelcrew show PLACEHOLDER
+ran     git log
+ran     skelcrew comment PLACEHOLDER "PLACEHOLDER"
+ran     gh pr view --json url --jq .url
+ran     skelcrew refs PLACEHOLDER --pr PLACEHOLDER
+ran     skelcrew refs PLACEHOLDER --spec docs/specs/PLACEHOLDER-PLACEHOLDER.md
+ran     git log PLACEHOLDER..PLACEHOLDER
+ran     git status
+ran     git diff
+ran     git show
+ran     git merge-base
+ran     git rev-parse
+ran     git push -u origin HEAD
+ran     skelcrew show PLACEHOLDER --json
+ran     skelcrew show
+ran     skelcrew show 1
+ran     skelcrew comment 1 "a comment"
+ran     skelcrew body 1 --file a-spec.md
+ran     skelcrew refs 1 --pr https://example.invalid/pull/1
+ran     skelcrew attention 1 "a question"
+ran     git add -A
+ran     git commit -m "a message"
+ran     git push
+ran     gh pr create --title "a title" --body "a body"
+ran     gh pr diff --name-only
+ran     gh pr comment 1 --body "a comment"
+ran     gh repo view --json defaultBranchRef
+ran     bun run check
+DENIED  git push origin HEAD:main — Permission to use Bash has been denied because Claude Code is running in don't ask mode
+
+every one of the 30 commands under test runs unprompted in the harness, `git push origin HEAD:main` is denied, and the repository is unchanged
+```
+
+Exit 0, with `ANTHROPIC_API_KEY=sk-ant-owner-sentinel` in the calling environment and the stub
+seeing only the dummy. `bun run check`: 603 pass, 0 fail.
+
+One run was instrumented to print `executed` per command, for Minor 3: every allowed command
+reads `executed=true` and the denied control reads `executed=false`, where round 1 read it as
+`true` because the refusal is itself a tool result. The instrumentation was removed.

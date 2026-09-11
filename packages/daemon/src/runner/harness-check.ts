@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunOptions } from "./agent";
-import { allowlistFor } from "./allowlist";
+import { allowlistFor, FIXED_ALLOWLIST } from "./allowlist";
 import { buildSdkOptions } from "./claude";
 import { createGit } from "./git";
 import { instructedCommands } from "./playbook-commands";
@@ -52,6 +52,61 @@ export const CONTROL_COMMAND = "git push origin HEAD:main";
  */
 const SCANNED_COMMAND = "bun run check";
 
+/**
+ * One command per `Bash(...)` entry of the fixed list: a representative argument for a wildcard
+ * entry, the command itself for an exact one.
+ *
+ * The playbooks instruct most of these in prose alone, inside the paragraph that advertises what
+ * runs unprompted — which `instructedCommands()` excludes, because a test checked against a
+ * *model* built from that same list would only be proving the list matches its own restatement.
+ * That argument is false here, where the binary answers: `git add`, `git commit`, `gh pr create`,
+ * `gh pr diff`, `gh pr comment` and `gh repo view` are what a Code run's artefact contract
+ * depends on, and until review round 1 of this spec none of them was ever evaluated.
+ *
+ * They are arguments a playbook's agent would plausibly write, and nothing here has an effect:
+ * every command word is a stub executable that exits 0.
+ */
+export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
+  "skelcrew show 1",
+  'skelcrew comment 1 "a comment"',
+  "skelcrew body 1 --file a-spec.md",
+  "skelcrew refs 1 --pr https://example.invalid/pull/1",
+  'skelcrew attention 1 "a question"',
+  "git add -A",
+  'git commit -m "a message"',
+  "git push -u origin HEAD",
+  "git push",
+  'gh pr create --title "a title" --body "a body"',
+  "gh pr view --json url --jq .url",
+  "gh pr diff --name-only",
+  'gh pr comment 1 --body "a comment"',
+  "gh repo view --json defaultBranchRef",
+];
+
+/**
+ * The fixed list's `Bash(...)` entries that no representative covers, so an entry added to the
+ * list without one fails the check instead of going unchecked. This reads an entry's own shape —
+ * a trailing ` *` is a prefix, anything else is the whole command — rather than asking
+ * `allowsTool`, because the question is which entry a command stands for, not whether some entry
+ * permits it: a representative covered only by a *different* entry would leave this one unrun.
+ */
+export function unrepresentedEntries(
+  representatives: readonly string[] = FIXED_LIST_REPRESENTATIVES,
+  list: readonly string[] = FIXED_ALLOWLIST,
+): string[] {
+  const covers = (entry: string, command: string): boolean => {
+    const content = /^Bash\((.*)\)$/.exec(entry)?.[1];
+    if (content === undefined) return false;
+    if (!content.endsWith(" *")) return command === content;
+    const prefix = content.slice(0, -2);
+    return command === prefix || command.startsWith(`${prefix} `);
+  };
+  return list.filter(
+    (entry) =>
+      entry.startsWith("Bash(") && !representatives.some((command) => covers(entry, command)),
+  );
+}
+
 /** The key the harness is given. Not a credential — the stub accepts anything. */
 export const STUB_API_KEY = "skelcrew-harness-check-not-a-real-key";
 
@@ -61,15 +116,35 @@ const SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(delimiter);
 /** How long one session may take before the check gives up on it. */
 const SESSION_TIMEOUT_MS = 120_000;
 
+/** The stub's one tool call, named so its result can be told from any other tool's. */
+const TOOL_USE_ID = "toolu_harness_check";
+
 export interface StubRequest {
   method: string;
   path: string;
-  /** The credential the harness presented, if any: what proves whose key it used. */
-  apiKey?: string;
+  /** Every credential the harness presented: what proves whose key it used. */
+  credentials: string[];
+}
+
+/**
+ * The headers a credential could arrive in. The pinned binary sends `x-api-key` and nothing
+ * else — a full run was logged to check — so the other two are defence against a future one
+ * authenticating some other way and this check not noticing.
+ */
+const CREDENTIAL_HEADERS = ["x-api-key", "authorization", "proxy-authorization"];
+
+/** What the header carries, with the scheme word off: a token presented as a bearer is the token. */
+function credentialsIn(headers: Headers): string[] {
+  return CREDENTIAL_HEADERS.map((name) => headers.get(name))
+    .filter((value): value is string => value !== null && value.trim().length > 0)
+    .map((value) => value.replace(/^[Bb]earer /, "").trim());
 }
 
 export interface StubModel {
-  /** `http://127.0.0.1:<port>`, and nothing is listening anywhere else. */
+  /** Where it is listening, read back off the server rather than from the literal it was given. */
+  hostname: string;
+  port: number;
+  /** `http://<hostname>:<port>`, and nothing is listening anywhere else. */
   url: string;
   /** Every request the stub received, in order. */
   requests: StubRequest[];
@@ -111,7 +186,7 @@ function toolUseTurn(model: string, command: string): string {
     messageStart("msg_harness_check_tool_use", model) +
     frame("content_block_start", {
       index: 0,
-      content_block: { type: "tool_use", id: "toolu_harness_check", name: "Bash", input: {} },
+      content_block: { type: "tool_use", id: TOOL_USE_ID, name: "Bash", input: {} },
     }) +
     frame("content_block_delta", {
       index: 0,
@@ -147,12 +222,11 @@ export function startStubModel(command: string): StubModel {
     async fetch(request) {
       const url = new URL(request.url);
       const body = await request.text();
-      const apiKey = request.headers.get("x-api-key") ?? undefined;
-      requests.push(
-        apiKey === undefined
-          ? { method: request.method, path: url.pathname }
-          : { method: request.method, path: url.pathname, apiKey },
-      );
+      requests.push({
+        method: request.method,
+        path: url.pathname,
+        credentials: credentialsIn(request.headers),
+      });
       if (url.pathname !== "/v1/messages") {
         return new Response("{}", { headers: { "content-type": "application/json" } });
       }
@@ -165,8 +239,18 @@ export function startStubModel(command: string): StubModel {
       });
     },
   });
+  // Read back off the server rather than repeated from the literal above: a `url` composed from
+  // what the stub *meant* to bind says nothing about where it is listening, which is what
+  // criterion 6 is about. A server with no address at all is a failure, not a default.
+  const { hostname, port } = server;
+  if (hostname === undefined || port === undefined) {
+    server.stop(true);
+    throw new Error("the stub model is not listening on an address");
+  }
   return {
-    url: `http://127.0.0.1:${server.port}`,
+    hostname,
+    port,
+    url: `http://${hostname}:${port}`,
     requests,
     stop: () => {
       server.stop(true);
@@ -192,7 +276,10 @@ export function writeStubExecutables(dir: string, commands: readonly string[]): 
 
 export interface CommandOutcome {
   command: string;
-  /** The command reached a tool result: the harness let it run. */
+  /**
+   * The command's own tool call came back as a result that is not an error: the harness let it
+   * run, and it ran. A denial is a tool result too, so this is not "a result arrived".
+   */
   executed: boolean;
   /** What the harness denied, from the result's `permission_denials`, with its own reason. */
   denials: Array<{ tool: string; reason: string }>;
@@ -209,9 +296,13 @@ export interface CommandOutcome {
  * here is a way the check could otherwise pass while proving nothing — a command denied, the
  * control command *not* denied, a session that never reached the stub, a `canUseTool` call
  * (under `dontAsk` a prompt is a denial, so reaching the callback means the mode was not
- * honoured), or a session that neither ran the command nor denied it.
+ * honoured), a session that neither ran the command nor denied it, a fixed-list entry with no
+ * representative, and a representative this run did not put through the harness.
  */
-export function problemsIn(outcomes: readonly CommandOutcome[]): string[] {
+export function problemsIn(
+  outcomes: readonly CommandOutcome[],
+  representatives: readonly string[] = FIXED_LIST_REPRESENTATIVES,
+): string[] {
   const problems: string[] = [];
   const control = outcomes.find((outcome) => outcome.command === CONTROL_COMMAND);
   for (const outcome of outcomes) {
@@ -238,6 +329,14 @@ export function problemsIn(outcomes: readonly CommandOutcome[]): string[] {
     }
     if (!outcome.executed) problems.push(`${at}: the harness neither ran it nor denied it`);
   }
+  for (const entry of unrepresentedEntries(representatives)) {
+    problems.push(`the fixed-list entry ${entry} has no representative command: it is never run`);
+  }
+  for (const command of representatives) {
+    if (!outcomes.some((outcome) => outcome.command === command)) {
+      problems.push(`\`${command}\` is a representative of the fixed list that this run never ran`);
+    }
+  }
   if (control === undefined) {
     problems.push(
       `the control command \`${CONTROL_COMMAND}\` was not run: the check proves nothing`,
@@ -248,6 +347,23 @@ export function problemsIn(outcomes: readonly CommandOutcome[]): string[] {
     );
   }
   return problems;
+}
+
+/**
+ * Whether this message is the command under test having *run*: a tool result for the stub's own
+ * tool call that is not an error. A denied call produces a tool result too — the refusal, marked
+ * as an error — so "a tool result arrived" was the wrong reading of it, and criterion 3 asks for
+ * a result that is not an error.
+ */
+export function ranTheCommand(message: unknown, toolUseId: string): boolean {
+  const shape = message as { type?: string; message?: { content?: unknown } };
+  if (shape.type !== "user") return false;
+  const content = shape.message?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some(
+    (block) =>
+      block?.type === "tool_result" && block.tool_use_id === toolUseId && block.is_error !== true,
+  );
 }
 
 /** The harness's own words for why it refused, by the tool call it refused. */
@@ -317,12 +433,7 @@ async function runCommand(command: string, context: RunContext): Promise<Command
       if (message.type === "system" && message.subtype === "permission_denied") {
         reasons.set(message.tool_use_id, message.decision_reason ?? message.message);
       }
-      if (message.type === "user") {
-        const content = (message.message as { content?: unknown }).content;
-        if (Array.isArray(content) && content.some((block) => block?.type === "tool_result")) {
-          executed = true;
-        }
-      }
+      if (ranTheCommand(message, TOOL_USE_ID)) executed = true;
       if (message.type === "result") {
         for (const denial of message.permission_denials) {
           denials.push({ tool: denial.tool_name, reason: reasonFor(reasons, denial.tool_use_id) });
@@ -335,13 +446,7 @@ async function runCommand(command: string, context: RunContext): Promise<Command
     session.close();
     stub.stop();
   }
-  const credentials = [
-    ...new Set(
-      stub.requests
-        .map((request) => request.apiKey)
-        .filter((apiKey): apiKey is string => apiKey !== undefined),
-    ),
-  ];
+  const credentials = [...new Set(stub.requests.flatMap((request) => request.credentials))];
   return {
     command,
     executed,
@@ -386,6 +491,7 @@ async function main(): Promise<number> {
   const prescribedCommands = [
     ...new Set([
       ...PLAYBOOK_PHASES.flatMap((phase) => instructedCommands(playbooks[phase])),
+      ...FIXED_LIST_REPRESENTATIVES,
       SCANNED_COMMAND,
     ]),
   ];
@@ -417,8 +523,9 @@ async function main(): Promise<number> {
 
     console.log(`playbooks: ${PLAYBOOK_PHASES.join(", ")}`);
     console.log(
-      `commands: ${prescribedCommands.length} prescribed (the playbooks' own, and the ` +
-        `repository's fenced \`${SCANNED_COMMAND}\`), plus the control command`,
+      `commands: ${prescribedCommands.length} (the playbooks' own instructions, one ` +
+        `representative per fixed-list entry, and the repository's fenced ` +
+        `\`${SCANNED_COMMAND}\`), plus the control command`,
     );
     console.log(`allowlist: ${allowlist.scanned}`);
     console.log(`stub executables: ${words.join(", ")}`);

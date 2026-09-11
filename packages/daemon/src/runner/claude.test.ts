@@ -69,7 +69,12 @@ test("the harness SDK is named by exactly one source file, and imported by exact
   ]);
 });
 
-/** The daemon's own path to the harness is one file, and the check is not on it. */
+/**
+ * The daemon's own path to the harness is one file, and the check is not on it. Any specifier
+ * ending in the check's name counts: round 1 matched the `./harness-check` spelling alone, and
+ * an import of the same file written `../runner/harness-check` from `runner.ts` walked straight
+ * past it. (Written without the import keyword in front of it, because this file is scanned too.)
+ */
 test("nothing the daemon runs imports the harness check", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
@@ -77,7 +82,7 @@ test("nothing the daemon runs imports the harness check", async () => {
   for await (const file of sources) {
     if (file.endsWith("harness-check.ts")) continue;
     const text = readFileSync(join(root, file), "utf8");
-    if (/from "\.\/harness-check";/.test(text)) importers.push(file);
+    if (/\bfrom\s+["'][^"']*harness-check(\.ts)?["']/.test(text)) importers.push(file);
   }
   expect(importers).toEqual(["packages/daemon/src/runner/harness-check.test.ts"]);
 });

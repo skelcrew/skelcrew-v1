@@ -74,6 +74,20 @@ const PROHIBITION = /\*\*Never [^*]*\*\*/g;
 const INSTRUCTION = new RegExp(`^(?:${COMMAND_WORDS.join("|")}) \\S`);
 
 /**
+ * An excluded paragraph with its fence lines kept and everything else gone. Removing the
+ * paragraph whole would hand `prescribed`'s fence counter a text with fence lines missing, and
+ * one odd count inverts every later line's in-or-out state — so an instruction *below* an
+ * excluded paragraph would silently stop being checked. Blanking keeps the count and drops the
+ * content, which is the whole of what the exclusion is for.
+ */
+function emptied(paragraph: string): string {
+  return paragraph
+    .split("\n")
+    .map((line) => (line.startsWith("```") ? line : ""))
+    .join("\n");
+}
+
+/**
  * What the playbooks tell the agent to run, as the agent would run it — the list both the
  * model in `allowlist.ts` and the harness itself are checked against.
  *
@@ -93,8 +107,11 @@ const INSTRUCTION = new RegExp(`^(?:${COMMAND_WORDS.join("|")}) \\S`);
 export function instructedCommands(playbook: string): string[] {
   const instructions = playbook
     .split("\n\n")
-    .filter((paragraph) => !NOT_INSTRUCTIONS.some((marker) => paragraph.includes(marker)))
-    .map((paragraph) => paragraph.replaceAll(PROHIBITION, ""))
+    .map((paragraph) =>
+      NOT_INSTRUCTIONS.some((marker) => paragraph.includes(marker))
+        ? emptied(paragraph)
+        : paragraph.replaceAll(PROHIBITION, ""),
+    )
     .join("\n\n");
   const commands: string[] = [];
   for (const named of commandsNamed(instructions)) {

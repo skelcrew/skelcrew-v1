@@ -117,6 +117,26 @@ test("the instructed commands are the playbook's commands, not its nouns, prose 
   expect(code).not.toContain("skelcrew show <id> --json");
 });
 
+/**
+ * Dropping a paragraph whole feeds a parser that counts fence lines a text with some of them
+ * missing, and one odd count inverts every later line's in-or-out-of-fence state — so the
+ * instruction below an excluded paragraph would stop being checked, silently, which is the
+ * failure mode this whole spec exists to prevent. The excluded paragraph keeps its fence lines
+ * and loses everything else.
+ */
+test("an excluded paragraph holding a lone fence does not swallow the instructions after it", () => {
+  // The excluded paragraph opens a fence and does not close it: one fence line, an odd count.
+  const playbook = [
+    "Pre-allowed, so they run unprompted: `git add`, as in:\n```\ngit some-advertised-thing",
+    "```",
+    "Then commit it:",
+    "```\ngit commit -m PLACEHOLDER\n```",
+  ].join("\n\n");
+  const commands = instructedCommands(playbook);
+  expect(commands).toContain("git commit -m PLACEHOLDER");
+  expect(commands).not.toContain("git some-advertised-thing");
+});
+
 /** The sentence in `code.md` that tells the agent what needs no asking. */
 const PRE_ALLOWED = "Pre-allowed, so they run unprompted:";
 

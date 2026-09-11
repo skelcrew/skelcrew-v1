@@ -5,14 +5,18 @@
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
+import { FIXED_ALLOWLIST } from "./allowlist";
 import {
   CONTROL_COMMAND,
   type CommandOutcome,
+  FIXED_LIST_REPRESENTATIVES,
   problemsIn,
+  ranTheCommand,
   STUB_API_KEY,
   startStubModel,
+  unrepresentedEntries,
   writeStubExecutables,
 } from "./harness-check";
 
@@ -96,25 +100,79 @@ test("the stub ends the turn on a tool result, asking for nothing more", async (
   }
 });
 
-test("the stub records every request it saw, with the credential it was given", async () => {
+test("the stub records every request it saw, with the credentials it was given", async () => {
   const stub = startStubModel("git status");
   try {
     expect(stub.requests).toEqual([]);
     await post(stub.url, prompt);
     await post(stub.url, result);
     expect(stub.requests).toEqual([
-      { method: "POST", path: "/v1/messages", apiKey: "the-dummy-key" },
-      { method: "POST", path: "/v1/messages", apiKey: "the-dummy-key" },
+      { method: "POST", path: "/v1/messages", credentials: ["the-dummy-key"] },
+      { method: "POST", path: "/v1/messages", credentials: ["the-dummy-key"] },
     ]);
   } finally {
     stub.stop();
   }
 });
 
-test("the stub listens on the loopback address only", () => {
+/**
+ * Every header a credential could arrive in, not just the one the pinned binary uses. The
+ * binary sends `x-api-key` and nothing else — a full run was logged to check — so this is
+ * defence against a future one authenticating some other way and the check not noticing.
+ * `Bearer ` is stripped, because a token presented that way is still the token.
+ */
+test("the stub records a credential in any of the three headers it could arrive in", async () => {
   const stub = startStubModel("git status");
   try {
-    expect(stub.url).toStartWith("http://127.0.0.1:");
+    await fetch(`${stub.url}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer sk-ant-the-owners-key",
+        "proxy-authorization": "a-proxy-credential",
+      },
+      body: JSON.stringify(prompt),
+    });
+    expect(stub.requests[0]?.credentials.toSorted()).toEqual([
+      "a-proxy-credential",
+      "sk-ant-the-owners-key",
+    ]);
+  } finally {
+    stub.stop();
+  }
+});
+
+/** Every IPv4 address of this machine that is not the loopback one. */
+function otherAddresses(): string[] {
+  return Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => entry.family === "IPv4" && !entry.internal)
+    .map((entry) => entry.address);
+}
+
+/**
+ * Criterion 6, and asserted on what the socket does rather than on a string the stub composed:
+ * round 1's version read `stub.url`, which was built from a literal, so a stub bound to
+ * `0.0.0.0` passed it. The bind is read back off the server, and — where this machine has one —
+ * a connection to a non-loopback address of its own on the stub's port has to be refused.
+ */
+test("the stub listens on the loopback address and refuses every other", async () => {
+  const stub = startStubModel("git status");
+  try {
+    expect(stub.hostname).toBe("127.0.0.1");
+    expect(stub.url).toBe(`http://127.0.0.1:${stub.port}`);
+    const reachable = await fetch(stub.url, { method: "HEAD" });
+    expect(reachable.ok).toBe(true);
+    for (const address of otherAddresses()) {
+      const attempt = fetch(`http://${address}:${stub.port}`, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(2000),
+      });
+      expect([address, await attempt.then(() => "answered").catch(() => "refused")]).toEqual([
+        address,
+        "refused",
+      ]);
+    }
   } finally {
     stub.stop();
   }
@@ -140,6 +198,39 @@ test("every command word gets an executable that exits 0 and writes nothing", ()
   }
 });
 
+/**
+ * Criterion 3's "a tool result that is not an error". Round 1 read any tool result as the
+ * command having run, and a *denied* call produces one too — the refusal, marked as an error —
+ * so the control command read as executed and denied at once.
+ */
+const userMessage = (content: unknown[]): unknown => ({
+  type: "user",
+  message: { role: "user", content },
+});
+
+test("the command ran when its own tool call came back as a result that is not an error", () => {
+  expect(
+    ranTheCommand(userMessage([{ type: "tool_result", tool_use_id: "t1", content: "" }]), "t1"),
+  ).toBe(true);
+});
+
+test("a denied call did not run, however much of a tool result its refusal is", () => {
+  expect(
+    ranTheCommand(
+      userMessage([{ type: "tool_result", tool_use_id: "t1", content: "denied", is_error: true }]),
+      "t1",
+    ),
+  ).toBe(false);
+});
+
+test("another tool call's result is not this command running", () => {
+  expect(
+    ranTheCommand(userMessage([{ type: "tool_result", tool_use_id: "other", content: "" }]), "t1"),
+  ).toBe(false);
+  expect(ranTheCommand(userMessage([{ type: "text", text: "hello" }]), "t1")).toBe(false);
+  expect(ranTheCommand({ type: "assistant", message: { content: [] } }, "t1")).toBe(false);
+});
+
 const clean = (command: string): CommandOutcome => ({
   command,
   executed: true,
@@ -158,8 +249,56 @@ const control: CommandOutcome = {
   credentials: [STUB_API_KEY],
 };
 
+/**
+ * A whole run of the check with `outcomes` in it: every fixed-list representative ran and the
+ * control was denied, which is what a passing run looks like. Each test below puts exactly one
+ * thing wrong into it, so the verdict it asserts is the verdict on that one thing.
+ */
+const runWith = (...outcomes: CommandOutcome[]): CommandOutcome[] => [
+  ...outcomes,
+  ...FIXED_LIST_REPRESENTATIVES.map((command) => clean(command)),
+  control,
+];
+
 test("a run where every prescribed command executed and the control was denied passes", () => {
-  expect(problemsIn([clean("git status"), clean("git add ."), control])).toEqual([]);
+  expect(problemsIn(runWith(clean("git status"), clean("git add .")))).toEqual([]);
+});
+
+/**
+ * Important 2 of review round 1, and the amended criterion 3. `instructedCommands()` excludes
+ * the "pre-allowed, so they run unprompted" paragraph — rightly, for a test checked against a
+ * model derived from the same list, and wrongly for this check, which asks the binary. Six
+ * entries a Code run's artefact depends on (`git add`, `git commit`, `gh pr create`,
+ * `gh pr diff`, `gh pr comment`, `gh repo view`) are instructed in prose only, so a green run
+ * meant less than it looked. Every `Bash(...)` entry now has a representative, and an entry
+ * without one fails the check rather than being quietly skipped.
+ */
+test("every Bash entry of the fixed list has a representative command", () => {
+  expect(unrepresentedEntries()).toEqual([]);
+  const bashEntries = FIXED_ALLOWLIST.filter((entry) => entry.startsWith("Bash("));
+  expect(bashEntries.length).toBeGreaterThan(0);
+  expect(FIXED_LIST_REPRESENTATIVES.length).toBe(bashEntries.length);
+});
+
+test("a fixed-list entry whose representative is missing is named", () => {
+  const short = FIXED_LIST_REPRESENTATIVES.filter((command) => command !== "git add -A");
+  expect(unrepresentedEntries(short)).toEqual(["Bash(git add *)"]);
+  const noExact = FIXED_LIST_REPRESENTATIVES.filter((command) => command !== "git push");
+  expect(unrepresentedEntries(noExact)).toEqual(["Bash(git push)"]);
+});
+
+test("a fixed-list entry with no representative fails the check", () => {
+  const short = FIXED_LIST_REPRESENTATIVES.filter((command) => !command.startsWith("gh pr create"));
+  const problems = problemsIn([...short.map(clean), control], short);
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain("Bash(gh pr create *)");
+});
+
+test("a representative the run never put through the harness fails the check", () => {
+  const run = runWith().filter((outcome) => outcome.command !== "git add -A");
+  expect(problemsIn(run)).toEqual([
+    "`git add -A` is a representative of the fixed list that this run never ran",
+  ]);
 });
 
 test("a prescribed command the harness denied fails the check, naming it and the reason", () => {
@@ -168,7 +307,7 @@ test("a prescribed command the harness denied fails the check, naming it and the
     executed: false,
     denials: [{ tool: "Bash", reason: "Permission to use Bash has been denied" }],
   };
-  const problems = problemsIn([clean("git status"), denied, control]);
+  const problems = problemsIn(runWith(denied));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("skelcrew mv PLACEHOLDER");
   expect(problems[0]).toContain("Permission to use Bash has been denied");
@@ -176,27 +315,25 @@ test("a prescribed command the harness denied fails the check, naming it and the
 
 test("a control command the harness did not deny fails the check", () => {
   const allowed = { ...control, executed: true, denials: [] };
-  const problems = problemsIn([clean("git status"), allowed]);
+  const problems = problemsIn([...runWith().filter((o) => o !== control), allowed]);
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain(CONTROL_COMMAND);
 });
 
 test("a check that never ran the control command fails", () => {
-  const problems = problemsIn([clean("git status")]);
+  const problems = problemsIn(runWith().filter((outcome) => outcome !== control));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain(CONTROL_COMMAND);
 });
 
 test("a command the stub saw no request for fails the check, however it ended", () => {
-  const unreached = { ...clean("git status"), requests: 0 };
-  const problems = problemsIn([unreached, control]);
+  const problems = problemsIn(runWith({ ...clean("git status"), requests: 0 }));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("no request");
 });
 
 test("a command that reached canUseTool fails the check", () => {
-  const asked = { ...clean("git status"), canUseToolCalls: 1 };
-  const problems = problemsIn([asked, control]);
+  const problems = problemsIn(runWith({ ...clean("git status"), canUseToolCalls: 1 }));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("canUseTool");
 });
@@ -209,7 +346,7 @@ test("a command that reached canUseTool fails the check", () => {
  */
 test("a session where the harness presented a credential other than the dummy fails the check", () => {
   const leaked = { ...clean("git status"), credentials: [STUB_API_KEY, "sk-ant-the-owners-key"] };
-  const problems = problemsIn([leaked, control]);
+  const problems = problemsIn(runWith(leaked));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("credential");
   // The key itself is not printed: the check's output is not where a credential belongs.
@@ -217,8 +354,7 @@ test("a session where the harness presented a credential other than the dummy fa
 });
 
 test("a command that ended without executing and without a denial fails the check", () => {
-  const nothing = { ...clean("git status"), executed: false };
-  const problems = problemsIn([nothing, control]);
+  const problems = problemsIn(runWith({ ...clean("git status"), executed: false }));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("git status");
 });
