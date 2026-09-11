@@ -18,7 +18,7 @@ but not yet shipped.
 
 |  | `prototype` | `main` |
 | --- | --- | --- |
-| Elapsed | under 23h28m, in one sitting | 4 working days |
+| Elapsed | 1–2 hours | 4 working days |
 | Commits | 2 (one of them a one-line README) | 68 |
 | Source files (`.ts`, excluding tests) | 12 | 44 |
 | Source lines | 2,425 | 5,111 |
@@ -31,20 +31,26 @@ Roughly twice the source for a *narrower* scope, and three times the total volum
 count. The spike's scope was wider: it carried a board server, a web UI and an MCP endpoint
 that `main` deliberately does not have.
 
-The timing is closer than it looks, and that is the surprising part. The repository begins as a
-one-line README at 2026-09-07 09:03:57. The entire spike — twelve source files, a board server,
-a web UI, an MCP endpoint and a daemon that ran a real spec stage and a real develop stage —
-arrives in **a single commit** at 2026-09-08 08:31:51. That is 23h28m of wall clock across a
-night, so the true figure is one sitting inside that window and git cannot narrow it further.
-The rebuild's first commit lands at 08:34:01, two minutes and ten seconds later: the spike was
-finished and the pivot began immediately.
+The timing is the part worth being precise about, because it is the cost side of the trade.
+
+The repository begins as a one-line README at 2026-09-07 09:03:57. The entire spike — twelve
+source files, a board server, a web UI, an MCP endpoint and a daemon that ran a real spec stage
+and a real develop stage — arrives in **a single commit** at 2026-09-08 08:31:51. Git bounds
+that at 23h28m across a night and cannot narrow it; the author's recollection is **one to two
+hours** of actual work. The rebuild's first commit lands at 08:34:01, two minutes and ten
+seconds after the spike: it was finished and the pivot began immediately.
 
 Against that, `main`'s working windows are 08:34–21:00, 08:26–13:24, 09:36–20:07 and 08:32–08:46
-across four days — on the order of a day and a half of elapsed time, most of it supervision
-rather than typing, since agents write the code. Neither figure is effort and both include time
-not spent working, but as upper bounds they are the same order of magnitude. The specced build
-did not cost ten times the spike. It cost a few times the spike, for three times the artefact
-and a defect list the spike does not have.
+across four days. Those windows contain meals and everything else, and most of the time inside
+them is supervision rather than typing, since agents write the code — but there is no reading of
+them that lands near two hours.
+
+So the honest ratio is **an order of magnitude, at least**. A working end-to-end loop in an
+afternoon is what vibe coding is for, and it is genuinely astonishing that it works. What the
+extra time buys is listed below: three times the artefact, 7,730 lines of test where there were
+none, and a written record of the defects — including two, 013's allowlist assumption and 016's
+subprocess hole, that the spike shipped without noticing. Whether that trade is worth making
+depends entirely on whether anyone has to walk away from the result and trust it.
 
 To re-derive: `git ls-tree -r --name-only <branch>`, filter `.ts`, split on `.test.ts`, count
 lines with `git show <branch>:<file>`.
@@ -111,6 +117,7 @@ That record is the part that matters for this product specifically. Unattended w
 worth having if the failures are visible, and a process whose output includes its own defect
 list is the only way that stays true as the thing grows.
 
-The cost is legible too: 68 commits against 2, and three to five review rounds on the specs that
-touch a security boundary. That is the price, and this file exists so the price and what it
-bought can both be seen.
+The cost is legible too: an order of magnitude more time, 68 commits against 2, and three to
+five review rounds on the specs that touch a security boundary. That is the price, and this file
+exists so the price and what it bought can both be seen — and so the next person tempted to
+conclude that the process is cheap has the numbers in front of them.
