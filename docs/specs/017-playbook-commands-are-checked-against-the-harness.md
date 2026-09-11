@@ -45,9 +45,25 @@ existing version-pin test already signals.
 **A command the playbooks prescribe runs unprompted in the real harness, or the check says
 which one does not.** `bun run check:harness` spawns the pinned harness against a local stub
 that plays the model, emits each prescribed command as a `Bash` tool call, and reads the
-result's `permission_denials`. Every prescribed command must execute — appear as a tool result,
-not as a denial — and the check fails naming any that was denied, with the harness's own
-`decision_reason`.
+result's `permission_denials`. Every instructed command must execute — appear as a tool result,
+not as a denial — and the check fails naming any that was denied, with the reason the harness
+reports for it. (In the pinned SDK the result's `permission_denials` carries the tool, its
+`tool_use_id` and its input, and the reason lives on the `system`/`permission_denied` message
+the stream emits, documented as best-effort; the check pairs the two by `tool_use_id` and says
+"no reason reported" when the message did not arrive. The spec as approved said
+`decision_reason` was on the result; it is not.)
+
+**"Instructed" is narrower than "named", and has to be.** The playbooks name commands they
+*forbid* — `skelcrew mv`, `claim`, `release`, `archive`, `resolve`, `git commit --no-verify` —
+in the paragraphs that forbid them, and the harness denies five of those by design (013's rule
+4). They name bare nouns (`skelcrew`, in "the `skelcrew` CLI") and heredoc bodies. And an
+instruction's `<id>` placeholder is a shell redirection: unsubstituted, `skelcrew show <id>` is
+refused for its target and `skelcrew show <id> --json` **executes**, creating a file named
+`--json`. So the list the check runs is the list the playbook test already checks for
+criterion 11 of 013: commands from the paragraphs that instruct, with a command word and an
+argument, placeholders filled — `instructedCommands()`, defined beside the harvesters — plus
+the fenced `bun run check` the scan contributes and the control. Every exclusion is pinned by a
+test so the narrowing cannot widen silently.
 
 **The check can fail.** A control command that the harness must ask about — `git push origin
 HEAD:main` — is included and must appear in `permission_denials`. A check that cannot fail is
@@ -145,10 +161,12 @@ and must not happen.
    `bun test`, and no test under `packages/` starts a `claude` process.
 2. `bun run check:harness` exists as a root script, runs the check file explicitly, and passes
    against the pinned SDK with the two playbooks as they are.
-3. For every command `commandsNamed()` harvests from both playbooks, the harness executes it —
-   a tool result, not a denial — under the run's own options with the named overrides. A
-   prescribed command the harness denies fails the check, naming the command and the harness's
-   `decision_reason`.
+3. For every command `instructedCommands()` yields from both playbooks — plus the fenced
+   `bun run check` and the control — the harness executes it: a tool result, not a denial,
+   under the run's own options with the named overrides. A command the harness denies fails
+   the check, naming the command and the reason the harness reported (or that none was). What
+   `instructedCommands()` excludes relative to `commandsNamed()` — forbidden verbs, bare
+   nouns, heredoc bodies, unfilled placeholders — is pinned by a test.
 4. `git push origin HEAD:main` appears in `permission_denials` on every run of the check, and
    the check fails if it does not.
 5. The scanned entry is exercised: `bun run check` is fenced in the temporary repository's
@@ -158,8 +176,14 @@ and must not happen.
    `ANTHROPIC_API_KEY`, if set, is not in the harness's environment.
 7. No prescribed command has an effect: every executable on the stub `PATH` exits 0 and writes
    nothing, and the temporary repository is unchanged after the check.
-8. `prescribed()` and `commandsNamed()` are defined once, imported by both the check and
-   `playbooks.test.ts`.
+8. `prescribed()`, `commandsNamed()` and `instructedCommands()` are defined once, in one module
+   outside any test file, and both the check and `playbooks.test.ts` take their command lists
+   from it: no second harvester exists, and `instructedCommands()` yields exactly what the
+   playbook test's own harvester yielded before the move.
+11. `claude.test.ts`'s assertion that exactly one source file imports the SDK becomes an exact
+    two-element list — `claude.ts` and the check — and a second assertion pins that nothing the
+    daemon runs imports the check. This is the one existing assertion the spec changes; it
+    could not stay as written, since the check must import the SDK to spawn the harness.
 9. `CLAUDE.md`'s definition of done names `check:harness` and when to run it, and
    `allowlist.ts`'s maintenance contract names it as what re-verifying now means.
 10. `canUseTool` is never called during the check; a call to it fails the check.
