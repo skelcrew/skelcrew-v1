@@ -23,11 +23,12 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | — | 007 Runner runs the phase playbooks | **spiked, not merged** — PR #8 closed, split into 011–014 |
 | 8 | 011 Which refs a run set; spec export bookmark | landed, PR #9 |
 | 9 | 012 Spawn an agent, show what it does | landed, PR #10 |
-| 10 | 013 The agent asks the owner | planned |
-| 11 | 014 A phase ends in a verified artefact | planned |
+| 10 | 013 The agent asks the owner | landed, PR #11 — seven review rounds, every Critical a spec defect |
+| 11 | 014 A phase ends in a verified artefact | landed, PR #12 |
 | 12 | 016 The gate is the daemon's, not the allowlist's | planned |
 | 13 | 015 Control characters can't repaint the record | planned |
-| 14 | 008 The full loop | planned, expect it to split too |
+| 14 | 017 A playbook's commands are checked against the harness that runs them | planned |
+| 15 | 008 The full loop | planned — rewritten after 014; split into 008a–c below |
 | | 005 | dropped |
 
 ## Background
@@ -237,29 +238,50 @@ commit, since a squashed history cannot evidence red-before-green.
 
 ## 008 — The full loop
 
-Close the loop the product exists for: Idea → Spec → Code → PR → Done. The
-owner moves an idea into Spec; the runner claims it and an agent writes the spec onto the
-card; the finish is an attention request, and approving it is the owner's move into
-Code (approval ends the human gesture: the card is queued there, the runner claims
-it and its status shows running, so position and status always reflect true state). The
-develop playbook is this repo's `/develop` made live: it commits the spec to `docs/specs/`
-as it starts, implements, then reviews the branch in a *fresh* context before the owner
-ever sees it, and verifies — review findings land as card comments, CHANGES REQUESTED loops
-back to the implementer within the run, and a bounded cycle budget (3) sends the card to
-the owner with what's unresolved instead of ping-ponging. The finish contract is a branch
-with commits and a PR; meeting it moves the card to PR, where the owner's queue only
-holds work that has survived independent review. The owner merges; the card lands in Done.
-Send back from PR is a comment plus a move to Code, which re-dispatches with
-history intact. When the default branch moves, the runner dry-run-merges each PR
-card's branch; a conflicted card auto-bounces to Code with a rebase brief and
-re-passes the in-run review before its PR updates. Includes failure and abandonment paths
-(worktree salvaged, card returned with a reason, attention request to the owner).
-Cross-member review — a different runner reviewing than the one that implemented — is
-deferred until a second runner exists. Depends on what 006 and 011–014 turn out to need —
-expect this entry to be rewritten from their findings before it is specified, and to be split
-the way 007 should have been: the in-run review loop with its cycle budget, and the
-default-branch/rebase machinery, are separable from the loop itself. When this
-lands, skelcrew can start building skelcrew.
+Close the loop the product exists for: Idea → Spec → Code → PR → Done. After 014, most of the
+loop already turns: the owner moves an idea into Spec, the runner claims it, the Spec run's
+finish carries the move into Code, approval queues it there, the Code run ends in a branch
+and a pull request the runner has verified, and the finish carries the move into PR. Send-back
+is a comment plus a move to Code, which re-dispatches with history intact. What is missing is
+the last arc and the loop inside Code, and they are three separable things — the split 007
+should have had, written down before this is specified rather than discovered in review.
+
+**008a — Done.** The owner merges on the forge; the card should land in Done without a second
+gesture. That is merge detection: the runner learns a PR-phase card's pull request has merged
+and moves the card. The tension to settle first is with *cards drive the runner*: a poll that
+acts on every PR card whenever the forge changes is the runner doing work no card asked for.
+The honest shapes are either that entering PR *is* the card asking to be watched — one watch
+per card, ended by the move to Done — or that the move is a member action (`skelcrew` on a
+schedule, or the owner) and the runner never polls at all. Say which, and why. Cross-member
+review — a different runner reviewing than the one that implemented — stays deferred until a
+second runner exists.
+
+**008b — The review loop inside Code, with a budget the runner enforces.** The Code playbook
+already instructs its own review rounds in a fresh context before the owner sees the branch,
+and findings land as card comments. 014 was explicit that an in-session *instruction* and a
+runner-enforced *budget* are different things, and put the budget here. The runner counts
+cycles, not the agent, because the agent's count is the agent's word: after the third
+CHANGES REQUESTED the runner ends the run with what is unresolved and hands the card to the
+owner, the way `/develop` stops after three. The contract that 014 built is what the loop
+ends in; this milestone adds only the count and the stop. Note the same lesson 016 draws —
+a rule the agent can route around is not a rule — applies to the budget exactly.
+
+**008c — When the default branch moves.** Dry-run-merging each PR card's branch as the default
+branch advances, bouncing a conflicted card back to Code with a rebase brief, and re-passing
+the in-run review before its PR updates. Deferred deliberately: it is the most machinery for
+the least-proven need, it has the same *cards drive the runner* tension as 008a in a sharper
+form, and nothing in a single-owner repository forces it until two cards land close together.
+Specify it when that has actually happened.
+
+Two corrections to what this entry used to say, both from 014. The develop playbook does
+**not** commit the spec to `docs/specs/` as it starts — the card body is the spec, a file is an
+export written only where the repository already keeps specs, and the pull request
+description carries the spec for the reviewer. And the finish contract is not this
+milestone's to build: 014 built it, and it is stricter than "a branch with commits and a PR"
+— the branch must have *moved during the run*, or a revision run that ignores the owner's
+feedback hands the card back as ready for review.
+
+When 008a lands, skelcrew can start building skelcrew.
 
 **Carried findings.** What the coordinator agent costs, and why a planner agent and a work
 hierarchy stay out — `docs/research/orca.md`, `docs/research/field-scan.md`. The activity feed
@@ -491,6 +513,34 @@ like on the card.
 Out of scope for it, and worth saying so: OS-level sandboxing of the subprocess. That is the only
 thing that would stop a check command writing outside the worktree, and it is a different
 milestone with a different cost.
+
+## 017 — A playbook's commands are checked against the harness that runs them
+
+Found in review round 1 of 014. The Code playbook prescribed
+`skelcrew refs <id> --pr "$(gh pr view --json url --jq .url)"`, and the harness asks outright
+about a command carrying a substitution — so every Code run would have stopped on a permission
+question to satisfy the one condition that decides whether the phase can complete. Overnight,
+that is a time-out and a failed contract, in the unattended tier skelcrew exists for.
+
+Nothing in the repository could have caught it, and that is the finding. `allowlist.ts` models
+the harness's permission rules for tests, and records that the model is deliberately *looser*
+than the harness about compound commands — safe for asserting "this is not pre-allowed",
+unsafe for asserting "this runs unprompted". A playbook line is the second kind of claim, and
+the model blessed it. The fix round added a test that walks every command both playbooks
+prescribe and rejects shell operators, and then said plainly that it hard-codes the operator
+set from the module's own prose: one more model of the thing the bug hid behind. The
+maintenance contract above `TRANSCRIBED_FROM` in `allowlist.ts` names the four transcriptions
+that age and what to do when one fires; it cannot make the transcriptions stop being
+transcriptions.
+
+What this milestone is: a check that runs each prescribed command through the harness's own
+permission evaluation — the pinned binary, not a model of it — and fails when one would ask.
+Whether the harness exposes that evaluation without running the command is the first thing the
+spec has to find out; the review rounds did it by extracting the functions from the binary by
+hand, which is a method, not a test. What it is not: a boundary. It guards the playbooks'
+ergonomics, not the owner's gates — those are 016's. And it should stay small: the cheapest way
+to have fewer commands to check is to prescribe fewer commands, which is containment over
+enumeration one more time.
 
 ## Later, deliberately unplanned
 
