@@ -101,9 +101,12 @@ body from stdin or a file…" now assert the marked layout beside the unchanged 
   behaviour round 1 already had (C0 escaping at the sink). They are red against base.
 - Against base `63011e8`, as of round 2, of the 69 tests this branch then added or changed,
   **68 failed**; the one that passed is the characterisation test named above. At HEAD, after
-  round 3, the figure is **74 added or changed, 72 failing against base** (verification's own
-  count): the two that pass are that characterisation test and the split `playbooks.test.ts`
-  pin — a *changed* pre-existing test whose rule already held at base, correctly green.
+  round 3 and the pin's restoration (`4e5790e`), the figure is **74 added or changed, 73 failing
+  against base** (the final verification's own count): the one that passes is that
+  characterisation test. The restored contiguous `playbooks.test.ts` pin is red against base —
+  its string is the amended sentence, which base's `code.md` does not contain. (An earlier
+  version of this sentence said 72 and two green, written while the pin was still split and
+  its rule still held at base; it was not swept when the pin was restored.)
 - The scan tripwire was checked by execution: with the reviewer's `export const CONTROLS =
   /\p{Cc}/u;` added to `render.ts` in a scratch copy, the round-1 regex passed and the round-2
   regex fails, naming `cli/src/render.ts`.
@@ -137,8 +140,10 @@ introduced by escaping an *enumerated* set of helpers.
    line on stdout that reads as an activity entry.
 3. **The Code playbook reads the body through `--json`** (Important 3). `playbooks/code.md` §5
    now says so, and `playbooks.test.ts` pins the sentence. One existing pin — "reuses the
-   recorded spec path" — matched the old sentence verbatim and now asserts its two halves; the
-   rule it pins is unchanged.
+   recorded spec path" — matched the old sentence verbatim and was split into its two halves
+   here; the rule it pins is unchanged. *(Superseded in `4e5790e`: the split was a weakening —
+   a mutation moving the second half elsewhere left all sixteen playbook tests green — and the
+   pin is one contiguous assertion over the amended sentence again. See* Verification*.)*
 4. **`fail` and `warn` escape single-line** (Minor 4), through `safeLine`; only `out` and the
    rendered result keep the multi-line kind, and `fail`'s `extra` is the CLI's own usage block.
 5. **One `oneLine`** (Minor 5), exported from `render.ts` and used by `add`, `attention`,
@@ -206,7 +211,8 @@ named tests. The Minors, with their disposition:
 
 **FAILED on criterion 9, by counting; everything else PASS.** The verifier restored the base and
 each round's implementation files in scratch copies and ran the final suite against each: base
-→ 72 of 74 new-or-changed tests fail (the two passes named above); round 1's implementation →
+→ 72 of 74 new-or-changed tests failed at that pass, 73 after the pin was restored (the one
+green is the characterisation test); round 1's implementation →
 13 fail (the record's 8 plus round 3's 5); round 2's → exactly the 5 named. The loop test
 received **14** against round 2 (13 in the implementer's run; the count is timing-dependent —
 see *Red, then green (round 3)*). The shared predicate was executed over U+0000–U+01FF; every
@@ -262,4 +268,14 @@ criterion 9 says, and `playbooks.test.ts` is still one of them — its pinned te
 criterion 9's "**four** removed `expect` lines" was written against the split pin and now reads
 one too many: the spec needs the number put back to three, or the sentence rephrased to count
 changed assertions rather than removed lines. Flagged rather than implemented around; nothing
-in the code depends on it.
+in the code depends on it. *(Done in `8a5d871`: criterion 9 now counts changed assertions —
+three removed `expect` lines in `cli.test.ts`, one assertion whose text changed without its
+line moving — and says its earlier wording was wrong twice.)*
+
+**Final narrow re-verification** found every criterion PASS by execution and failed on this
+record alone: the "72 of 74, two green" figure above had not been swept after the pin was
+restored (73 fail, one green — the pin is red against base now), and two sentences had been
+superseded without saying so. Corrected here by the orchestrator, from the verifier's executed
+numbers, with **no further verification pass**: the code has been frozen since `2f6129d` but for
+the one pin, and verified four times; a fifth pass on prose was not worth the owner's time. The
+PR says the same.
