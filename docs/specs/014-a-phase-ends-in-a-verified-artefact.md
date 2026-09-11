@@ -49,11 +49,17 @@ copy rather than duplicating it, but the contract never asks whether it did.
 
 Two things the artefact rule turns on, both learned the hard way:
 
-- **The recording must be new, not the value.** A card sent back from PR for revision pushes to
-  the same branch and keeps the same pull request, so requiring a *different* URL would strand
-  every revision. Requiring nothing lets an idle revision run hand the card on again using the
-  previous run's commits. What must be new is that this run recorded it — which 011's recorded
-  keys make exact.
+- **The recording must be new, not the value — and so must the commits.** A card sent back from
+  PR for revision pushes to the same branch and keeps the same pull request, so requiring a
+  *different* URL would strand every revision. What must be new is that this run recorded it —
+  which 011's recorded keys make exact. But recording alone is not evidence of work: the playbook
+  records the pull request on every run as bookkeeping, so a revision run that records the same
+  URL and commits nothing would meet every condition on the previous run's commits and hand the
+  owner's feedback back to them untouched. So the branch must also have **moved during this
+  run**: the head the runner resolved before the agent started is not the head at the end. The
+  rare run that did all its work and then hit the time limit before recording fails this on its
+  next dispatch with a note saying no new commits landed, and the owner moves the card by hand —
+  visible, and with an exit ramp, which is the trade this spec makes everywhere.
 - **A branch name is not a ref.** Git resolves a bare name by precedence and `refs/tags/<name>`
   outranks `refs/heads/<name>`, so a repository holding a tag named after its base branch makes
   a commit-range check compare against the tag — and a run that committed nothing passes. Both
@@ -89,7 +95,9 @@ non-empty body on the card now. Met → attention request `spec ready` carrying 
 **Code**: three conditions, and the failure message names every one that is unmet, joined, in
 a stable order:
 
-1. commits in `refs/heads/<base>..refs/heads/<branch>`, both ends qualified;
+1. commits in `refs/heads/<base>..refs/heads/<branch>`, both ends qualified, **and**
+   `refs/heads/<branch>` resolving to a different commit than it did when the run began — the
+   runner reads that sha before the agent starts, so this is a comparison, not another call;
 2. a clean worktree;
 3. a `refs_set` by the runner within this run whose recorded keys include `prUrl`.
 
@@ -152,7 +160,7 @@ that deriving the path from the card would remove the need for the bookmark enti
    the run does not count.
 3. A Spec run that writes no body fails with `run finished without a spec`, the card stays in
    Spec, and the request carries no moves.
-4. A Code run meeting all four conditions finishes: the card's refs carry the run's commits, the
+4. A Code run meeting all three conditions finishes: the card's refs carry the run's commits, the
    request reads `ready for review: <url>` and offers the move to `pr`, release `finished`.
 5. Each unmet Code condition produces a failure naming it, the worktree is left in place, and
    the card stays in Code: no commits; a dirty worktree; no `prUrl` recorded during the run. A
@@ -160,7 +168,9 @@ that deriving the path from the card would remove the need for the bookmark enti
    no `specPath`, still passes when the three conditions are met.
 6. A revision run that re-records the **same** `prUrl` and makes new commits passes. A
    revision run that records nothing fails, even though the card already carries a `prUrl` and
-   the branch already carries the previous run's commits.
+   the branch already carries the previous run's commits. A revision run that records the same
+   `prUrl` and makes **no** new commits fails with the no-commits condition, even though the range
+   past the base is non-empty — the branch did not move during this run.
 7. In a repository holding a tag whose name equals the base branch's, and whose card branch has
    no commits past the base branch, the Code run fails with the no-commits condition. A tag whose
    name equals the card's branch does not change the result either.
