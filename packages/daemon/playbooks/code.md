@@ -138,11 +138,15 @@ gh pr view --json url --jq .url
 skelcrew refs <id> --pr <the URL that printed>
 ```
 
-Substituting one into the other — `--pr "$(gh pr view …)"` — puts a shell operator in the
-command, and a command carrying one is put to the owner whatever the pre-allowed list says. It
-would stop this run on a permission question to satisfy the very condition that decides whether
-the phase can complete. The same goes for joining any two commands here with `&&`, `;` or a
-pipe: run them one at a time.
+Substituting one into the other — `--pr "$(gh pr view …)"` — is asked about **outright**: a
+command substitution or a subshell goes to the owner whatever the pre-allowed list above says.
+That would stop this run on a permission question to satisfy the very condition that decides
+whether the phase can complete.
+
+Joining two commands with `&&`, `;` or a pipe is not the same thing — those are split into
+their parts and allowed when every part is allowed on its own — but write them one at a time
+anyway: a joined command is only ever as allowed as its least-allowed part, and nothing here
+needs to be joined.
 
 A run that skips this hands nothing on, however much work is sitting on the branch.
 

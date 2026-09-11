@@ -7,8 +7,17 @@
  * and whose outcome the card shows. The run ends when the session ends,
  * when the time limit fires, when the daemon stops, or when the claim is lost; in every case
  * the card is left in a state a member can act on, with the reason on it, and never with a
- * question the agent raised replaced by it. Nothing is posted after an await without the
- * claim still being this run's.
+ * question the agent raised replaced by it.
+ *
+ * While the run is live, nothing is posted after an await without the claim still being this
+ * run's: that is what `post` enforces, and an abandonment writes nothing at all beyond the one
+ * comment saying so. **Two endings are deliberate exceptions**, and they use `record` rather
+ * than `post` for exactly that reason: the stop on an explicit release, and the agent having
+ * acted on its own card. Both write to a card this run no longer holds, because the spec wants
+ * the record where the card ended up — a stop must leave the owner something to act on, and a
+ * self-action is an accountability record. `endRun` comments unconditionally for the same
+ * reason, so the tool summary those endings flush goes the same way its reason does rather
+ * than being silently dropped beside it.
  *
  * A session that ended on its own is not by itself a finish: the phase's artefact contract
  * (`contracts.ts`) decides, and only a met contract carries the move into the next phase.

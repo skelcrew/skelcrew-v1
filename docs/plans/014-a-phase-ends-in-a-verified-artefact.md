@@ -264,3 +264,81 @@ ramp, and the owner moves the card by hand.
   nothing else" — and a test asserts each of the three.
 - **Minor 4** — the *Decisions* entry quoted pre-round-1 condition wording; it now quotes what
   ships, and says which round changed each part.
+
+## Review round 3
+
+APPROVED. No Critical, no Important. Three Minor, carried to the pull request rather than fixed
+in that round:
+
+1. **The merged condition-1 note hides which half failed.** `no new commits on <branch> past
+   <base>` is one message for a condition with two halves — an empty range, and a branch that
+   did not move — so an owner reading it cannot tell which. That is what the spec asks for
+   (criterion 6 and criterion 7 both say "the no-commits condition"), and the wording was chosen
+   to be true of both; but the time-limit case the spec deliberately accepts is exactly the one
+   where the distinction would help.
+2. **`run.ts`'s header invariant was false.** Fixed below, in the round-3 fix pass.
+3. **`commandsNamed`'s docstring overclaims inline coverage.** It reads inline spans starting
+   with a command word, which is narrower than "every command a playbook names" — a command
+   written without backticks, or one starting with a word outside `COMMAND_WORDS`, is not seen.
+   Carried, not fixed: the fix round named the three prose absolutes and this was not one of
+   them.
+
+The round-3 review also recorded ground no earlier round had covered. **That list is not
+reproduced here** — this run record is written by the implementer, and inventing the reviewer's
+checks would be worth less than nothing. It lives in the round-3 review artefact.
+
+## Verification
+
+FAILED, on documentation only. All 15 acceptance criteria PASS, the diff is within scope, and no
+test, fixture or assertion was weakened. The failure was three prose absolutes in changed files,
+each contradicted by code in the same file or the next one — fixed in the round-3 fix pass:
+
+- `run.ts`'s header claimed "nothing is posted after an await without the claim still being this
+  run's". False since round 2's Minor 3: `record` exists precisely so the stop and self-action
+  endings can write to a card the run no longer holds, and two tests assert it. The header now
+  names both exceptions and why the spec wants them.
+- `ending.ts` claimed "every way a run can end goes through `endRun`", contradicted ninety lines
+  below by `abandoned`, whose whole observable is written by `runner.ts`. It now says every
+  ending that *hands the card to a member* goes through `endRun`, and that an abandonment does
+  not and cannot.
+- `code.md` claimed a command carrying any shell operator "is put to the owner whatever the
+  pre-allowed list says". True of a substitution or a subshell; wrong of a list or a pipeline,
+  which the harness splits and allows when every part is. It now matches the accurate version
+  `playbooks.test.ts` already carried.
+
+| # | Criterion | Where it is established |
+|---|---|---|
+| 1 | `bun run check`; no agent, no model | 489 tests green; every driver in these files is `fakeDriver` |
+| 2 | Spec run with a body finishes | `a Spec run that writes a body hands the card on with the move into Code`; `a body that was on the card before the run is not this run's spec` |
+| 3 | Spec run with no body fails | `a Spec run that writes no body fails, and the request offers no move` |
+| 4 | Code run meeting all three finishes | `a Code run that commits, leaves the worktree clean and records its PR hands the card on` |
+| 5 | Each unmet condition named; worktree kept | one test per condition, plus `a Code run failing two conditions names both` and `all three unmet are named at once`; the met test asserts no `specPath` |
+| 6 | The three revision cases | `…re-records the same PR and makes new commits passes`; `…records nothing fails`; `…records the same PR but commits nothing fails` |
+| 7 | Tag shadowing, both shapes | `a tag named after the base branch…`; `a tag named after the card's branch…` — but see the carried limitation below |
+| 8 | Another member's claim abandons | `a card another member claims mid-run ends the run as an abandonment` |
+| 9 | Move or archive abandons; ordering pairs | `a card moved mid-run…`; `a card archived mid-run…`; `a card moved away and back mid-run…` |
+| 10 | Explicit release stops; no second run | `an explicit release stops the run with a comment and a request, and no second run starts` |
+| 11 | Lapsed lease abandons and re-queues | `a lapsed lease abandons the run and returns the card to its queue as run_interrupted` |
+| 12 | Self-action fails the run | three self-action tests, plus `a self-action after another member takes the card lands as a comment and nothing else` |
+| 13 | A question stands on every path | seven cases here, one per path, plus 012's abort and throw cases in `run.test.ts` |
+| 14 | Complete artefact, question standing | `a question stands when the artefact is complete…`, including the re-dispatch after the answer |
+| 15 | The playbook's export and PR rules | four `playbooks.test.ts` cases, plus `no command either playbook names carries a shell operator` |
+
+## Carried limitations
+
+- **Criterion 7's fixtures no longer isolate the tag defect.** Since round 2's freshness clause,
+  the branch in both tag-shadowing fixtures is created at the base and never moves, so
+  `head === branchHead` fails condition 1 whatever the range resolves to — **both tests would
+  now pass with bare names**. The protection itself is real and unchanged: `commitsBetween`
+  qualifies both ends of the range inside the method, so no caller can pass a bare name, and the
+  head is read through `refs/heads/<branch>`. What is gone is the independent pin: nothing now
+  fails if someone unqualifies the range. Pinning it again needs a fixture where the branch
+  *does* move during the run and the tag still shadows — a tag named after the base branch,
+  placed at the branch's new head, so the bare range reads empty while the qualified one holds
+  the run's commit, and only the qualification separates pass from fail. Named here, deliberately
+  not added: it is outside the round-3 fix scope.
+- **The runner's identity is not scoped to its card**, carried from 007 §7 and untouched here. It
+  is why the attention helper lives at the runner boundary rather than in the core.
+- **`runner.ts` still raises attention directly** for 006's no-playbook handoff, the one call
+  site outside `runAttention`. Both 013's and 014's `ending.ts` record the exemption and what it
+  rests on. It is where 016's identity check would sit.

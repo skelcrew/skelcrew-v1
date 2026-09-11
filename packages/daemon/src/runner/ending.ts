@@ -36,10 +36,16 @@
  * for the one thing the card cannot report: what the agent itself did, since the state the
  * card is in is then the agent's own doing.
  *
- * Every way a run can end goes through `endRun`: `run.ts`'s endings — the contract met or
- * unmet, the time limit, the daemon stopping, a driver error, no result, an error result, a
- * self-action, a stop on an explicit release — and `runner.ts`'s failed step, which is where a
- * throw out of a run that had already escalated lands.
+ * Every ending that hands the card to a member goes through `endRun`: `run.ts`'s endings — the
+ * contract met or unmet, the time limit, the daemon stopping, a driver error, no result, an
+ * error result, a self-action, a stop on an explicit release — and `runner.ts`'s failed step,
+ * which is where a throw out of a run that had already escalated lands.
+ *
+ * The fourth outcome below, `abandoned`, is the one ending that does not, and cannot: its whole
+ * observable is "one comment saying so, and nothing else" — no request, no release — so there
+ * is nothing for `endRun` to do. `run.ts` throws `RunAbandoned` and `runner.ts` writes that one
+ * comment. Anything added to that path that wanted to raise attention would stop being an
+ * abandonment, and would come back through here.
  *
  * One call site raises attention without this guard: 006's `no playbook for <phase> yet`
  * handoff in `runner.ts`, which is not an ending — no agent has run in the worktree when it
