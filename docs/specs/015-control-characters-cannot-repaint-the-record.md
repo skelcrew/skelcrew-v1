@@ -216,8 +216,12 @@ and bodies. They are not in this spec's set; see *Out of scope*.
    with the one exception criterion 6a creates: the two `cli.test.ts` assertions that the body
    appears verbatim in `skelcrew show` ("show prints the card, the body by line…" and "body
    replaces the body from stdin or a file…") now assert the marked layout, and each also
-   asserts the stored value is byte-identical, which is stronger than before. No other existing
-   assertion changes.
+   asserts the stored value is byte-identical, which is stronger than before. And the one
+   exception criterion 8c creates: `playbooks.test.ts`'s pin on §5's "overwrite that path"
+   sentence matched it verbatim, and 8c inserts a clause into that sentence, so the pin now
+   asserts its two halves separately — weaker on their adjacency, which 8c's own regex on the
+   amended sentence restores. No other existing assertion changes: three, and the diff's
+   removed `expect` lines are exactly those three.
 10. The refused set is defined once, in `@skelcrew/shared`, and the daemon, the CLI and the
     runner all use it: no second list of characters exists in any of the three.
 

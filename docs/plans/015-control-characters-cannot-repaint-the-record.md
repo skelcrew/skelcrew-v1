@@ -99,8 +99,11 @@ body from stdin or a file…" now assert the marked layout beside the unchanged 
 - The other three round-2 tests — the `\x1b` and `\r` rows, and the daemon-message-naming-a-
   stored-member half of criterion 7 — **pass against round 1**: they widen coverage of
   behaviour round 1 already had (C0 escaping at the sink). They are red against base.
-- Against base `63011e8`, of the 69 tests this branch adds or changes, **68 fail**; the one that
-  passes is the characterisation test named above.
+- Against base `63011e8`, as of round 2, of the 69 tests this branch then added or changed,
+  **68 failed**; the one that passed is the characterisation test named above. At HEAD, after
+  round 3, the figure is **74 added or changed, 72 failing against base** (verification's own
+  count): the two that pass are that characterisation test and the split `playbooks.test.ts`
+  pin — a *changed* pre-existing test whose rule already held at base, correctly green.
 - The scan tripwire was checked by execution: with the reviewer's `export const CONTROLS =
   /\p{Cc}/u;` added to `render.ts` in a scratch copy, the round-1 regex passed and the round-2
   regex fails, naming `cli/src/render.ts`.
@@ -158,3 +161,59 @@ this round adds or changes, and nothing else, so the fixes changed no other obse
   until …"`, two lines.
 - `playbooks.test.ts` "the Code playbook reads the body for export through --json" → the
   playbook did not contain `skelcrew show <id> --json`.
+
+## Review round 3 — APPROVED, five Minors carried
+
+No Critical, no Important. Round 3 re-ran the four forgeries and the loop over a real socket
+and with the fake driver; probed a fifth surface (`osascript` present — the AppleScript string
+escaping held, a `do shell script` injection did not fire; server-side `unknown method` errors
+JSON-escaped on the wire and escaped again on print; `ls --json` round-tripping through a JSON
+parser); checked the byte caps at the boundary (an all-ESC note escaped to exactly
+`COMMENT_MAX_BYTES / 4 × 4 = 16384` bytes, accepted with nothing to spare); traced the refs
+exception (`slug()` maps every non-alphanumeric to `-`, so no control character reaches a
+branch ref; `commits` is sha-validated); and reproduced the round-2 restore at exactly the five
+named tests. The Minors, with their disposition:
+
+1. **`ending.ts:75-96` overclaims.** `postingCore`'s doc says "every text it writes to a card
+   … is escaped" and "a path added later inherits it". The wrapper covers `comment`,
+   `requestAttention` and `releaseCard` — the three the runner calls — and passes `createCard`,
+   `setBody` and `resolveAttention` through, and its return type is a plain `Core`. True of the
+   runner as written; not true of the promise. **Carried**: narrow the sentence, or brand the
+   wrapped type so `endRun`/`runPlaybook` cannot take a raw core.
+2. **The daemon's own stderr is unescaped** (`ending.ts:335`, `runner.ts:220`, `run.ts:365`).
+   `warn()` interpolates the raw note; a git error with `color.ui = always` puts ANSI on the
+   daemon operator's console. Can repaint the daemon's console, not the record. Out of the
+   spec's second layer, which is scoped to the CLI, and not listed in *Out of scope*.
+   **Carried to `docs/MILESTONES.md`** in the follow-up docs commit on `main`.
+3. **Criterion 9 was literally unmet** — 6a changed two assertions and the spec said none.
+   **Fixed in the spec** (`40aa846`), then found still short by one (see *Verification*).
+4. **The playbook's `--json` body read** makes the agent reconstruct a markdown file from a JSON
+   string literal, when the body it needs is already in the run's first user message verbatim
+   (`cardPrompt`). `jq` is not on the fixed list, so `| jq -r .body` would ask. **Carried**:
+   name the first user message as the source, or add a raw-body output mode in a later spec.
+5. **The re-claim loop is latent, not gone.** `endRun` catches *any* core refusal of its comment
+   and request, warns, and releases; a free card in a claimable phase is claimed again at once
+   with no backoff. 015 removed the one reachable trigger (verified: the byte cap cannot be
+   overrun by escaping, since `within()` budgets `/4` and the escape expands at most 4×; ending
+   notes are non-empty constants). The next refusal at that sink costs 186 runs in three
+   seconds and no record. **Carried to `docs/MILESTONES.md`** as a runner finding: a failed
+   ending should park the card, not re-enter the queue.
+
+## Verification
+
+**FAILED on criterion 9, by counting; everything else PASS.** The verifier restored the base and
+each round's implementation files in scratch copies and ran the final suite against each: base
+→ 72 of 74 new-or-changed tests fail (the two passes named above); round 1's implementation →
+13 fail (the record's 8 plus round 3's 5); round 2's → exactly the 5 named. The loop test
+received **14** against round 2. The shared predicate was executed over U+0000–U+01FF; every
+CLI write site was enumerated (`fail`, `VERSION`, `usage()`, `out`, `warn`, `safe`/`safeJson`);
+`postingCore` was traced to every runner write but `setRefs`.
+
+What was unmet: criterion 9, amended in `40aa846` to name the two `cli.test.ts` assertions 6a
+changed, still said "no other existing assertion changes" — and the diff removes exactly
+**three** `expect` lines, the third being `playbooks.test.ts`'s split pin, required by 8c and
+committed in `2f6129d` *before* the amendment that missed it. Corrected by the orchestrator: the
+spec now names all three, and says the count is what checks it. Two record gaps were corrected
+in the same pass: the stale "69/68" figure above, and this section, which the record lacked.
+No further verification pass was run for the record's own edits beyond the narrow re-check
+that follows; the code was not touched after `2f6129d`.
