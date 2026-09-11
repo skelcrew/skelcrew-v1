@@ -20,7 +20,7 @@ Run record for `docs/specs/016-the-daemon-holds-the-gate.md`.
    refuses them.
 4. **Tests**: each refusal its own case through the real core, and all five through the CLI as
    `crew` against a running daemon. Red first where a rule changed — and **not** where one did
-   not, which is most of the gates: see *Red, and the eight cases that were green first* below,
+   not, which is most of the gates: see *Red, and the cases that were green first* below,
    which says of every new case whether it was red before the change it covers.
 
 ## Files expected to change
@@ -47,7 +47,7 @@ Run record for `docs/specs/016-the-daemon-holds-the-gate.md`.
   feed the run its own activity; with the identity split that filter has to know both members,
   or every `skelcrew comment` the agent makes returns to it as a user message.
 
-## Red, and the eight cases that were green first
+## Red, and the cases that were green first
 
 This spec changes **two** rules and one identity. Only tests of the two rules could be red
 before the implementation; a test of a gate whose rule already existed passes on the base
@@ -77,10 +77,18 @@ for the intended reason before the code that makes it pass:
   Received: "run finished without a spec…"` once the contract counted the crew's writes.
 - `allowlist.test.ts` and `playbooks.test.ts`'s two record assertions — `Expected to contain:
   "the daemon refuses"`.
+- `contracts.test.ts` "the agent as crew cannot move, release or archive the card it is
+  working…" — the end-to-end composition, red against base on **one** of its four refusals:
+  the archive (`Expected to contain: "only the owner may archive a card" / Received: "card 1
+  is claimed by runner until …"`). Its move half is *not* red — the test's card is in Spec,
+  whose exit was owner-only before 016 — and its release and claim halves are pre-existing
+  rules. Written after the rules were in and never run red; it is listed here because it fails
+  against base, with the one failing half named, not credited with more than that.
 
-**Green when written, and why each could not be red.** A copy of the worktree with `core.ts`
-and `phases.ts` restored to base runs the new `describe("the daemon holds the gate")` block at
-4 pass / 4 fail; these are the four that pass, and four more beside them:
+**Green when written.** A copy of the worktree with `core.ts` and `phases.ts` restored to
+base runs the new `describe("the daemon holds the gate")` block at 4 pass / 4 fail; these are
+the four that pass, and beside them one more that is also green against base, and one that is
+not but was written after the wiring it guards:
 
 - `core.test.ts` "crew may not release the runner's claim" — `releaseCard` already threw
   `forbidden` to a non-human actor who is not the holder (`core.ts`, before 016). 016 changes
@@ -97,10 +105,6 @@ and `phases.ts` restored to base runs the new `describe("the daemon holds the ga
 - `run.test.ts` "the agent may not answer its own permission question: the request stands and
   the call waits" — criterion 7 again, one level up: it composes the pre-existing refusal with
   013's pending-ask machinery, neither of which this spec changes.
-- `contracts.test.ts` "the agent as crew cannot move, release or archive the card it is
-  working…" — the end-to-end composition. Its move and archive halves would have been red on the
-  base commit; its release and claim halves would not, and it was written after the rules were
-  in, so it is listed here whole rather than credited with a red it was not run against.
 - `server/process.test.ts`'s widened `listMembers` assertion — a guard over `main.ts`'s two
   `ensureMember` calls, written after them. Not a claim that it could not be red: against the
   base it fails (`["runner"]` where `["runner","crew"]` is expected); it was simply written
@@ -321,13 +325,27 @@ The finding is about the record, not the tests: those four characterise rules th
 had, under the new identity, and could not be made red without weakening the core. But
 red-then-green was claimed where it did not and could not apply. Corrected here:
 
-- *Red, and the eight cases that were green first* now says of **every** new case which it was,
-  with the quoted failure for each red one and the reason each green one could not be red — the
-  verifier's four, plus `run.test.ts`'s permission-question case and `contracts.test.ts`'s
-  end-to-end composition (both of which my reports also missed), plus the CLI refusal test and
-  the `process.test.ts` assertion (which they disclosed).
+- *Red, and the cases that were green first* now says of **every** new case which it was,
+  with the quoted failure for each red one and, for each green one, whether it could have been
+  red — the verifier's four, plus `run.test.ts`'s permission-question case (which my reports
+  missed), plus the `process.test.ts` assertion (which they disclosed). Two cases first filed
+  green there were found red against base by later re-verification and moved: the CLI refusal
+  test, and `contracts.test.ts`'s end-to-end composition (red on its archive half only).
 - Step 4's claim is replaced by one that points at that section.
 - Rewrites of tests the change made fail are named as a third category, credited with neither.
+
+**Re-verification, twice more, on this record alone.** The section above was itself wrong
+when first written, in the same way it was written to correct: it filed the CLI refusal test as
+green-first "because the CLI cannot be red for rules already in the core" (two of the five
+verbs are rules 016 adds; the test fails against base on `mv`), said red-then-green could not
+apply to "the five gates" (it applied to two), and introduced a five-item list with "four
+times". Corrected by the orchestrator, whose file this is, after the implementer's three fix
+rounds were spent. A second re-verification then found the correction had left three counts
+stale ("eight cases", "four more beside them", and the enumeration in this section still
+naming the CLI test as green) and one inherited error: the composition test's move half was
+called red when its card is in Spec, already owner-exit at base — only its archive half is red.
+All corrected in the same way. What the record now claims about each new case is what running
+it against base shows.
 
 `f152b4d`'s first half — the red-team's *what the grant reaches* widened to include `crew`
 creating a card and `crew`'s raise overwriting the card's one open request — was missing from
