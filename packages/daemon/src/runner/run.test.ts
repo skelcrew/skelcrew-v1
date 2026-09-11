@@ -1019,15 +1019,26 @@ test("a card archived while the run waits on a question ends the run", async () 
 test("a claim released while the run waits ends the run, and a later answer changes nothing", async () => {
   await initRepo();
   const { cardId, decisions } = await waitingRun("Released while waiting");
-  const abandoned = untilEvent(commentContaining(cardId, "run abandoned"));
+  // 014 classifies an explicit release that nothing supersedes as a stop rather than an
+  // abandonment, so the card waits on the owner instead of going back into the queue a moment
+  // after they took it by hand. The open request is this run's own permission question, which
+  // the ending replaces by 013's rule: nothing answers it now — `resolve -m allow` would allow
+  // no tool — and the owner's queue must carry why the run ended.
+  const stopped = untilEvent(commentContaining(cardId, "run stopped"));
   core.releaseCard(cardId, { reason: "taking it back" }, owner.id);
-  await abandoned;
+  await stopped;
   await Bun.sleep(100);
 
-  // The question is left as the release left it: open, and nobody's to answer for the agent.
   const detail = core.getCard(cardId);
   expect(detail.claim).toBeNull();
-  expect(detail.attention?.note).toContain("rm -rf build");
+  expect(detail.attention?.note).toContain("run stopped");
+  expect(detail.attention?.moves).toEqual([]);
+  // The question is not lost by being replaced: it stands where it was raised, on the feed.
+  expect(
+    detail.activity.some(
+      (e) => e.type === "attention_requested" && e.data.note.includes("rm -rf build"),
+    ),
+  ).toBe(true);
   expect(decisions[0]?.behavior).toBe("deny");
   expect(comments(cardId)).not.toContain("proceeding");
 

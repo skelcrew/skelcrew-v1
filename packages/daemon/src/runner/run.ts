@@ -7,15 +7,43 @@
  * and whose outcome the card shows. The run ends when the session ends,
  * when the time limit fires, when the daemon stops, or when the claim is lost; in every case
  * the card is left in a state a member can act on, with the reason on it, and never with a
- * question the agent raised replaced by it. Nothing is posted after an await without the
- * claim still being this run's.
+ * question the agent raised replaced by it.
+ *
+ * While the run is live, nothing is posted after an await without the claim still being this
+ * run's: that is what `post` enforces, and an abandonment writes nothing at all beyond the one
+ * comment saying so. **Two endings are deliberate exceptions**, and they use `record` rather
+ * than `post` for exactly that reason: the stop on an explicit release, and the agent having
+ * acted on its own card. Both write to a card this run no longer holds, because the spec wants
+ * the record where the card ended up — a stop must leave the owner something to act on, and a
+ * self-action is an accountability record. `endRun` comments unconditionally for the same
+ * reason, so the tool summary those endings flush goes the same way its reason does rather
+ * than being silently dropped beside it.
+ *
+ * A session that ended on its own is not by itself a finish: the phase's artefact contract
+ * (`contracts.ts`) decides, and only a met contract carries the move into the next phase.
+ * What kind of ending this is at all is derived from the card in `ending.ts`, never from
+ * flags kept while the run was live.
  */
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Activity, type Card, COMMENT_MAX_BYTES, type Member } from "@skelcrew/shared";
-import type { Core } from "../core/core";
+import {
+  type Activity,
+  type Card,
+  COMMENT_MAX_BYTES,
+  type Member,
+  type Phase,
+} from "@skelcrew/shared";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
-import { endRun, type RunQuestion } from "./ending";
+import { checkContract } from "./contracts";
+import {
+  classifyEnding,
+  endRun,
+  type RunAttention,
+  type RunCore,
+  type RunQuestion,
+} from "./ending";
+import type { Git } from "./git";
+import type { PlaybookPhase } from "./playbooks";
 
 /** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
 export const RUN_LIMIT_MINUTES_DEFAULT = 60;
@@ -44,15 +72,29 @@ export class RunAbandoned extends Error {
 }
 
 export interface RunInput {
-  core: Core;
+  /** No `requestAttention`: every raise a run makes goes through `attention`, by construction. */
+  core: RunCore;
   member: Member;
+  /** The one helper this run raises attention through. */
+  attention: RunAttention;
   /** Who an ending hands the card to; resolved by `ending.ts`, inside its own guard. */
   ownerId(): number;
   warn: (line: string) => void;
   card: Card;
+  /** The phase claimed, narrowed to the phases a playbook and a contract exist for. */
+  phase: PlaybookPhase;
+  /** The last sequence number before the run began: what "during this run" means. */
+  sinceSeq: number;
+  /** The clock the card's claim is read against; the runner's, so the two agree. */
+  now(): number;
+  /** The target repository and its git, for the phase's artefact contract. */
+  git: Git;
+  repoRoot: string;
   /** The card's worktree, the branch it is on, and the base branch that forked from. */
   path: string;
   branch: string;
+  /** Where the branch stood before the agent started: what "moved during this run" is read against. */
+  branchHead: string;
   base: string;
   driver: AgentDriver;
   playbook: string;
@@ -286,9 +328,11 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (!abort.signal.aborted && input.lost() !== undefined) abort.abort();
   };
 
-  /** A comment on the card, only while the claim is still this run's; otherwise dropped. */
-  const post = (text: string): void => {
-    if (input.lost() !== undefined) return;
+  /**
+   * A comment on the card whatever the claim now is: what the endings that deliberately write
+   * to a card this run no longer holds use, the way `endRun` writes their reason.
+   */
+  const record = (text: string): void => {
     try {
       core.comment(id, text, member.id);
     } catch (error) {
@@ -296,14 +340,21 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     }
   };
 
+  /** A comment on the card, only while the claim is still this run's; otherwise dropped. */
+  const post = (text: string): void => {
+    if (input.lost() !== undefined) return;
+    record(text);
+  };
+
   // --- tool calls, batched ---
   const pendingTools: Array<{ name: string; input: Record<string, unknown> }> = [];
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
-  const flushTools = (): void => {
+  /** `write` is `post` while the run is live; an ending picks the one its own comment uses. */
+  const flushTools = (write: (text: string) => void = post): void => {
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     summaryTimer = undefined;
     if (pendingTools.length === 0) return;
-    post(summarizeTools(pendingTools.splice(0)));
+    write(summarizeTools(pendingTools.splice(0)));
   };
   const noteTool = (call: { name: string; input: Record<string, unknown> }): void => {
     pendingTools.push(call);
@@ -415,10 +466,17 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (input.lost() !== undefined) return;
     try {
       if (core.getCard(id).attention !== null) return;
-      const card = core.requestAttention(id, { to: ownerId(), note: questionFor(next) }, member.id);
+      // Through the one helper, like every other raise: a permission question offers the
+      // owner no phase move, only the two commands that answer it.
+      const raised = input.attention.raise(
+        id,
+        { to: ownerId(), note: questionFor(next), moves: [] },
+        question,
+      );
+      if (raised === undefined) return;
       queued.shift();
       asking = next;
-      question.raised(card.attention ?? undefined);
+      question.raised(raised);
     } catch (error) {
       const failure = message(error);
       warn(`skelcrew runner: card ${id}: could not ask about ${next.tool}: ${failure}`);
@@ -628,15 +686,11 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (graceTimer !== undefined) clearTimeout(graceTimer);
   }
 
-  // What the agent did lands before why the run ended; both are dropped by `post` if the
-  // claim went away, and the abandonment is then the runner's to report.
-  flushTools();
-  input.stillHeld();
-
   /** The run's last word: `ending.ts` holds what an ending does, for every run that ends. */
-  const end = (note: string, reason: string): void => {
+  const end = (note: string, moves: Phase[], reason: string): void => {
     endRun({
       core,
+      attention: input.attention,
       cardId: id,
       memberId: member.id,
       ownerId,
@@ -644,6 +698,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // Marked, not merely cut: the one note that can reach the cap is a driver error, and
       // a harness message amputated mid-sentence with nothing saying so misleads the owner.
       note: cutMarked(note, COMMENT_MAX_BYTES / 4),
+      moves,
       reason,
       // The one open request an ending may replace is this run's own question, which nothing
       // will answer now: the owner's queue must show why the run ended, not a resolve command
@@ -652,30 +707,84 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     });
   };
   const fail = (note: string): void => {
-    end(note, "failed");
+    end(note, [], "failed");
   };
 
-  if (stopping) {
-    fail("run aborted: daemon stopping");
+  /** Why the run stopped short, or undefined when the agent's session ended on its own. */
+  const cutShort = (): string | undefined => {
+    if (stopping) return "run aborted: daemon stopping";
+    if (timedOut) return `run aborted: time limit of ${describeLimit(input.limitMs)} reached`;
+    if (driverError !== undefined) return `run failed: ${driverError}`;
+    if (result === undefined) return "run failed: the agent ended without a result";
+    if (!result.ok) return `run failed: ${result.error ?? "the agent reported an error"}`;
+    return undefined;
+  };
+
+  // The contract is read-only, so it runs before the ending is settled and its git calls are
+  // just another window the card can change in. What decides is the classification below it.
+  const early = cutShort();
+  const settled =
+    early !== undefined
+      ? { met: false, note: early, moves: [] as Phase[], refs: undefined }
+      : await checkContract(input.phase, {
+          core,
+          git: input.git,
+          repoRoot: input.repoRoot,
+          worktreePath: path,
+          branch: input.branch,
+          branchHead: input.branchHead,
+          base: input.base,
+          cardId: id,
+          memberId: member.id,
+          sinceSeq: input.sinceSeq,
+        });
+
+  const outcome = classifyEnding({
+    core,
+    cardId: id,
+    memberId: member.id,
+    phase: input.phase,
+    sinceSeq: input.sinceSeq,
+    now: input.now(),
+  });
+  /**
+   * What the agent did lands before why the run ended, written the way that ending writes its
+   * own reason: `post` while the card is still this run's, and `record` on the two endings
+   * that deliberately write to a card it no longer holds — the stop and the self-action.
+   * Dropping the batch there while their comment lands would be a silent mutation. An
+   * abandonment is the exception, and the only one: one comment saying so, and nothing else.
+   */
+  if (outcome.kind !== "abandoned") flushTools(outcome.kind === "held" ? post : record);
+
+  switch (outcome.kind) {
+    case "self":
+      // Recorded wherever the card ended up: `endRun` comments regardless, and raises only if
+      // the card is still there to be handed over. This run's failure is not a new holder's
+      // queue to fill.
+      end(outcome.note, [], "failed");
+      return;
+    case "abandoned":
+      throw new RunAbandoned(outcome.reason);
+    case "released":
+      // The card waits on the owner rather than going straight back into the queue for the
+      // next scan to pick up a moment after they took it by hand. The release that stopped
+      // this run is the card's only one — `endRun` releases nothing it does not hold, and
+      // this ending is reached precisely because the claim is already gone — so the reason
+      // passed here is never recorded. It says what the ending is, and the criterion 10 test
+      // asserts that the card's one release is the owner's, so nothing rests on it landing.
+      end(
+        `run stopped: the card was released while the agent was working; the work is in ${path}`,
+        [],
+        "stopped",
+      );
+      return;
+    case "held":
+      break;
+  }
+  if (!settled.met) {
+    fail(settled.note);
     return;
   }
-  if (timedOut) {
-    fail(`run aborted: time limit of ${describeLimit(input.limitMs)} reached`);
-    return;
-  }
-  if (driverError !== undefined) {
-    fail(`run failed: ${driverError}`);
-    return;
-  }
-  if (result === undefined) {
-    fail("run failed: the agent ended without a result");
-    return;
-  }
-  if (!result.ok) {
-    fail(`run failed: ${result.error ?? "the agent reported an error"}`);
-    return;
-  }
-  // The session ended on its own. Whether it produced anything is 014's to check; this run
-  // says only what happened and hands the card back the way 006 does.
-  end(`run finished; the agent's session ended — the work is in ${path}`, "finished");
+  if (settled.refs !== undefined) core.setRefs(id, settled.refs, member.id);
+  end(settled.note, settled.moves, "finished");
 }

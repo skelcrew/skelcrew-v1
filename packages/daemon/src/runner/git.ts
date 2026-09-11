@@ -42,6 +42,13 @@ export interface Git {
   createBranch(repoRoot: string, name: string, base: string): Promise<void>;
   /** `git worktree add <path> <branch>`, for an existing branch. */
   worktreeAdd(repoRoot: string, path: string, branch: string): Promise<void>;
+  /**
+   * The shas on `branch` past `base`, newest first. Both names are qualified as
+   * `refs/heads/…` here rather than by the caller: git resolves a bare name by precedence
+   * and `refs/tags/<name>` outranks `refs/heads/<name>`, so a repository holding a tag named
+   * after either branch would otherwise have the range computed against the tag.
+   */
+  commitsBetween(repoRoot: string, base: string, branch: string): Promise<string[]>;
   worktreeList(repoRoot: string): Promise<WorktreeEntry[]>;
   /** `git worktree remove <path>` without `--force`: git itself refuses a dirty worktree. */
   worktreeRemove(repoRoot: string, path: string): Promise<void>;
@@ -179,6 +186,16 @@ export function createGit(options: { env?: Record<string, string | undefined> } 
 
     async worktreeAdd(repoRoot, path, branch) {
       await run(repoRoot, ["worktree", "add", path, branch]);
+    },
+
+    async commitsBetween(repoRoot, base, branch) {
+      // `--` ends the revision arguments: a range is never read as a path here either.
+      const out = await run(repoRoot, [
+        "rev-list",
+        `refs/heads/${base}..refs/heads/${branch}`,
+        "--",
+      ]);
+      return out.split("\n").filter((line) => line.length > 0);
     },
 
     async worktreeList(repoRoot) {
