@@ -110,13 +110,21 @@ not but was written after the wiring it guards:
   base it fails (`["runner"]` where `["runner","crew"]` is expected); it was simply written
   after the wiring it guards.
 
-**One case this section first mis-filed**, corrected by the orchestrator after re-verification
-refuted it: `cli.test.ts` "the five gate verbs as crew are refused by the daemon on a card the
-runner holds" was listed above as green-first on the grounds that "the CLI cannot be red for
-rules already in the core". That reasoning is false as applied — two of the five verbs, `mv`
-and `archive`, are rules 016 *adds* — and the case **fails against the base commit** on the
-`mv` refusal (`forbidden` expected, `conflict` received). It belongs with the red-first cases,
-and the implementer's own account of writing it green after the rules were in stands as the
+**Two cases this section first mis-filed as green**, each corrected by the orchestrator after
+a re-verification refuted it by running the case against base:
+
+- `cli.test.ts` "the five gate verbs as crew are refused by the daemon on a card the runner
+  holds" was listed as green-first on the grounds that "the CLI cannot be red for rules already
+  in the core". False as applied — two of the five verbs, `mv` and `archive`, are rules 016
+  *adds* — and the case **fails against the base commit** on the `mv` refusal (`forbidden`
+  expected, `conflict` received). It belongs with the red-first cases.
+- `contracts.test.ts`'s end-to-end composition was listed as green-first with the note that
+  "its move and archive halves would have been red on the base commit". Half of that was
+  false: the test's card is in Spec, whose exit was owner-only before 016, so the move half
+  was never red. Only the archive half is, and the case fails against base there. It now sits
+  with the red-first cases with that one half named.
+
+In both, the implementer's account of writing the test after the rules were in stands as the
 chronology; the record had turned a chronology into a claim about redability, which it was not.
 
 **Rewrites of tests the change made fail**, which are neither: `core.test.ts:287`,
