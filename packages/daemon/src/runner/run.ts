@@ -84,6 +84,8 @@ export interface RunInput {
   /** The card's worktree, the branch it is on, and the base branch that forked from. */
   path: string;
   branch: string;
+  /** Where the branch stood before the agent started: what "moved during this run" is read against. */
+  branchHead: string;
   base: string;
   driver: AgentDriver;
   playbook: string;
@@ -317,9 +319,11 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (!abort.signal.aborted && input.lost() !== undefined) abort.abort();
   };
 
-  /** A comment on the card, only while the claim is still this run's; otherwise dropped. */
-  const post = (text: string): void => {
-    if (input.lost() !== undefined) return;
+  /**
+   * A comment on the card whatever the claim now is: what the endings that deliberately write
+   * to a card this run no longer holds use, the way `endRun` writes their reason.
+   */
+  const record = (text: string): void => {
     try {
       core.comment(id, text, member.id);
     } catch (error) {
@@ -327,14 +331,21 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     }
   };
 
+  /** A comment on the card, only while the claim is still this run's; otherwise dropped. */
+  const post = (text: string): void => {
+    if (input.lost() !== undefined) return;
+    record(text);
+  };
+
   // --- tool calls, batched ---
   const pendingTools: Array<{ name: string; input: Record<string, unknown> }> = [];
   let summaryTimer: ReturnType<typeof setTimeout> | undefined;
-  const flushTools = (): void => {
+  /** `write` is `post` while the run is live; an ending picks the one its own comment uses. */
+  const flushTools = (write: (text: string) => void = post): void => {
     if (summaryTimer !== undefined) clearTimeout(summaryTimer);
     summaryTimer = undefined;
     if (pendingTools.length === 0) return;
-    post(summarizeTools(pendingTools.splice(0)));
+    write(summarizeTools(pendingTools.splice(0)));
   };
   const noteTool = (call: { name: string; input: Record<string, unknown> }): void => {
     pendingTools.push(call);
@@ -666,10 +677,6 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     if (graceTimer !== undefined) clearTimeout(graceTimer);
   }
 
-  // What the agent did lands before why the run ended; both are dropped by `post` if the
-  // claim went away, and the abandonment is then the runner's to report.
-  flushTools();
-
   /** The run's last word: `ending.ts` holds what an ending does, for every run that ends. */
   const end = (note: string, moves: Phase[], reason: string): void => {
     endRun({
@@ -716,6 +723,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
           repoRoot: input.repoRoot,
           worktreePath: path,
           branch: input.branch,
+          branchHead: input.branchHead,
           base: input.base,
           cardId: id,
           memberId: member.id,
@@ -730,6 +738,15 @@ export async function runPlaybook(input: RunInput): Promise<void> {
     sinceSeq: input.sinceSeq,
     now: input.now(),
   });
+  /**
+   * What the agent did lands before why the run ended, written the way that ending writes its
+   * own reason: `post` while the card is still this run's, and `record` on the two endings
+   * that deliberately write to a card it no longer holds — the stop and the self-action.
+   * Dropping the batch there while their comment lands would be a silent mutation. An
+   * abandonment is the exception, and the only one: one comment saying so, and nothing else.
+   */
+  if (outcome.kind !== "abandoned") flushTools(outcome.kind === "held" ? post : record);
+
   switch (outcome.kind) {
     case "self":
       // Recorded wherever the card ended up: `endRun` comments regardless, and raises only if
@@ -741,7 +758,11 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       throw new RunAbandoned(outcome.reason);
     case "released":
       // The card waits on the owner rather than going straight back into the queue for the
-      // next scan to pick up a moment after they took it by hand.
+      // next scan to pick up a moment after they took it by hand. The release that stopped
+      // this run is the card's only one — `endRun` releases nothing it does not hold, and
+      // this ending is reached precisely because the claim is already gone — so the reason
+      // passed here is never recorded. It says what the ending is, and the criterion 10 test
+      // asserts that the card's one release is the owner's, so nothing rests on it landing.
       end(
         `run stopped: the card was released while the agent was working; the work is in ${path}`,
         [],

@@ -261,7 +261,7 @@ test("a Code run with no commits fails, names the condition, and keeps the workt
   await runCard("No commits", "code");
 
   const said = comments(1).at(-1) as string;
-  expect(said).toContain("no commits on skelcrew/1-no-commits past main");
+  expect(said).toContain("no new commits on skelcrew/1-no-commits past main");
   expect(said).not.toContain("uncommitted changes");
   expect(said).not.toContain("no pull request recorded");
   expect(core.getCard(1).phase).toBe("code");
@@ -285,7 +285,7 @@ test("a Code run that leaves the worktree dirty fails and names that condition",
 
   const said = comments(1).at(-1) as string;
   expect(said).toContain("uncommitted changes in the worktree");
-  expect(said).not.toContain("no commits on");
+  expect(said).not.toContain("no new commits on");
   expect(said).not.toContain("no pull request recorded");
   expect(core.getCard(1).phase).toBe("code");
   expect(await sh(repo, "worktree", "list", "--porcelain")).toContain(worktreePath(1));
@@ -303,7 +303,7 @@ test("a Code run that records no PR fails and names that condition", async () =>
 
   const said = comments(1).at(-1) as string;
   expect(said).toContain("no pull request recorded during this run");
-  expect(said).not.toContain("no commits on");
+  expect(said).not.toContain("no new commits on");
   expect(said).not.toContain("uncommitted changes");
   expect(core.getCard(1).phase).toBe("code");
   expect(await sh(repo, "worktree", "list", "--porcelain")).toContain(worktreePath(1));
@@ -322,7 +322,7 @@ test("a Code run failing two conditions names both, in a stable order", async ()
   await runCard("Two unmet", "code");
 
   const said = comments(1).at(-1) as string;
-  expect(said).not.toContain("no commits on");
+  expect(said).not.toContain("no new commits on");
   expect(said).toContain("uncommitted changes in the worktree");
   expect(said).toContain("no pull request recorded during this run");
   expect(said.indexOf("uncommitted changes")).toBeLessThan(said.indexOf("no pull request"));
@@ -339,10 +339,10 @@ test("all three unmet are named at once, in a stable order", async () => {
   await runCard("Nothing at all", "code");
 
   const said = comments(1).at(-1) as string;
-  expect(said).toContain("no commits on skelcrew/1-nothing-at-all past main");
+  expect(said).toContain("no new commits on skelcrew/1-nothing-at-all past main");
   expect(said).toContain("uncommitted changes in the worktree");
   expect(said).toContain("no pull request recorded during this run");
-  expect(said.indexOf("no commits on")).toBeLessThan(said.indexOf("uncommitted changes"));
+  expect(said.indexOf("no new commits on")).toBeLessThan(said.indexOf("uncommitted changes"));
   expect(said.indexOf("uncommitted changes")).toBeLessThan(said.indexOf("no pull request"));
 });
 
@@ -402,6 +402,45 @@ test("a revision run that records nothing fails, though the card carries a PR an
   expect(card.phase).toBe("code");
 });
 
+/**
+ * Criterion 6's third case. The playbook records the pull request on *every* run as
+ * bookkeeping, so recording is not evidence of work: a revision run that does exactly what the
+ * playbook says and commits nothing would otherwise meet all three conditions on the previous
+ * run's commits, and hand the owner their own feedback back as "ready for review".
+ */
+test("a revision run that records the same PR but commits nothing fails: the branch did not move", async () => {
+  await initRepo();
+  let run = 0;
+  start({
+    driver: fakeDriver(async function* (options) {
+      run += 1;
+      if (run === 1) await commitIn(options.cwd, "feature.ts");
+      // Every run records, first or revision — which is what the playbook prescribes.
+      core.setRefs(1, { prUrl: PR_URL }, runnerMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Idle but tidy", "code");
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+
+  const again = untilEvent(ended(1));
+  core.moveCard(1, "pr", owner.id);
+  core.moveCard(1, "code", owner.id);
+  await again;
+
+  expect(run).toBe(2);
+  // The range past the base is not empty — the first run's commit is still on the branch —
+  // and the worktree is clean and the PR recorded. Only the branch not having moved during
+  // this run separates this from a finish.
+  const range = "refs/heads/main..refs/heads/skelcrew/1-idle-but-tidy";
+  expect(await sh(repo, "rev-list", "--count", range)).toBe("1");
+  const card = core.getCard(1);
+  expect(card.attention?.note).toContain("no new commits on skelcrew/1-idle-but-tidy past main");
+  expect(card.attention?.moves).toEqual([]);
+  expect(card.phase).toBe("code");
+  expect(comments(1).at(-1)).not.toContain("ready for review");
+});
+
 // --- a tag that shadows a branch name ---
 
 test("a tag named after the base branch does not make an empty branch look like work", async () => {
@@ -418,7 +457,7 @@ test("a tag named after the base branch does not make an empty branch look like 
   });
   await runCard("Shadowed base", "code");
 
-  expect(comments(1).at(-1)).toContain("no commits on skelcrew/1-shadowed-base past main");
+  expect(comments(1).at(-1)).toContain("no new commits on skelcrew/1-shadowed-base past main");
 });
 
 test("a tag named after the card's branch does not make an empty branch look like work", async () => {
@@ -435,7 +474,7 @@ test("a tag named after the card's branch does not make an empty branch look lik
   });
   await runCard("Shadowed branch", "code");
 
-  expect(comments(1).at(-1)).toContain("no commits on skelcrew/1-shadowed-branch past main");
+  expect(comments(1).at(-1)).toContain("no new commits on skelcrew/1-shadowed-branch past main");
 });
 
 // --- the endings ---
@@ -603,6 +642,10 @@ test("an explicit release stops the run with a comment and a request, and no sec
   expect(comments(1).some((text) => text === "spec ready")).toBe(false);
   // "And no second run starts."
   expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  // The release on this path is the one that stopped the run, and it is the only one: the
+  // card was free before the ending began, so the run records no release of its own.
+  expect(card.activity.filter((e) => e.type === "released")).toHaveLength(1);
+  expect(lastRelease(1)).toBe("taking it by hand");
 });
 
 test("a lapsed lease abandons the run and returns the card to its queue as run_interrupted", async () => {
@@ -932,4 +975,85 @@ test("a raise that fails is not a standing question: the met artefact still rele
   expect(core.getCard(1).attention).toBeNull();
   expect(lastRelease(1)).toBe("finished");
   expect(warnings.some((line) => line.includes("attention is down"))).toBe(true);
+});
+
+/**
+ * The batching window can still be open when the card goes. On an abandonment that is right —
+ * "one comment saying so, and nothing else" — but the stop and the self-action both write to a
+ * card the run no longer holds, and what the agent did is part of the record they write.
+ * Dropping it there is a silent mutation.
+ */
+test("the tool calls still batched when a run is stopped land on the card with the ending", async () => {
+  await initRepo();
+  await whileWorking(
+    fakeDriver(async function* (options) {
+      yield { type: "text", text: "working" };
+      yield { type: "tool_use", name: "Read", input: { file_path: "/repo/AGENTS.md" } };
+      // Yielded after the tool call, so reaching the card means the call was batched first.
+      yield { type: "text", text: "read it" };
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }),
+  );
+  await untilEvent(commentContaining(1, "read it"));
+
+  const stopped = untilEvent(commentContaining(1, "run stopped"));
+  core.releaseCard(1, { reason: "taking it by hand" }, owner.id);
+  await stopped;
+
+  const said = comments(1);
+  expect(said).toContain("ran 1 tool: Read");
+  expect(said.indexOf("ran 1 tool: Read")).toBeLessThan(
+    said.findIndex((text) => text.includes("run stopped")),
+  );
+});
+
+test("the tool calls still batched when the agent acts on its own card land with the ending", async () => {
+  await initRepo();
+  start({
+    driver: fakeDriver(async function* () {
+      yield { type: "tool_use", name: "Read", input: { file_path: "/repo/AGENTS.md" } };
+      core.releaseCard(1, { reason: "done here" }, runnerMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  const done = untilEvent(commentContaining(1, "released its own card"));
+  core.createCard({ title: "Tools, then let go" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  await done;
+
+  const said = comments(1);
+  expect(said).toContain("ran 1 tool: Read");
+  expect(said.indexOf("ran 1 tool: Read")).toBeLessThan(
+    said.findIndex((text) => text.includes("released its own card")),
+  );
+});
+
+test("an abandoned run writes nothing more, batched tool calls included", async () => {
+  await initRepo();
+  const crew = core.ensureMember("crew-1", "agent");
+  await whileWorking(
+    fakeDriver(async function* (options) {
+      yield { type: "text", text: "working" };
+      yield { type: "tool_use", name: "Read", input: { file_path: "/repo/AGENTS.md" } };
+      yield { type: "text", text: "read it" };
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }),
+  );
+  await untilEvent(commentContaining(1, "read it"));
+
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  core.releaseCard(1, { reason: "by hand" }, owner.id);
+  core.claimCard(1, {}, crew.id);
+  await abandoned;
+  await Bun.sleep(200);
+
+  // "One comment saying so, and nothing else" applies to the summary too.
+  expectAbandoned(1);
+  expect(comments(1)).not.toContain("ran 1 tool: Read");
 });

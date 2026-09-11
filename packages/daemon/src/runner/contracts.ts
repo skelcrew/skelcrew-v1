@@ -35,6 +35,8 @@ export interface ContractInput {
   /** The card's worktree, the branch it is on, and the base branch that forked from. */
   worktreePath: string;
   branch: string;
+  /** Where the branch stood before the agent started; the runner read it, so this is no new call. */
+  branchHead: string;
   base: string;
   cardId: number;
   /** The `runner` member: whose `body_set` and `refs_set` count as this run's. */
@@ -72,7 +74,7 @@ function specContract(input: ContractInput): ContractOutcome {
 }
 
 /**
- * Code: commits past the base, a clean worktree, and a pull request recorded *by this run*.
+ * Code: new commits past the base, a clean worktree, and a pull request recorded *by this run*.
  *
  * The recording must be new, not the value. A card sent back from PR for revision pushes to
  * the same branch and keeps the same pull request, so requiring a *different* URL would strand
@@ -80,10 +82,19 @@ function specContract(input: ContractInput): ContractOutcome {
  * previous run's commits. 011's recorded keys are what make "this run recorded it" exact — the
  * merged refs on the event cannot answer it, because a card that already carried a `prUrl`
  * satisfies any check that looks at the value.
+ *
+ * And so must the commits be new. Recording is not evidence of work: the playbook records the
+ * pull request on *every* run as bookkeeping, so a revision run that does exactly that and
+ * commits nothing would meet all three conditions on the previous run's commits and hand the
+ * owner their own feedback back as "ready for review" — this spec's Goal, reproduced inside the
+ * mechanism built to stop it. So the branch must also have moved: the head the runner resolved
+ * before the agent started is not the head now. Both halves are one condition and name
+ * themselves as one, because either way no new commits landed.
  */
 async function codeContract(input: ContractInput): Promise<ContractOutcome> {
   const card = input.core.getCard(input.cardId);
   const commits = await input.git.commitsBetween(input.repoRoot, input.base, input.branch);
+  const head = await input.git.revParse(input.repoRoot, `refs/heads/${input.branch}`);
   const changed = await input.git.status(input.worktreePath);
   const recorded = card.activity.some(
     (event) =>
@@ -96,8 +107,8 @@ async function codeContract(input: ContractInput): Promise<ContractOutcome> {
 
   // Every unmet condition is named, in this order, so two failures read the same way each time.
   const unmet: string[] = [];
-  if (commits.length === 0) {
-    unmet.push(`no commits on ${input.branch} past ${input.base}`);
+  if (commits.length === 0 || head === undefined || head === input.branchHead) {
+    unmet.push(`no new commits on ${input.branch} past ${input.base}`);
   }
   if (changed.length > 0) {
     // The path is not repeated here: every unmet note ends with where the worktree is.

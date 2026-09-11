@@ -287,8 +287,17 @@ export function startRunner(options: RunnerOptions): Runner {
       const base = await git.defaultBranch(repoRoot);
       stillHeld();
       step = "create branch";
-      if ((await git.revParse(repoRoot, `refs/heads/${branch}`)) === undefined) {
+      /**
+       * Where the branch stood before the agent started. The Code contract compares its own
+       * end against this: commits past the base are not this run's work unless the branch
+       * moved, since a revision run that records the pull request and commits nothing would
+       * otherwise hand the card on using the previous run's. A branch this run creates starts
+       * at the base, so a run that commits nothing leaves it there and fails the same way.
+       */
+      let branchHead = await git.revParse(repoRoot, `refs/heads/${branch}`);
+      if (branchHead === undefined) {
         await git.createBranch(repoRoot, branch, base.sha);
+        branchHead = base.sha;
       }
       stillHeld();
       step = "add worktree";
@@ -346,6 +355,7 @@ export function startRunner(options: RunnerOptions): Runner {
         repoRoot,
         path,
         branch,
+        branchHead,
         base: base.name,
         driver: agent.driver,
         playbook,

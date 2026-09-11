@@ -43,9 +43,11 @@ overlap it.)
 ## Decisions the spec left open
 
 - **Condition wording.** The Code failure names its unmet conditions as
-  `no commits on <branch> past <base>`, `uncommitted changes in the worktree at <path>`,
+  `no new commits on <branch> past <base>`, `uncommitted changes in the worktree`,
   `no pull request recorded during this run`, joined with `; ` in that (stable) order, under
-  the heading `run finished without the Code phase's artefact:`.
+  the heading `run finished without the Code phase's artefact:` and ending with
+  `; the work is in <path>`. (First written without the exit ramp and with the path inside the
+  dirty-worktree clause — round 1's Minor 6 — and without `new` — round 2's Important.)
 - **The release reason when a question is standing** is `blocked`, on every path, not only on
   the artefact-complete one — the card is waiting on the owner's answer whatever the run's own
   outcome was, and one rule at one place is what the spec asks for.
@@ -76,10 +78,11 @@ Three rounds, in `packages/daemon/src/runner/contracts.test.ts` and `playbooks.t
 
 ## A spec defect, reported and not edited
 
-Criterion 4 says "all four conditions" where the Code contract has three — as *Desired
+Criterion 4 said "all four conditions" where the Code contract has three — as *Desired
 behavior* ("commits on its branch past the base, left the worktree clean, and recorded the pull
 request URL"), *The contracts* ("**Code**: three conditions") and criterion 5 (which lists
-exactly three) all say. Implemented as three. The spec is left as written.
+exactly three) all said. Implemented as three, reported, and the spec left as written; the
+owner corrected it in `b682c24`, alongside round 2's larger amendment.
 
 ## Composing the two constructions (the 013 merge)
 
@@ -195,3 +198,69 @@ outcome to be sceptical of, so it is recorded plainly rather than claimed as vin
 - **Important 3** is a spec amendment — the *Tests* line "Existing 012 and 013 coverage must pass
   unchanged" cannot hold once criterion 10 reclassifies 013's release-while-waiting case — and
   goes to the owner. The spec file is not edited here.
+
+## Review round 2
+
+CHANGES REQUESTED: one Important, four Minor. Round 2 confirmed the re-derived ending
+assertions clause by clause, the playbook guard, and both round-1 regression fixes.
+
+### The Code contract was met by a revision run that did nothing (Important)
+
+**A spec defect, faithfully implemented.** Condition 1 checked that the *range* past the base
+was non-empty, not that this run added to it, and the spec relied on condition 3 — the PR
+recorded by this run — for freshness. But the same spec's playbook section says to record the
+pull request on *every* run, so recording is bookkeeping every run does regardless of work. A
+card sent back for revision, a run that does exactly what §4 prescribes and commits nothing:
+commits exist (the previous run's), worktree clean, PR recorded — **met**, and the card goes
+back "ready for review" with the owner's feedback untouched. That is this spec's own Goal
+sentence reproduced inside the mechanism built to stop it.
+
+The red test reported it verbatim:
+
+```
+Expected to contain: "no new commits on skelcrew/1-idle-but-tidy past main"
+Received: "ready for review: https://example.invalid/skelcrew/pull/1"
+```
+
+with the same test asserting `git rev-list --count refs/heads/main..refs/heads/skelcrew/1-idle-but-tidy`
+is `1` — so the range genuinely is non-empty and nothing but freshness separates the two.
+
+The owner amended the spec (`b682c24`): condition 1 gains a freshness clause. `runner.ts`
+already resolved the branch head before the agent started and discarded it; it is kept and
+threaded through `RunInput` and `ContractInput`, so the contract compares rather than making a
+new git call. Both halves are one condition and name themselves as one —
+`no new commits on <branch> past <base>` — because either way no new commits landed. The other
+seven places asserting the old `no commits on` wording were updated.
+
+`code.md` §4 states the clause, and adds what a revision run with nothing to do must do
+instead: raise it and stop, rather than end a run that committed nothing. The time-limit edge
+the spec calls out is left exactly as the spec decided — a run that did the work and timed out
+before recording fails its next dispatch with the no-commits note, visibly and with an exit
+ramp, and the owner moves the card by hand.
+
+### The rest
+
+- **Minor 1** — `"stopped"` was passed to `endRun` as a release reason on a path whose claim is
+  by definition already gone, so it could never be recorded, and the criterion 10 test did not
+  assert `lastRelease` at all. Kept as the ending's stated reason — `RunEnding.reason` is
+  required by construction and making it optional would reopen the hole that requirement
+  closes — with the call site saying plainly that it is never recorded, and the test now
+  asserting the card's *one* release is the owner's, carrying the owner's reason. A future
+  change that made the run release here fails that assertion.
+- **Minor 2** — the playbook guard walked fenced lines only, while both playbooks name commands
+  inline as often (`git push -u origin HEAD`, `skelcrew show <id>`). It now reads inline code
+  spans too, but only those starting with a command word (`skelcrew`, `git`, `gh`, `bun`),
+  which keeps ref names, flags and rule patterns out and needs no exclusion for §4's deliberate
+  counter-example — that span starts with `--pr`. Verified by inserting an inline
+  `git add -A && git commit -m wip`: the widened guard catches it. The rationale was also
+  wrong and is corrected: a substitution or subshell is asked about *outright*, a list or
+  pipeline is split and allowed when every part is. Lists and pipelines are still barred, now
+  stated as a rule about what a playbook may set out rather than as a claim about the harness.
+- **Minor 3** — `flushTools()` posted through `post`, which drops once the claim is gone, so on
+  the stop and self-action endings up to one batching window of tool calls vanished while the
+  ending's own comment landed. `post` is now `record` plus a claim check, and the flush happens
+  after the ending is classified, using `record` on exactly the two endings that write to a
+  card the run no longer holds. An abandonment still drops it — "one comment saying so, and
+  nothing else" — and a test asserts each of the three.
+- **Minor 4** — the *Decisions* entry quoted pre-round-1 condition wording; it now quotes what
+  ships, and says which round changed each part.

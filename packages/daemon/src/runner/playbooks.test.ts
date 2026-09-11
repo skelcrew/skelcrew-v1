@@ -217,8 +217,12 @@ function unwrapped(playbook: string): string {
   return playbook.replace(/\s+/g, " ");
 }
 
+/** The verbs a playbook can put in front of an agent. An inline span starting with one is a
+ * command; one starting with anything else — a ref name, a flag, a filename — is not. */
+const COMMAND_WORDS = ["skelcrew", "git", "gh", "bun"];
+
 /**
- * The lines inside a playbook's fenced blocks: what it puts in front of the agent to run.
+ * The lines inside a playbook's fenced blocks: what it sets out for the agent to run verbatim.
  * A heredoc body is in here too, and is prose rather than a command — no shape asserted
  * against these reaches it, so it needs no separating out.
  */
@@ -233,6 +237,21 @@ function prescribed(playbook: string): string[] {
     if (inside && line.trim().length > 0) lines.push(line);
   }
   return lines;
+}
+
+/**
+ * Every command a playbook names, fenced or inline. A playbook puts commands in front of the
+ * agent in running prose as often as in a block — `git push -u origin HEAD` is named inline as
+ * "the form to use" — so a guard over fenced lines alone would miss half of them. An inline
+ * span is only read as a command when it starts with a command word, which is what keeps the
+ * ref names, flags and rule patterns that also sit in backticks out, and is why the counter-
+ * example `--pr "$(gh pr view …)"` needs no exclusion: it starts with a flag.
+ */
+function commandsNamed(playbook: string): string[] {
+  const inline = [...playbook.matchAll(/`([^`\n]+)`/g)]
+    .map((match) => match[1] as string)
+    .filter((span) => COMMAND_WORDS.includes(span.split(/[\s(]/)[0] as string));
+  return [...prescribed(playbook), ...inline];
 }
 
 test("the Code playbook records the pull request on every run, reading an existing one back", () => {
@@ -273,17 +292,26 @@ test("the Code playbook reuses the recorded spec path on a card returning from P
   );
 });
 
-test("no command either playbook prescribes carries a shell operator", () => {
-  // The harness asks about a command substitution or a subshell outright — "shell operators
-  // that require approval for safety" — and splits a list or a pipeline into parts it matches
-  // one by one, whatever the fixed list holds. A prescribed command carrying one therefore
-  // stops an unattended run on a permission question no matter how the list is written, and
-  // for the pull request that is the one condition deciding whether the phase can complete.
-  // A redirection is not in this class: the harness matches the rule against the command with
-  // its redirections stripped, which is why the Spec playbook's heredoc is fine.
+test("no command either playbook names carries a shell operator", () => {
+  // Two different reasons, and they are not the same strength.
+  //
+  // A command substitution or a subshell is asked about **outright** — the harness answers
+  // "this command uses shell operators that require approval for safety" whatever the fixed
+  // list holds. That is the one that would have stopped an unattended Code run on the single
+  // condition deciding whether the phase can complete.
+  //
+  // A list or a pipeline is *not* always asked about: the harness splits it into its parts and
+  // allows it when every part is allowed on its own. It is barred here anyway, as a rule about
+  // what a playbook may set out rather than a claim about the harness — a joined command is
+  // only ever as allowed as its least-allowed part, and every command these playbooks name is
+  // a single command, so nothing is lost by writing them one at a time.
+  //
+  // A redirection is in neither class: the harness matches its rule against the command with
+  // the redirections stripped, which is why the Spec playbook's heredoc is fine and why `<<`
+  // is deliberately absent below.
   for (const phase of PLAYBOOK_PHASES) {
-    for (const line of prescribed(loadPlaybooks()[phase])) {
-      expect(line).not.toMatch(/\$\(|`|&&|\|\||\||;/);
+    for (const command of commandsNamed(loadPlaybooks()[phase])) {
+      expect(command).not.toMatch(/\$\(|`|&&|\|\||\||;/);
     }
   }
 });

@@ -108,12 +108,19 @@ The phase ends in an artefact the runner verifies, not in a session that went we
 session ends, the runner checks three things, and hands the card to the owner only if all
 three hold:
 
-1. commits on this card's branch past the base — `refs/heads/<base>..refs/heads/<branch>`;
+1. commits on this card's branch past the base — `refs/heads/<base>..refs/heads/<branch>` —
+   **and** the branch having moved during this run, so the previous run's commits are not this
+   run's artefact;
 2. a clean worktree: nothing uncommitted and nothing untracked left behind;
 3. the pull request recorded on the card **by this run**.
 
 Any of them unmet is a failed run: every unmet condition is named on the card, the worktree is
 kept as it is, and the card stays in this phase.
+
+The first condition is why a revision run that finds nothing left to do cannot simply record
+the pull request and stop. If the owner sent the card back and you conclude no change is
+needed, say so and raise it — `skelcrew attention <id> "<why nothing should change>"` — rather
+than ending a run that committed nothing. The owner moves the card; you never do.
 
 **Record the pull request on every run**, not only the run that opens it. What the third
 condition asks is not that the URL be new — a card sent back from PR for revision pushes to
