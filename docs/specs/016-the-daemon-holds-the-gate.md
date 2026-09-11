@@ -133,9 +133,19 @@ spec only the runner can still perform one. `runAttention.raise`'s refusal when 
 holds the claim is unchanged: the runner holds it.
 
 The self-action tests in `contracts.test.ts` (criteria 12 of 014) currently drive the agent's
-move, release and archive as the runner member. After this spec those calls are refused for the
-crew member, so the tests keep their runner-as-actor shape — that is what they now test: the
-runner itself misbehaving — and gain the crew-refusal cases below beside them.
+move, release and archive as the runner member. After this spec, two of the three are refused
+for the **runner too**: the new rules key on the actor's *kind*, and `runner` is an agent
+member, so the runner itself can no longer move its card out of Code or archive it. That is
+correct and intended — exempting `runner` by name would be an identity special case, the
+opposite of deciding from state the daemon holds — and it means the self-move and self-archive
+endings in `classifyEnding` become unreachable through the core. They stay as defence in depth.
+The two tests become assertions that the core refuses even the runner's own move and archive,
+with the run still ending on its contract; the self-release test keeps its shape, since a
+member may still release its own claim. Beside them go the crew-refusal cases below.
+
+(This paragraph was corrected during implementation: the spec as approved said the tests
+"keep their runner-as-actor shape", which assumed the runner could still perform the actions.
+It cannot, and the correction is the stronger reading of the spec's own principle.)
 
 ### Records
 
@@ -145,13 +155,26 @@ verbs are reachable and refused, and that the refusal is the daemon's. 013's cri
 ("no artefact claims a boundary a subprocess does not respect") is the standard: after this
 spec the claim is that the daemon refuses, and that claim must be true.
 
-### The existing test this spec changes
+### The existing tests this spec changes
 
 `core.test.ts:282` — "an agent may move a card out of code, and the owner can send it back" —
 asserts the behaviour this spec removes. It becomes its negation: the agent's move is refused
-with `forbidden` and `move_rejected` is logged, and the owner's move out of Code succeeds. No
-other existing assertion is expected to change; if one does, the spec is wrong somewhere and
-the implementer should stop and say where.
+with `forbidden` and `move_rejected` is logged, and the owner's move out of Code succeeds.
+
+It is not the only one, and the spec as approved was wrong to say so. Two rules that refuse
+every agent — leaving Code, and archiving — necessarily change every existing test in which an
+agent did either as a *fixture step* rather than as the subject: a test that had an agent move
+a card to PR to set up a later assertion, or archive a card to test what archiving resolves.
+Those tests keep their subject and change only the actor (to the owner) or the expected outcome
+(to the refusal). The implementer enumerates every one in the run record, with what changed in
+each, and the reviewer checks each against this rule: the subject is kept, and nothing is
+asserted more weakly than before. A change that does not fit that description is a finding.
+
+Also changed by consequence, and in scope: `phases.test.ts`'s exit map; `shim.test.ts` and
+`protocol.test.ts` where they assert the member the agent speaks as; and `run.ts`'s filter that
+keeps the agent from being fed its own comments back as user messages, which must learn the
+crew member or the identity split introduces a self-echo loop. That last is a change the spec
+did not name; it preserves an invariant `run.ts` already documents.
 
 ### Red-team
 
@@ -205,14 +228,19 @@ says it is) after the runner releases; `crew` is not scoped to its card. Each is
    criterion 4 describes.
 9. The owner may move a card out of Code to any phase; a member of kind agent may not move a
    card out of Code to any phase.
-10. The existing 014 self-action endings (criterion 12 there) still hold when the actor is the
-    runner member itself.
+10. Of 014's self-action endings (criterion 12 there), self-release still holds when the actor
+    is the runner member itself; the runner's own move out of Code and its own archive are
+    refused by the core like any agent's, the run still ends on its contract, and
+    `classifyEnding`'s self-move and self-archive branches remain in place as defence in depth.
 11. `allowlist.ts`'s *What a subprocess reaches* record and `playbooks/code.md`'s subprocess
     paragraph say the five verbs are reachable and refused by the daemon, and neither says the
     subprocess obtains them. The run-start comment does not claim the verbs are withheld by
     the list.
-12. Existing 012, 013 and 014 coverage passes unchanged, except `core.test.ts`'s "an agent may
-    move a card out of code" case, which asserts its negation.
+12. Existing 012, 013 and 014 coverage passes unchanged except where an agent left Code or
+    archived a card, as a subject or as a fixture step: each such test keeps its subject and
+    changes only the actor or the expected refusal, every one is enumerated in the run record,
+    and none asserts anything more weakly than before. `core.test.ts`'s "an agent may move a
+    card out of code" case asserts its negation.
 
 ## Tests
 
