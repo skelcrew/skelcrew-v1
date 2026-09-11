@@ -65,6 +65,19 @@ argument, placeholders filled — `instructedCommands()`, defined beside the har
 the fenced `bun run check` the scan contributes and the control. Every exclusion is pinned by a
 test so the narrowing cannot widen silently.
 
+**And every entry of the fixed list itself, with a representative argument.** The playbook's
+"pre-allowed, so they run unprompted" paragraph is excluded from `instructedCommands()` on the
+argument that checking it against a model derived from the same list proves nothing. That
+argument is true of `playbooks.test.ts` and **false of this check**, which asks the binary — and
+the entries a Code run's artefact contract depends on (`git add`, `git commit`, `gh pr create`,
+`gh pr diff`, `gh pr comment`, `gh repo view`) are instructed only in prose, so `instructedCommands()`
+never yields them. The check therefore also runs each `FIXED_ALLOWLIST` `Bash(...)` entry once,
+with a representative argument for a wildcard entry (`git add -A`, `git commit -m "a message"`,
+`gh pr create --title "a title" --body "a body"`) and verbatim for an exact one, so that a green
+run means what it is for: no command the runner pre-allows would ask. The representative
+arguments are one list beside the control, and a fixed-list entry with no representative fails
+the check rather than being skipped.
+
 **The check can fail.** A control command that the harness must ask about — `git push origin
 HEAD:main` — is included and must appear in `permission_denials`. A check that cannot fail is
 decoration; this one proves its own teeth on every run.
@@ -161,9 +174,11 @@ and must not happen.
    `bun test`, and no test under `packages/` starts a `claude` process.
 2. `bun run check:harness` exists as a root script, runs the check file explicitly, and passes
    against the pinned SDK with the two playbooks as they are.
-3. For every command `instructedCommands()` yields from both playbooks — plus the fenced
-   `bun run check` and the control — the harness executes it: a tool result, not a denial,
-   under the run's own options with the named overrides. A command the harness denies fails
+3. For every command `instructedCommands()` yields from both playbooks — plus one
+   representative command per `FIXED_ALLOWLIST` `Bash(...)` entry, the fenced `bun run check`,
+   and the control — the harness executes it: a tool result that is not an error, not a
+   denial, under the run's own options with the named overrides. A fixed-list entry with no
+   representative fails the check. A command the harness denies fails
    the check, naming the command and the reason the harness reported (or that none was). What
    `instructedCommands()` excludes relative to `commandsNamed()` — forbidden verbs, bare
    nouns, heredoc bodies, unfilled placeholders — is pinned by a test.
