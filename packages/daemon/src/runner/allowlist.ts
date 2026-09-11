@@ -146,8 +146,13 @@
  * - **`-R/--repo` on the gh entries** targets another repository: `gh pr create -R other/repo`
  *   opens a pull request outside the card's repo. Neither a write nor an exec, and the same
  *   class as the carried limitation that a run can write to another card.
- * - **`--as <member>` on the skelcrew entries** speaks as another member. `resolve` is off the
- *   list, so a run still cannot answer its own question; the same carried limitation.
+ * - **`--as <member>` on the skelcrew entries** speaks as another member. What stops a run
+ *   answering its own question is not this list: the run's permission question is addressed to
+ *   the owner, and the core refuses any other member resolving it (016). `resolve` is off the
+ *   list so the agent does not try in the ordinary course, visibly. Naming *another agent
+ *   member* here crosses nothing for the same reason; naming the owner's own identity is the
+ *   limit recorded under *What a subprocess reaches*, and is out of this list's reach either
+ *   way.
  * - **The scanned entry starts a subprocess, and nothing above governs one.** See below; it is
  *   the largest of these by a wide margin, and the only one that makes the others moot.
  * - Nothing here sandboxes the agent: the list governs what runs **unprompted**, and everything
@@ -184,6 +189,12 @@
  *   caller asserting another identity — `skelcrew --as runner`, or no `--as` at all, which is
  *   the owner — and single-player with no auth cannot tell that lie from the truth. That is a
  *   gate, not a boundary, and it is 016's own limit rather than something this list could fix.
+ *   Two more of its limits belong here beside it, because a subprocess is how each is reached:
+ *   a process the run spawned that **outlives the run** is still `crew`, so once the runner
+ *   releases the card it can claim the now-free card — which the next real run then meets as a
+ *   `claimConflict`, visibly, rather than silently; and `crew` is **not scoped to its card**, so
+ *   it can comment on, set the body of, or claim *another* card the runner does not hold. Both
+ *   are carried from 014's "the runner's identity is unscoped", now named against `crew`.
  * - **Criteria 10b and 10c are true of tool calls and false of subprocesses**, which is how 013
  *   words them. `allowsTool` and `runsUnprompted` answer "does this tool call ask", and no
  *   assertion built on them says anything about what a process does once one has started. They

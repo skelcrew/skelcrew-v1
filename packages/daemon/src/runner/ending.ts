@@ -183,6 +183,13 @@ export function classifyEnding({
   // What the agent itself did comes first, because the card cannot report it: the state the
   // card is in is the agent's own doing, and a phase whose card the agent moved has skipped
   // the artefact check the phase exists for.
+  //
+  // **The next two branches are unreachable since 016**, which made every phase the owner's to
+  // leave and archiving the owner's: the core refuses `crew` and the runner alike, so nothing
+  // can record a `card_archived` or a `card_moved` by either. They are kept as defence in
+  // depth. Their notes say "the agent", which was true when the agent and the runner were one
+  // member; if either rule is ever relaxed and a branch revives, the note has to say which of
+  // the two acted, because only the runner could have reached it.
   if (since.some((event) => event.type === "card_archived" && byRun(event))) {
     return { kind: "self", note: "run failed: the agent archived its own card" };
   }

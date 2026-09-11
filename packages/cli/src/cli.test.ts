@@ -372,21 +372,20 @@ test("the five gate verbs as crew are refused by the daemon on a card the runner
   core.requestAttention(card.id, { to: member("simon").id, note: "allow Bash?" }, runner.id);
   const before = core.getCard(card.id);
 
-  const refusals = [
-    ["mv", "1", "pr"],
-    ["mv", "1", "done"],
-    ["mv", "1", "idea"],
-    ["release", "1"],
-    ["archive", "1"],
-    ["claim", "1"],
-    ["resolve", "1", "-m", "allow"],
+  // The kind of refusal is part of the criteria: `forbidden` for the four the core decides on
+  // the gate, `conflict` for the claim, which is the holder's lease saying so.
+  const refusals: Array<[string, string[]]> = [
+    ["forbidden", ["mv", "1", "pr"]],
+    ["forbidden", ["mv", "1", "done"]],
+    ["forbidden", ["mv", "1", "idea"]],
+    ["forbidden", ["release", "1"]],
+    ["forbidden", ["archive", "1"]],
+    ["conflict", ["claim", "1"]],
+    ["forbidden", ["resolve", "1", "-m", "allow"]],
   ];
-  for (const args of refusals) {
+  for (const [kind, args] of refusals) {
     const stderr = await failed(1, [...args, "--as", "crew"]);
-    expect([args, stderr.includes("forbidden") || stderr.includes("conflict")]).toEqual([
-      args,
-      true,
-    ]);
+    expect([args, stderr.includes(kind)]).toEqual([args, true]);
   }
 
   // The card is where it was: same phase, the runner's claim, the owner's request still open.

@@ -1655,8 +1655,17 @@ test("a run whose card is moved on mid-run writes nothing more to it than 'run a
 
 // --- an ending never replaces a question the agent raised ---
 
-/** What `skelcrew attention <id> "<the conflict>"` does from the worktree: the shim's CLI
- * speaks as the `runner` member, so the raiser is indistinguishable from the run itself. */
+/**
+ * What `skelcrew attention <id> "<the conflict>"` does from the worktree — raised **as the
+ * runner**, deliberately, though since 016 a real agent raises as `crew`.
+ *
+ * This fixture is the one place left where the agent's question and the run's own permission
+ * question share a `raisedBy`, so it is the only thing that would fail if 013's `RunQuestion`
+ * construction were ever replaced by a `raisedBy` comparison — which the cases below must not
+ * be able to pass by. The spec's Out of scope keeps that construction precisely because a
+ * second signal agreeing with it is not a reason to start deciding by it; `contracts.test.ts`'s
+ * twin raises as `crew`, so both readings are covered.
+ */
 function agentAsks(cardId: number, question: string): void {
   core.requestAttention(cardId, { to: owner.id, note: question }, runnerMember.id);
 }
