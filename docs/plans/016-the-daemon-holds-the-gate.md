@@ -101,12 +101,19 @@ and `phases.ts` restored to base runs the new `describe("the daemon holds the ga
   working…" — the end-to-end composition. Its move and archive halves would have been red on the
   base commit; its release and claim halves would not, and it was written after the rules were
   in, so it is listed here whole rather than credited with a red it was not run against.
-- `cli.test.ts` "the five gate verbs as crew are refused by the daemon on a card the runner
-  holds" — the same criteria at the surface the agent meets them. The CLI cannot be red for
-  rules already in the core; the spec asks for this path so the refusal is seen where the agent
-  sees it, not as a second proof.
 - `server/process.test.ts`'s widened `listMembers` assertion — a guard over `main.ts`'s two
-  `ensureMember` calls, written after them.
+  `ensureMember` calls, written after them. Not a claim that it could not be red: against the
+  base it fails (`["runner"]` where `["runner","crew"]` is expected); it was simply written
+  after the wiring it guards.
+
+**One case this section first mis-filed**, corrected by the orchestrator after re-verification
+refuted it: `cli.test.ts` "the five gate verbs as crew are refused by the daemon on a card the
+runner holds" was listed above as green-first on the grounds that "the CLI cannot be red for
+rules already in the core". That reasoning is false as applied — two of the five verbs, `mv`
+and `archive`, are rules 016 *adds* — and the case **fails against the base commit** on the
+`mv` refusal (`forbidden` expected, `conflict` received). It belongs with the red-first cases,
+and the implementer's own account of writing it green after the rules were in stands as the
+chronology; the record had turned a chronology into a claim about redability, which it was not.
 
 **Rewrites of tests the change made fail**, which are neither: `core.test.ts:287`,
 `cli.test.ts:333`, `contracts.test.ts:713` and `:817`, and the nine plumbing cases listed under
@@ -114,10 +121,11 @@ and `phases.ts` restored to base runs the new `describe("the daemon holds the ga
 failures are in the list above where the criterion is 016's — and their new assertions were
 written against the implemented rule.
 
-What this means for `CLAUDE.md`'s red-then-green: it applied to the two rules and the identity,
-and it could not apply to the five gates that are 016's subject but not 016's change. That is
-the spec's own thesis — "the mechanism is identity, not new rules" — and the record says so
-rather than claiming a red for all of it.
+What this means for `CLAUDE.md`'s red-then-green: it applied to the two rules 016 adds —
+leaving Code, and archiving, which are two of the five gates — and to the identity split, and
+it could not apply to the other three gates (release, claim, resolve), which are 016's subject
+but not 016's change. That is the spec's own thesis — "the mechanism is identity, not new
+rules" — and the record says so rather than claiming a red for all of it.
 
 ## Where the spec is wrong
 
@@ -221,8 +229,8 @@ Two spec defects with nothing to fix in the code: the run-start comment criterio
 never named the five verbs, so that clause is vacuous; and the red-team's "what remains open"
 list says three limits are recorded in `allowlist.ts` where only one was.
 
-**The spec was amended four times over these rounds**, each time by the coordinator, and each
-correction is one this work forced:
+**The spec was amended in five places across three commits over these rounds**, each time by
+the coordinator, and each correction is one this work forced:
 
 1. `261af08` — the self-action paragraph and criterion 10: the runner cannot move its own card
    out of Code or archive it either, because the two rules key on the actor's *kind*.
