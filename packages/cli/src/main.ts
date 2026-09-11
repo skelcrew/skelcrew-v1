@@ -9,6 +9,7 @@ import {
   connect,
   dataPaths,
   escapeControlCharacters,
+  findControlCharacter,
   type HelloParams,
   RpcError,
   resolveDataDir,
@@ -19,7 +20,7 @@ import { archive } from "./commands/archive";
 import { attention } from "./commands/attention";
 import { body } from "./commands/body";
 import { claim } from "./commands/claim";
-import { type Args, type Command, UsageError } from "./commands/command";
+import { type Args, type Command, UsageError, withLfLineEndings } from "./commands/command";
 import { comment } from "./commands/comment";
 import { heartbeat } from "./commands/heartbeat";
 import { ls } from "./commands/ls";
@@ -76,13 +77,35 @@ function usage(name?: string): string {
 
 /**
  * Nothing the CLI writes can act on the terminal: every control character is rendered as a
- * visible escape on the way out. Here rather than in `render.ts`, because this is the one
+ * visible escape on the way out. Here rather than only in `render.ts`, because this is the one
  * place output cannot skip — a renderer added later, and an error message echoing what the
- * caller typed, both go through it. The kind is multi-line: a stored newline is already a
- * line break by the time it arrives, and a tab a renderer laid out is its own.
+ * caller typed, both go through it. The kind is multi-line, so the line breaks a renderer laid
+ * out survive; `render.ts` escapes single-line fields itself, before they reach a line, and
+ * marks every line of a multi-line one, so a stored newline can neither be acted on nor pass
+ * for a line the CLI composed.
  */
 function safe(text: string): string {
   return escapeControlCharacters(text, "multi-line");
+}
+
+/**
+ * The result as JSON, for a machine. `JSON.stringify` already writes every C0 control, `"` and
+ * `\` as escapes, so the only characters of the shared set that survive it are DEL and C1:
+ * those are rewritten as `\uNNNN` — the code point the shared predicate names, in JSON's own
+ * notation — which a parser reads back as the same character. Lossless, and no second list.
+ */
+function safeJson(result: unknown): string {
+  let rest = JSON.stringify(result);
+  let out = "";
+  for (
+    let found = findControlCharacter(rest, "single-line");
+    found !== undefined;
+    found = findControlCharacter(rest, "single-line")
+  ) {
+    out += `${rest.slice(0, found.index)}\\u${found.codePoint.slice(2)}`;
+    rest = rest.slice(found.index + 1);
+  }
+  return out + rest;
 }
 
 function fail(message: string, extra?: string): void {
@@ -185,16 +208,13 @@ async function main(argv: string[]): Promise<number> {
       {
         client,
         socketPath,
-        stdin: () => Bun.stdin.text(),
+        stdin: async () => withLfLineEndings(await Bun.stdin.text()),
         out: (line) => process.stdout.write(`${safe(line)}\n`),
         warn: (line) => process.stderr.write(`${safe(line)}\n`),
       },
       input,
     );
-    // `--json` is a machine's copy of what the daemon returned, and `JSON.stringify` already
-    // writes a control character as an escape of its own, so it goes out as it came.
-    const text =
-      parsed.values.json === true ? JSON.stringify(outcome.result) : safe(outcome.render());
+    const text = parsed.values.json === true ? safeJson(outcome.result) : safe(outcome.render());
     // Nothing to show (every bulk line failed) leaves stdout empty, not a bare newline.
     if (text.length > 0) process.stdout.write(`${text}\n`);
     return outcome.failed ? 1 : 0;

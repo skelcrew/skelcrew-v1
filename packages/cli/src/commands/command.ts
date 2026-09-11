@@ -26,7 +26,7 @@ export interface Context {
   client: Client;
   /** Where the daemon was reached, for messages about losing it. */
   socketPath: string;
-  /** All of stdin, read once. */
+  /** All of stdin, read once, with CRLF line endings made LF like a file's. */
   stdin(): Promise<string>;
   /** One line to stdout, as it happens; for a command that streams rather than returns. */
   out(line: string): void;
@@ -69,16 +69,20 @@ export function parsePhase(raw: string | undefined): Phase {
 }
 
 /**
- * A file named by a flag. An unreadable one is a usage error naming the path and the reason.
- *
- * CRLF becomes LF: a file's line endings belong to the machine that wrote it, not to the
- * author, and refusing a whole spec for them would send the owner to `dos2unix`. This is the
- * one place a control character is transformed rather than refused — a lone `\r` is still the
- * repaint character and is still refused, by the daemon.
+ * Text read from a file or from standard input, with CRLF line endings made LF: they belong
+ * to the machine that wrote the file, not to its author, and refusing a whole spec for them
+ * would send the owner to `dos2unix`. This is the one transform in the CLI — a lone `\r` is
+ * the repaint character and is still refused, by the daemon — and it never touches an
+ * argument, which is the author's own text.
  */
+export function withLfLineEndings(text: string): string {
+  return text.replaceAll("\r\n", "\n");
+}
+
+/** A file named by a flag. An unreadable one is a usage error naming the path and the reason. */
 export function readFile(path: string): string {
   try {
-    return readFileSync(path, "utf8").replaceAll("\r\n", "\n");
+    return withLfLineEndings(readFileSync(path, "utf8"));
   } catch (error) {
     // Node's message ends in `, open '<path>'`; the path is already named once.
     const reason = (error instanceof Error ? error.message : String(error)).replace(

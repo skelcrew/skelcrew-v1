@@ -18,10 +18,13 @@ const PACKAGES = fileURLToPath(new URL("../..", import.meta.url));
 const DEFINITION = "shared/src/text.ts";
 
 /**
- * How a set of control characters has to be written: escape sequences, code-point bounds, or
- * a read of a character's code. A second definition needs at least one of them.
+ * How a set of control characters gets written: escape sequences, a Unicode property class,
+ * code-point bounds, or a read of a character's code. This is a tripwire for the common
+ * spellings, not a proof — a determined second definition could be written some other way —
+ * and it is the cheapest check that keeps the obvious ones from landing unnoticed.
  */
-const SET_SYNTAX = /\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|0x[0-9a-fA-F]{2}\b|charCodeAt|codePointAt/;
+const SET_SYNTAX =
+  /\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\u\{|\\p\{C|0x[0-9a-fA-F]{2}\b|charCodeAt|codePointAt|fromCharCode/;
 
 function sources(dir: string): string[] {
   const found: string[] = [];

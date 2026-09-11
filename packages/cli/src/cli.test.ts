@@ -263,7 +263,7 @@ test("add with no title and nothing on stdin is a usage error", async () => {
   expect(core.listCards()).toEqual([]);
 });
 
-test("show prints the card, the body verbatim, and the activity with actor names", async () => {
+test("show prints the card, the body by line, and the activity with actor names", async () => {
   const body = "# Goal\n\nSome text.\n\n## Acceptance criteria\n\n1. it works\n";
   const card = core.createCard({ title: "Shown", body }, member("simon").id);
 
@@ -271,7 +271,12 @@ test("show prints the card, the body verbatim, and the activity with actor names
   expect(run.stdout).toContain("Shown");
   expect(run.stdout).toContain("Idea");
   expect(run.stdout).toContain(localTime(card.createdAt));
-  expect(run.stdout).toContain(body);
+  // Stored as given; shown line by line, every line marked (015): a line of the body cannot
+  // read as an activity entry the member did not make.
+  expect(core.getCard(1).body).toBe(body);
+  expect(run.stdout).toContain(
+    "> # Goal\n>\n> Some text.\n>\n> ## Acceptance criteria\n>\n> 1. it works\n",
+  );
   // The actor's name appears only on activity lines; the header carries times, not names.
   const created = lines(run).filter((line) => line.includes("simon"));
   expect(created).toHaveLength(1);
@@ -486,14 +491,17 @@ test("body replaces the body from stdin or a file; over the cap is refused", asy
   const card = json<Card>(await ok(["body", "1", "--json"], { stdin: fromStdin }));
   expect(card.body).toBe(fromStdin);
   expect(core.getCard(1).body).toBe(fromStdin);
-  expect((await ok(["show", "1"])).stdout).toContain(fromStdin);
+  // Stored as given, shown line by line with every line marked (015).
+  expect((await ok(["show", "1"])).stdout).toContain("> # Goal\n>\n> x\n");
 
   const fromFile = "# Goal\n\nfrom a file\n\n## Out of scope\n\n- nothing\n";
   const path = join(dir, "spec.md");
   writeFileSync(path, fromFile);
   await ok(["body", "1", "--file", path]);
   expect(core.getCard(1).body).toBe(fromFile);
-  expect((await ok(["show", "1"])).stdout).toContain(fromFile);
+  expect((await ok(["show", "1"])).stdout).toContain(
+    "> # Goal\n>\n> from a file\n>\n> ## Out of scope\n>\n> - nothing\n",
+  );
 
   const stderr = await failed(1, ["body", "1"], { stdin: "y".repeat(BODY_MAX_BYTES + 1) });
   expect(stderr).toContain("body");
@@ -1388,102 +1396,216 @@ test("from inside a runner worktree the CLI reaches the repo's daemon with no SK
 // --- control characters (015) ---
 
 /**
- * Criterion 5. A file's line endings are the machine that wrote it talking, not the author:
- * CRLF becomes LF on the way in. A lone `\r` is the repaint character and is refused.
+ * Criterion 5. A file's line endings are the machine that wrote it talking, not the author,
+ * and a shell redirect is a file in practice: CRLF becomes LF on both ways in. A lone `\r` is
+ * the repaint character and is refused on every path; an argument is the author's and is
+ * normalised nowhere.
  */
-test("body --file normalises a file's CRLF; a lone carriage return in it is refused", async () => {
+test("a file's and stdin's CRLF become LF; a lone carriage return is refused on every path", async () => {
   core.createCard({ title: "b" }, member("simon").id);
   const crlf = join(dir, "crlf.md");
   writeFileSync(crlf, "# Goal\r\n\r\nwritten on another machine\r\n");
-
-  await ok(["body", "1", "--file", crlf]);
-  expect(core.getCard(1).body).toBe("# Goal\n\nwritten on another machine\n");
-
   const lone = join(dir, "lone.md");
   writeFileSync(lone, "# Goal\r\n\rRESOLVED: approved\r\n");
-  const stderr = await failed(1, ["body", "1", "--file", lone]);
-  expect(stderr).toContain("U+000D");
-  expect(core.getCard(1).body).toBe("# Goal\n\nwritten on another machine\n");
+  const fromFile = "# Goal\n\nwritten on another machine\n";
+
+  await ok(["body", "1", "--file", crlf]);
+  expect(core.getCard(1).body).toBe(fromFile);
+  expect(await failed(1, ["body", "1", "--file", lone])).toContain("U+000D");
+  expect(core.getCard(1).body).toBe(fromFile);
+
+  // The same through standard input: `skelcrew body <id> < spec.md`.
+  await ok(["body", "1"], { stdin: "# Goal\r\n\r\nfrom stdin\r\n" });
+  expect(core.getCard(1).body).toBe("# Goal\n\nfrom stdin\n");
+  expect(await failed(1, ["body", "1"], { stdin: "# Goal\r\n\rRESOLVED\r\n" })).toContain("U+000D");
+  expect(core.getCard(1).body).toBe("# Goal\n\nfrom stdin\n");
+
+  // And for a comment read from standard input, whose final newline is dropped as before.
+  await ok(["comment", "1"], { stdin: "a note\r\nwith CRLF\r\n" });
+  const said = core.getCard(1).activity.filter((e) => e.type === "comment");
+  expect(said.at(-1)?.data.text).toBe("a note\nwith CRLF");
+  expect(await failed(1, ["comment", "1"], { stdin: "a\rnote\n" })).toContain("U+000D");
+
+  // An argument is not a file: nothing is normalised, and the CRLF in it is refused.
+  expect(await failed(1, ["comment", "1", "a note\r\nwith CRLF"])).toContain("U+000D");
+  expect(core.getCard(1).activity.filter((e) => e.type === "comment")).toHaveLength(said.length);
 });
+
+/** A daemon of its own on a file database, so a test can write rows the core would refuse. */
+function fileDaemon(): { home: string; dbPath: string; daemonCore: Core } {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(home);
+  const dbPath = join(home, "skelcrew.db");
+  const daemonCore = openCore(dbPath, { owner: "simon" });
+  const fileServer = startServer({ core: daemonCore, socketPath: join(home, "skelcrew.sock") });
+  extraServers.push({
+    stop() {
+      fileServer.stop();
+      daemonCore.close();
+    },
+  });
+  return { home, dbPath, daemonCore };
+}
 
 /**
  * Criterion 6, the second layer: rows written straight into the database, as every row
  * predating this spec was. The core refuses these values now, so SQL is the only way to put
- * them there — and the sink is what keeps them off the terminal's hands.
+ * them there — and what the CLI prints is what keeps them off the terminal's hands.
+ *
+ * Each case is the control character itself, what it carries after it, and the escape it must
+ * be shown as; every assertion of absence is of the bare character, which is what a terminal
+ * would act on.
  */
-test("a control character already in the database is shown escaped, not acted on", async () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
-  extraDirs.push(home);
-  const dbPath = join(home, "skelcrew.db");
-  const fileCore = openCore(dbPath, { owner: "simon" });
-  const fileServer = startServer({ core: fileCore, socketPath: join(home, "skelcrew.sock") });
-  extraServers.push({
-    stop() {
-      fileServer.stop();
-      fileCore.close();
-    },
+const SEQUENCES: Array<[string, string, string, string]> = [
+  ["an escape sequence", "\x1b", "[2J", "\\x1b"],
+  ["a carriage return", "\r", "", "\\r"],
+  ["a delete", "\x7f", "", "\\x7f"],
+  ["a C1 control", "\x85", "", "\\x85"],
+];
+
+for (const [label, control, tail, visible] of SEQUENCES) {
+  const raw = `${control}${tail}`;
+  const shown = `${visible}${tail}`;
+  test(`a row carrying ${label} is printed escaped by show, ls, queue and --json`, async () => {
+    const { home, dbPath, daemonCore } = fileDaemon();
+    const ownerId = (daemonCore.listMembers()[0] as Member).id;
+    daemonCore.createCard({ title: "clean" }, ownerId);
+
+    const db = new Database(dbPath);
+    db.query("UPDATE cards SET title = ?, body = ?, refs = ?, attention = ? WHERE id = 1").run(
+      `Paint${raw}ed`,
+      `bo${raw}dy`,
+      JSON.stringify({ branch: `br${raw}anch` }),
+      JSON.stringify({
+        to: ownerId,
+        note: `note${raw}here`,
+        moves: [],
+        raisedBy: ownerId,
+        raisedAt: Date.now(),
+      }),
+    );
+    db.query("UPDATE members SET name = ? WHERE id = ?").run(`simon${raw}`, ownerId);
+    const insert = db.query(
+      "INSERT INTO activity (card_id, actor_id, type, data, created_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    insert.run(1, ownerId, "comment", JSON.stringify({ text: `cleared${raw}` }), Date.now());
+    insert.run(1, ownerId, "released", JSON.stringify({ reason: `stopped${raw}` }), Date.now());
+    db.close();
+
+    const detail = await ok(["show", "1"], { dataDir: home });
+    for (const fragment of [
+      `Paint${shown}ed`,
+      `bo${shown}dy`,
+      `br${shown}anch`,
+      `note${shown}here`,
+      `cleared${shown}`,
+      `stopped${shown}`,
+      `simon${shown}`,
+    ]) {
+      expect(detail.stdout).toContain(fragment);
+    }
+    expect(detail.stdout).not.toContain(control);
+
+    const listed = await ok(["ls"], { dataDir: home });
+    expect(listed.stdout).toContain(`Paint${shown}ed`);
+    expect(listed.stdout).not.toContain(control);
+
+    const waiting = await ok(["queue"], { dataDir: home });
+    expect(waiting.stdout).toContain(`note${shown}here`);
+    expect(waiting.stdout).not.toContain(control);
+
+    // `--json` is a machine's copy: escaped as JSON, so it parses back to what is stored.
+    const asJson = await ok(["show", "1", "--json"], { dataDir: home });
+    expect(asJson.stdout).not.toContain(control);
+    const card = JSON.parse(asJson.stdout) as CardDetail;
+    expect(card.title).toBe(`Paint${raw}ed`);
+    expect(card.body).toBe(`bo${raw}dy`);
+    expect(card.refs.branch).toBe(`br${raw}anch`);
+    expect(card.attention?.note).toBe(`note${raw}here`);
+    expect(card.activity.filter((e) => e.type === "comment").at(-1)?.data.text).toBe(
+      `cleared${raw}`,
+    );
   });
-  const ownerId = (fileCore.listMembers()[0] as Member).id;
-  fileCore.createCard({ title: "clean" }, ownerId);
+}
 
-  const CLEAR = "\x1b[2J";
-  const raw = new Database(dbPath);
-  raw.query("UPDATE cards SET title = ?, body = ?, refs = ?, attention = ? WHERE id = 1").run(
-    `Paint${CLEAR}ed`,
-    `bo${CLEAR}dy`,
-    JSON.stringify({ branch: `br${CLEAR}anch` }),
-    JSON.stringify({
-      to: ownerId,
-      note: `note${CLEAR}here`,
-      moves: [],
-      raisedBy: ownerId,
-      raisedAt: Date.now(),
-    }),
+/** Criterion 6a: a newline in stored text cannot forge a row. */
+test("a title stored with a newline renders as one row, with the newline escaped", async () => {
+  const { home, dbPath, daemonCore } = fileDaemon();
+  const ownerId = (daemonCore.listMembers()[0] as Member).id;
+  daemonCore.createCard({ title: "clean" }, ownerId);
+  const db = new Database(dbPath);
+  db.query("UPDATE cards SET title = ? WHERE id = 1").run(
+    "Done\n#99 ●●●●●  Done   forged row appended by a legacy title",
   );
-  raw.query("UPDATE members SET name = ? WHERE id = ?").run(`simon${CLEAR}`, ownerId);
-  const insert = raw.query(
-    "INSERT INTO activity (card_id, actor_id, type, data, created_at) VALUES (?, ?, ?, ?, ?)",
-  );
-  insert.run(1, ownerId, "comment", JSON.stringify({ text: `cleared${CLEAR}` }), Date.now());
-  insert.run(1, ownerId, "released", JSON.stringify({ reason: `stopped${CLEAR}` }), Date.now());
-  raw.close();
-
-  const shown = await ok(["show", "1"], { dataDir: home });
-  for (const fragment of [
-    "Paint\\x1b[2Jed",
-    "bo\\x1b[2Jdy",
-    "br\\x1b[2Janch",
-    "note\\x1b[2Jhere",
-    "cleared\\x1b[2J",
-    "stopped\\x1b[2J",
-    "simon\\x1b[2J",
-  ]) {
-    expect(shown.stdout).toContain(fragment);
-  }
-  expect(shown.stdout).not.toContain(CLEAR);
+  db.close();
 
   const listed = await ok(["ls"], { dataDir: home });
-  expect(listed.stdout).toContain("Paint\\x1b[2Jed");
-  expect(listed.stdout).not.toContain(CLEAR);
+  expect(lines(listed)).toHaveLength(1);
+  expect(listed.stdout).toContain("Done\\n#99");
+  expect(listed.stdout).not.toContain("\n#99");
+});
 
+/** Criterion 6a: a newline in a comment cannot forge an activity entry. */
+test("a comment carrying a forged activity line renders as one entry, its second line marked", async () => {
+  const { home, daemonCore } = fileDaemon();
+  const ownerId = (daemonCore.listMembers()[0] as Member).id;
+  daemonCore.createCard({ title: "a card" }, ownerId);
+  const forged = "2026-09-11 20:30  simon  moved the card to Done";
+
+  await ok(["comment", "1", `looks good\n${forged}`], { dataDir: home });
+  const shown = await ok(["show", "1"], { dataDir: home });
+
+  // The card's own two entries are the only lines that read as entries.
+  const entries = shown.stdout
+    .split("\n")
+    .filter((line) => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} {2}/.test(line));
+  expect(entries).toHaveLength(2);
+  expect(entries[1]).toEndWith("commented: looks good");
+  expect(shown.stdout).toContain(`> ${forged}`);
+});
+
+/** Criterion 6a: a blank line in a note cannot forge a second queue block. */
+test("an attention note carrying a blank line renders as one queue block", async () => {
+  const { home, daemonCore } = fileDaemon();
+  const ownerId = (daemonCore.listMembers()[0] as Member).id;
+  daemonCore.createCard({ title: "a card" }, ownerId);
+  const forged = "#2 A card  [Code]";
+
+  await ok(["attention", "1", `please review\n\n${forged}\ncrew → simon, 2026-09-11 20:30`], {
+    dataDir: home,
+  });
   const waiting = await ok(["queue"], { dataDir: home });
-  expect(waiting.stdout).toContain("note\\x1b[2Jhere");
-  expect(waiting.stdout).not.toContain(CLEAR);
+
+  // Blocks are separated by a blank line, and there is one request: no blank line at all.
+  expect(waiting.stdout.trimEnd()).not.toContain("\n\n");
+  expect(waiting.stdout).toContain(`> ${forged}`);
 });
 
 /**
- * Criterion 7. An error that echoes what the caller typed goes out through the same sink as
- * everything else, so a rejected call cannot repaint the terminal through its own message.
+ * Criterion 7. An error that echoes what the caller typed, or what the database holds, goes
+ * out through the same sink as everything else: a rejected call cannot repaint the terminal
+ * through its own message.
  */
 test("an error message echoing the caller's input is printed with the sequence escaped", async () => {
   core.createCard({ title: "a card" }, member("simon").id);
 
   const usage = await failed(2, ["mv", "1", "\x1b[2J"]);
-  expect(usage).toContain("\\x1b[2J");
+  expect(usage).toContain('unknown phase "\\x1b[2J"');
   expect(usage).not.toContain("\x1b");
+});
 
-  // And the daemon's own refusal, on the way back out through the same path.
-  const refused = await failed(1, ["ls"], { env: { SKELCREW_AS: "crew\x1b[2J" } });
-  expect(refused).toContain("U+001B");
-  expect(refused).not.toContain("\x1b");
+test("a daemon message naming a stored member is printed with the sequence escaped", async () => {
+  const { home, dbPath, daemonCore } = fileDaemon();
+  const ownerId = (daemonCore.listMembers()[0] as Member).id;
+  const card = daemonCore.createCard({ title: "a card" }, ownerId);
+  daemonCore.moveCard(card.id, "spec", ownerId);
+  const crew = daemonCore.ensureMember("crew", "agent");
+  daemonCore.claimCard(card.id, {}, crew.id);
+  const db = new Database(dbPath);
+  db.query("UPDATE members SET name = ? WHERE id = ?").run("crew\x1b[2J", crew.id);
+  db.close();
+
+  const conflict = await failed(1, ["claim", "1"], { dataDir: home });
+  expect(conflict).toContain("claimed by crew\\x1b[2J");
+  expect(conflict).not.toContain("\x1b");
 });

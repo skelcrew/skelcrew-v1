@@ -11,11 +11,47 @@ import {
   type CardDetail,
   type CardRefs,
   type Claim,
+  escapeControlCharacters,
   type Member,
   type OpenAttention,
   PHASES,
   type Phase,
 } from "@skelcrew/shared";
+
+/**
+ * A stored single-line field — a title, a member name, a ref, a release reason — as one line:
+ * every control character in the shared set is escaped, `\n` and `\t` included, so a row
+ * written before 015 with a newline in its title is one row and not two. The sink escapes
+ * whatever reaches it as well; this is what tells it which fields may keep their line breaks.
+ */
+function oneLine(text: string): string {
+  return escapeControlCharacters(text, "single-line");
+}
+
+/** The marker a line of a stored multi-line field carries, as 014's permission note quotes its payload. */
+function markLine(line: string): string {
+  return line.length === 0 ? ">" : `> ${line}`;
+}
+
+/**
+ * A stored multi-line field that follows a label on the same line — a comment after
+ * `commented: `, a note after `note:    `. The first line stays where the label put it and
+ * every line after it is marked, so no line of it can read as a card row, an activity entry
+ * or a queue block of its own.
+ */
+function continued(text: string, indent = ""): string {
+  const [head = "", ...rest] = text.split("\n");
+  return [head, ...rest.map((line) => indent + markLine(line))].join("\n");
+}
+
+/**
+ * A stored multi-line field that stands on its own lines — a card's body, a note in the queue.
+ * Every line is marked, the first included: it starts a line of its own, so it could otherwise
+ * read as one the CLI composed.
+ */
+function marked(text: string): string {
+  return text.split("\n").map(markLine).join("\n");
+}
 
 export function formatId(id: number): string {
   return `#${id}`;
@@ -39,7 +75,8 @@ export function phaseTrack(phase: Phase): string {
 }
 
 function memberName(id: number, members: Member[]): string {
-  return members.find((m) => m.id === id)?.name ?? `member ${id}`;
+  const found = members.find((m) => m.id === id);
+  return found === undefined ? `member ${id}` : oneLine(found.name);
 }
 
 const PHASE_NAME_WIDTH = Math.max(...PHASES.map((p) => p.name.length));
@@ -61,7 +98,7 @@ export function row(card: Card, idWidth: number, me: number, now = Date.now()): 
     formatId(card.id).padStart(idWidth),
     phaseTrack(card.phase),
     phaseName(card.phase).padEnd(PHASE_NAME_WIDTH),
-    card.title,
+    oneLine(card.title),
   ];
   if (card.archivedAt !== null) cells.push("(archived)");
   return cells.join("  ");
@@ -75,21 +112,21 @@ export function rows(cards: Card[], me: number): string {
 
 function refLines(refs: CardRefs): string[] {
   const out: string[] = [];
-  if (refs.branch !== undefined) out.push(`branch:  ${refs.branch}`);
-  if (refs.specPath !== undefined) out.push(`spec:    ${refs.specPath}`);
+  if (refs.branch !== undefined) out.push(`branch:  ${oneLine(refs.branch)}`);
+  if (refs.specPath !== undefined) out.push(`spec:    ${oneLine(refs.specPath)}`);
   if (refs.commits !== undefined && refs.commits.length > 0) {
-    out.push(`commits: ${refs.commits.join(", ")}`);
+    out.push(`commits: ${oneLine(refs.commits.join(", "))}`);
   }
-  if (refs.prUrl !== undefined) out.push(`pr:      ${refs.prUrl}`);
+  if (refs.prUrl !== undefined) out.push(`pr:      ${oneLine(refs.prUrl)}`);
   return out;
 }
 
 export function describeRefs(refs: CardRefs): string {
   const parts: string[] = [];
-  if (refs.branch !== undefined) parts.push(`branch=${refs.branch}`);
-  if (refs.specPath !== undefined) parts.push(`spec=${refs.specPath}`);
-  if (refs.commits !== undefined) parts.push(`commits=${refs.commits.join(",")}`);
-  if (refs.prUrl !== undefined) parts.push(`pr=${refs.prUrl}`);
+  if (refs.branch !== undefined) parts.push(`branch=${oneLine(refs.branch)}`);
+  if (refs.specPath !== undefined) parts.push(`spec=${oneLine(refs.specPath)}`);
+  if (refs.commits !== undefined) parts.push(`commits=${oneLine(refs.commits.join(","))}`);
+  if (refs.prUrl !== undefined) parts.push(`pr=${oneLine(refs.prUrl)}`);
   return parts.join(" ");
 }
 
@@ -128,7 +165,7 @@ function attentionLines(attention: Attention, members: Member[]): string[] {
   const raised = `raised by ${memberName(attention.raisedBy, members)} at ${formatTime(attention.raisedAt)}`;
   const out = [
     `waiting: ${memberName(attention.to, members)} (${raised})`,
-    `note:    ${attention.note.split("\n").join("\n         ")}`,
+    `note:    ${continued(attention.note, "         ")}`,
   ];
   if (attention.moves.length > 0) out.push(`moves:   ${attention.moves.join(", ")}`);
   return out;
@@ -155,17 +192,17 @@ function describeResolution(resolution: AttentionResolution): string {
 function summary(event: Activity, members: Member[]): string {
   switch (event.type) {
     case "member_joined":
-      return `joined as ${event.data.kind} "${event.data.name}"`;
+      return `joined as ${event.data.kind} "${oneLine(event.data.name)}"`;
     case "card_created":
-      return `created "${event.data.title}"`;
+      return `created "${oneLine(event.data.title)}"`;
     case "card_moved":
       return `moved ${phaseName(event.data.from)} → ${phaseName(event.data.to)}`;
     case "move_rejected":
-      return `move ${phaseName(event.data.from)} → ${phaseName(event.data.to)} rejected: ${event.data.reason}`;
+      return `move ${phaseName(event.data.from)} → ${phaseName(event.data.to)} rejected: ${oneLine(event.data.reason)}`;
     case "body_set":
       return `set body (${event.data.bytes} bytes)`;
     case "comment":
-      return `commented: ${event.data.text}`;
+      return `commented: ${continued(event.data.text)}`;
     case "refs_set": {
       // What this call set. An event from before 011 has no record of that and says so by
       // its absence; it renders the merged refs, as it always did.
@@ -177,14 +214,14 @@ function summary(event: Activity, members: Member[]): string {
       return "archived";
     case "attention_requested": {
       const moves = event.data.moves.length > 0 ? ` (moves: ${event.data.moves.join(", ")})` : "";
-      return `asked ${memberName(event.data.to, members)} for attention: ${event.data.note}${moves}`;
+      return `asked ${memberName(event.data.to, members)} for attention: ${continued(event.data.note)}${moves}`;
     }
     case "attention_resolved":
       return `resolved attention: ${describeResolution(event.data)}`;
     case "claimed":
       return `claimed for ${event.data.ttlSeconds}s, until ${formatTime(event.data.expiresAt)}`;
     case "released":
-      return `released the claim${event.data.reason === null ? "" : `: ${event.data.reason}`}`;
+      return `released the claim${event.data.reason === null ? "" : `: ${oneLine(event.data.reason)}`}`;
     case "run_interrupted":
       return `run interrupted: the claim lapsed at ${formatTime(event.data.expiresAt)}`;
   }
@@ -194,10 +231,10 @@ export function activityLine(event: Activity, members: Member[]): string {
   return `${formatTime(event.createdAt)}  ${memberName(event.actorId, members)}  ${summary(event, members)}`;
 }
 
-/** Header, blank line, the body verbatim, blank line, the activity oldest first. */
+/** Header, blank line, the body by line, blank line, the activity oldest first. */
 export function cardView(card: CardDetail, members: Member[], now = Date.now()): string {
   const header = [
-    `${formatId(card.id)} ${card.title}`,
+    `${formatId(card.id)} ${oneLine(card.title)}`,
     `phase:   ${phaseName(card.phase)}${card.archivedAt === null ? "" : " (archived)"}`,
     ...(card.claim === null ? [] : [claimLine(card.claim, members, now)]),
     ...(card.attention === null ? [] : attentionLines(card.attention, members)),
@@ -206,23 +243,28 @@ export function cardView(card: CardDetail, members: Member[], now = Date.now()):
     `updated: ${formatTime(card.updatedAt)}`,
   ];
   const activity = card.activity.map((event) => activityLine(event, members));
-  const body = card.body.endsWith("\n") || card.body.length === 0 ? card.body : `${card.body}\n`;
+  // Marked line by line: the body is the member's own text, and an unmarked line of it reading
+  // `2026-09-11 20:30  simon  moved the card to Done` is an activity entry nobody made.
+  const text = card.body.endsWith("\n") ? card.body.slice(0, -1) : card.body;
+  const body = card.body.length === 0 ? "" : `${marked(text)}\n`;
   return `${header.join("\n")}\n\n${body}\n${activity.join("\n")}`;
 }
 
 /**
  * One block per open request, oldest first: the card and its phase, who asked whom and
- * when, the note verbatim, then the commands that would resolve it.
+ * when, the note by line, then the commands that would resolve it. Blocks are separated by a
+ * blank line, which is why every line of the note is marked: an empty line inside one would
+ * otherwise end the block and what followed would read as another request.
  */
 export function queueView(requests: OpenAttention[], cards: Card[], members: Member[]): string {
   const blocks = requests.map((request) => {
     const card = cards.find((c) => c.id === request.cardId);
-    const title = card === undefined ? "" : ` ${card.title}  [${phaseName(card.phase)}]`;
+    const title = card === undefined ? "" : ` ${oneLine(card.title)}  [${phaseName(card.phase)}]`;
     const who = `${memberName(request.raisedBy, members)} → ${memberName(request.to, members)}`;
     return [
       `${formatId(request.cardId)}${title}`,
       `${who}, ${formatTime(request.raisedAt)}`,
-      request.note,
+      marked(request.note),
       ...resolutionCommands(request.cardId, request.moves).map((command) => `  ${command}`),
     ].join("\n");
   });
