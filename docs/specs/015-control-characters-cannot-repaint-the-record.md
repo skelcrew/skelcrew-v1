@@ -69,10 +69,14 @@ shown for what it is rather than acted on by the terminal.
 
 `\n` and `\t` are the exception, and only for multi-line fields, and only on one condition the
 spec as approved assumed and the renderer did not meet: **a multi-line field is laid out by
-line, with every continuation line carrying a visible marker** — indented, or prefixed the way
+line, with a visible marker on every line that starts a line of its own** — prefixed the way
 014's permission note prefixes its payload with `> ` — so that a newline inside a comment, a
 note or a body can never produce a line that reads as a card row, an activity entry or a queue
-block of its own. A comment of `looks good\n2026-09-11 20:30  simon  moved the card to Done`
+block of its own. Where a label precedes the field (`commented: `, `note: `), the first line
+sits after the label and only the continuations are marked; where the field stands alone (the
+body in `show`, a note in `queue`), every line is marked, the first included, because nothing
+else anchors it. A notification composed for `watch` is a single line by nature and is escaped
+as one: its title and note are single-line fields there, whatever they are elsewhere. A comment of `looks good\n2026-09-11 20:30  simon  moved the card to Done`
 renders as one entry whose second line is unmistakably a continuation. Where a field is
 single-line, the sink escapes `\n` and `\t` like every other refused character, so a row
 written before this spec with a newline in its title renders as one row.
@@ -82,11 +86,19 @@ written before this spec with a newline in its title renders as one row.
 C1. Those are rewritten as `\uNNNN` in the serialised text — a lossless JSON transform, since a
 parser reads them back as the same characters — using the shared predicate. No second list.
 
-**The runner escapes what it relays.** Text the agent or the harness produced — turn excerpts,
-tool inputs in a permission note, the batched tool summary — is escaped the same way before it
-is posted, so a control character in a command the agent ran becomes `\x1b` in the record and
-the record is kept. The core still refuses a raw one: a relay path this spec misses fails
-loudly with the run's warning, and never repaints.
+**The runner escapes everything it posts, at the one place it posts.** Text the agent or the
+harness produced — turn excerpts, tool inputs in a permission note, the batched tool summary,
+a driver's error message, a salvage note built from filenames — is escaped before it reaches
+the core, so a control character in any of it becomes `\x1b` in the record and the record is
+kept. The escape sits at the runner's posting sink — the comment and attention writes in
+`endRun` and the run's own comment path — not at an enumerated set of helpers, for the reason
+the spec as approved got wrong: it said a relay path the spec missed would "fail loudly with
+the run's warning". It does not. The core refuses the ending's comment *and* its attention
+request, the claim is released with nothing on the card, the card is free in a claimable
+phase, and the runner claims it again at once — an unbounded retry loop with a warning on the
+daemon's stderr and no record anywhere a member reads. A driver dying with an ANSI-coloured
+error line, which is what coding-agent CLIs emit, is enough to trigger it. So the rule is the
+same as the CLI's: one sink, nothing posted around it.
 
 ## Implementation approach
 
@@ -126,9 +138,18 @@ print are left to escape.
 
 ### Escaping, in the runner
 
-`run.ts`'s relay helpers — `excerpt`, `quoted`/`inputOf`, `summarizeTools` — apply the shared
-escape to the text they relay, at the point it is composed. `oneLine` already collapses `\n`;
-it stays as it is and runs first.
+The shared escape is applied where the runner posts: `endRun`'s comment and attention writes
+in `ending.ts`, and `run.ts`'s comment sink (`record`/`post`). Helpers that compose relayed text
+— `excerpt`, `quoted`/`inputOf`, `summarizeTools` — may escape earlier so their byte caps are
+measured on the escaped form, and `oneLine` runs after the escape, not before; but the sink is
+what makes the guarantee, and a helper that forgets is caught by it rather than by the core's
+refusal.
+
+**The Code playbook reads the body through `--json`.** `packages/daemon/playbooks/code.md` §5
+has the agent overwrite an exported spec file "from the card's body", read via `skelcrew show`
+— whose body now carries the marker on every line. It reads `skelcrew show <id> --json` and
+takes `.body`, which is lossless. In scope: a consequence of this spec's own change to the
+repository's own pipeline.
 
 ### The CLI's file inputs
 
@@ -181,6 +202,16 @@ and bodies. They are not in this spec's set; see *Out of scope*.
    note's payload, the request is raised, and the run waits on it as 013 criterion 2 describes.
    A turn excerpt and a tool summary containing a control character are posted with it
    escaped.
+8a. A driver that throws an error whose message carries `\x1b[31m` ends the run **once**: one
+    run, the ending comment on the card with the sequence escaped, an attention request raised
+    to the owner, and no second claim. The same for a salvage note built from a filename
+    carrying a control character. Against the spec as first implemented, the same driver
+    produced 186 runs in three seconds and nothing on the card; the test asserts the run count.
+8b. `skelcrew watch` with no notifier on `PATH` prints an attention notification whose note
+    carries `\n2026-09-11 20:30  simon  moved the card to Done` as one line with the newline
+    escaped, and no line of the watch output reads as an activity entry.
+8c. The Code playbook's §5 reads the body for export through `skelcrew show <id> --json`, and
+    `playbooks.test.ts` pins that sentence.
 9. Existing tests pass unchanged, including `core.test.ts`'s `specPath` newline and NUL cases.
 10. The refused set is defined once, in `@skelcrew/shared`, and the daemon, the CLI and the
     runner all use it: no second list of characters exists in any of the three.
