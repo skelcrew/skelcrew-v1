@@ -283,9 +283,22 @@ in that round:
    Carried, not fixed: the fix round named the three prose absolutes and this was not one of
    them.
 
-The round-3 review also recorded ground no earlier round had covered. **That list is not
-reproduced here** — this run record is written by the implementer, and inventing the reviewer's
-checks would be worth less than nothing. It lives in the round-3 review artefact.
+The round-3 review also checked ground no earlier round had named. The implementer declined to
+reproduce that list from memory — inventing a reviewer's checks would be worth less than
+nothing — so it is transcribed here by the orchestrator from the round-3 report, verbatim in
+substance:
+
+- `core.heartbeat` uses `liveClaim`, so it cannot revive a lapsed lease into a false `held`.
+- The runner's pump is serial, so a same-member re-claim cannot make run *N*'s
+  `classifyEnding` read run *N+1*'s claim.
+- `isReady` requires `attention === null`, so a failed contract cannot loop the card through
+  re-dispatch.
+- The `refs_set` the runner writes at run start carries `set: ["branch"]` and cannot satisfy
+  condition 3.
+- The `no playbook` exemption from `runAttention` is unreachable today — only `spec` and `code`
+  are claimable and both have playbooks — and is documented with the right caveat.
+- The 013 test change is the single collision the spec names; nothing else in 012/013 coverage
+  moved.
 
 ## Verification
 
