@@ -25,8 +25,9 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 9 | 012 Spawn an agent, show what it does | landed, PR #10 |
 | 10 | 013 The agent asks the owner | planned |
 | 11 | 014 A phase ends in a verified artefact | planned |
-| 12 | 015 Control characters can't repaint the record | planned |
-| 13 | 008 The full loop | planned, expect it to split too |
+| 12 | 016 The gate is the daemon's, not the allowlist's | planned |
+| 13 | 015 Control characters can't repaint the record | planned |
+| 14 | 008 The full loop | planned, expect it to split too |
 | | 005 | dropped |
 
 ## Background
