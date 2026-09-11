@@ -55,22 +55,50 @@ point (`U+001B`), and nothing is written. The set is the C0 controls (U+0000–U
 The `commits` ref is already a validated sha list and needs nothing.
 
 **Line endings from a file are the file's, not the author's.** `skelcrew body --file` and any
-other CLI path that reads text from a file normalises `\r\n` to `\n` before sending, so a spec
-written on a machine that writes CRLF is not refused for it. A lone `\r` is still refused: it
+other CLI path that reads text from a file **or from standard input** — `skelcrew body <id> <
+spec.md`, `skelcrew comment <id> < notes.txt` — normalises `\r\n` to `\n` before sending, so a
+spec written on a machine that writes CRLF is not refused for it. Text passed as an argument is
+not normalised: an argument is the author's, not a file's. A lone `\r` is still refused: it
 is the repaint character and nothing legitimate produces one.
 
 **The CLI never prints a control character as a control.** Every line the CLI writes — a card
 row, an activity line, a queue entry, a ref, a member name, and an error message — has any
 control character in the set rendered as a visible ASCII escape (`\x1b`, `\r`), so a row
 written before this spec, or one that arrives by any path the first layer does not cover, is
-shown for what it is rather than acted on by the terminal. `\n` and `\t` are printed as
-themselves where the field is multi-line and the renderer already lays the text out by line.
+shown for what it is rather than acted on by the terminal.
 
-**The runner escapes what it relays.** Text the agent or the harness produced — turn excerpts,
-tool inputs in a permission note, the batched tool summary — is escaped the same way before it
-is posted, so a control character in a command the agent ran becomes `\x1b` in the record and
-the record is kept. The core still refuses a raw one: a relay path this spec misses fails
-loudly with the run's warning, and never repaints.
+`\n` and `\t` are the exception, and only for multi-line fields, and only on one condition the
+spec as approved assumed and the renderer did not meet: **a multi-line field is laid out by
+line, with a visible marker on every line that starts a line of its own** — prefixed the way
+014's permission note prefixes its payload with `> ` — so that a newline inside a comment, a
+note or a body can never produce a line that reads as a card row, an activity entry or a queue
+block of its own. Where a label precedes the field (`commented: `, `note: `), the first line
+sits after the label and only the continuations are marked; where the field stands alone (the
+body in `show`, a note in `queue`), every line is marked, the first included, because nothing
+else anchors it. A notification composed for `watch` is a single line by nature and is escaped
+as one: its title and note are single-line fields there, whatever they are elsewhere. A comment of `looks good\n2026-09-11 20:30  simon  moved the card to Done`
+renders as one entry whose second line is unmistakably a continuation. Where a field is
+single-line, the sink escapes `\n` and `\t` like every other refused character, so a row
+written before this spec with a newline in its title renders as one row.
+
+`--json` output is escaped too, differently: `JSON.stringify` already writes every C0 control,
+`"` and `\` as escapes, so the only refused characters that survive serialisation are DEL and
+C1. Those are rewritten as `\uNNNN` in the serialised text — a lossless JSON transform, since a
+parser reads them back as the same characters — using the shared predicate. No second list.
+
+**The runner escapes everything it posts, at the one place it posts.** Text the agent or the
+harness produced — turn excerpts, tool inputs in a permission note, the batched tool summary,
+a driver's error message, a salvage note built from filenames — is escaped before it reaches
+the core, so a control character in any of it becomes `\x1b` in the record and the record is
+kept. The escape sits at the runner's posting sink — the comment and attention writes in
+`endRun` and the run's own comment path — not at an enumerated set of helpers, for the reason
+the spec as approved got wrong: it said a relay path the spec missed would "fail loudly with
+the run's warning". It does not. The core refuses the ending's comment *and* its attention
+request, the claim is released with nothing on the card, the card is free in a claimable
+phase, and the runner claims it again at once — an unbounded retry loop with a warning on the
+daemon's stderr and no record anywhere a member reads. A driver dying with an ANSI-coloured
+error line, which is what coding-agent CLIs emit, is enough to trigger it. So the rule is the
+same as the CLI's: one sink, nothing posted around it.
 
 ## Implementation approach
 
@@ -110,9 +138,18 @@ print are left to escape.
 
 ### Escaping, in the runner
 
-`run.ts`'s relay helpers — `excerpt`, `quoted`/`inputOf`, `summarizeTools` — apply the shared
-escape to the text they relay, at the point it is composed. `oneLine` already collapses `\n`;
-it stays as it is and runs first.
+The shared escape is applied where the runner posts: `endRun`'s comment and attention writes
+in `ending.ts`, and `run.ts`'s comment sink (`record`/`post`). Helpers that compose relayed text
+— `excerpt`, `quoted`/`inputOf`, `summarizeTools` — may escape earlier so their byte caps are
+measured on the escaped form, and `oneLine` runs after the escape, not before; but the sink is
+what makes the guarantee, and a helper that forgets is caught by it rather than by the core's
+refusal.
+
+**The Code playbook reads the body through `--json`.** `packages/daemon/playbooks/code.md` §5
+has the agent overwrite an exported spec file "from the card's body", read via `skelcrew show`
+— whose body now carries the marker on every line. It reads `skelcrew show <id> --json` and
+takes `.body`, which is lossless. In scope: a consequence of this spec's own change to the
+repository's own pipeline.
 
 ### The CLI's file inputs
 
@@ -141,18 +178,58 @@ and bodies. They are not in this spec's set; see *Out of scope*.
 4. A `prUrl` of `https://example.invalid/\r\npr/1` is refused, even though the URL parser
    accepts it.
 5. `skelcrew body <id> --file <path>` where the file has CRLF line endings stores the body with
-   LF line endings and no `\r`; the same file with one lone `\r` in a line is refused.
-6. A row already in the database with `\x1b[2J` in its comment text (written directly, bypassing
-   the core) is shown by `skelcrew show` with the sequence rendered as the literal characters
-   `\x1b[2J`, and nothing on the terminal is cleared. The same for a title, a member name, a
-   ref and a release reason.
-7. A core error message that echoes caller input — `skelcrew mv <id> "\x1b[2J"` — is printed
-   with the sequence escaped.
+   LF line endings and no `\r`; the same through standard input (`skelcrew body <id> < <path>`
+   and `skelcrew comment <id> < <path>`); the same file with one lone `\r` in a line is refused
+   on every path.
+6. A row already in the database (written directly, bypassing the core) carrying `\x1b[2J`,
+   `\r`, `\x7f` or `\x85` in its comment text is shown by `skelcrew show` with each rendered as
+   its literal escape (`\x1b[2J`, `\r`, `\x7f`, `\x85`), and nothing on the terminal is cleared
+   or overwritten. The same for a title, a member name, a ref and a release reason, across
+   `show`, `ls`, `queue` and `--json` — where the JSON output parses back to the stored
+   characters.
+6a. A title stored with a newline (written directly) renders in `skelcrew ls` as one row with the
+    newline escaped, not as two rows. A comment posted through the CLI containing
+    `\n2026-09-11 20:30  simon  moved the card to Done` renders in `skelcrew show` as one entry
+    whose second line carries the continuation marker, and no line of the output is
+    indistinguishable from an activity entry the member did not make. An attention note with a
+    blank line renders in `skelcrew queue` as one block.
+7. An error message that echoes caller input or stored text is printed with the sequence
+   escaped: the CLI's own `unknown phase "…"` for `skelcrew mv <id> "\x1b[2J"` (refused by the
+   CLI's phase parser before any request is sent), and a daemon message that names a stored
+   member (`SKELCREW_AS=$'crew\x1b[2J'`). The test asserts the escaped form is present *and*
+   the raw character absent on the same output, so that neither half is vacuous.
 8. A permission question whose tool input contains `\x1b` reaches the card with `\x1b` in the
    note's payload, the request is raised, and the run waits on it as 013 criterion 2 describes.
    A turn excerpt and a tool summary containing a control character are posted with it
    escaped.
-9. Existing tests pass unchanged, including `core.test.ts`'s `specPath` newline and NUL cases.
+8a. A driver that throws an error whose message carries `\x1b[31m` ends the run **once**: one
+    run, the ending comment on the card with the sequence escaped, an attention request raised
+    to the owner, and no second claim. The same for a salvage note built from a filename
+    carrying a control character. Against the spec as first implemented, the same driver
+    produced 186 runs in three seconds and nothing on the card; the test asserts the run count.
+8b. `skelcrew watch` with no notifier on `PATH` prints an attention notification whose note
+    carries `\n2026-09-11 20:30  simon  moved the card to Done` as one line with the newline
+    escaped, and no line of the watch output reads as an activity entry.
+8c. The Code playbook's §5 reads the body for export through `skelcrew show <id> --json`, and
+    `playbooks.test.ts` pins that sentence.
+9. Existing tests pass unchanged, including `core.test.ts`'s `specPath` newline and NUL cases —
+   with the one exception criterion 6a creates: the two `cli.test.ts` assertions that the body
+   appears verbatim in `skelcrew show` ("show prints the card, the body by line…" and "body
+   replaces the body from stdin or a file…") now assert the marked layout, and each also
+   asserts the stored value is byte-identical, which is stronger than before — three removed
+   `expect` lines across those two tests, since the second asserted both the stdin and the file
+   fixture. And the one exception criterion 8c creates: `playbooks.test.ts`'s pin on §5's
+   "overwrite that path" sentence matched it verbatim, and 8c inserts a clause into that
+   sentence, so the pin is re-written to match the **amended** sentence contiguously — both
+   halves, "overwrite that path … from the card's body" and "Do not allocate a new number", in
+   one assertion, so that relocating either half still fails it. A pin that asserts the halves
+   separately is a weakening and is not accepted. No other existing assertion changes. What
+   checks it: the diff against base removes exactly **three** `expect` lines, all in
+   `cli.test.ts` at the two named tests, each replaced by something stronger; and exactly
+   **one** further existing assertion has its text changed without its `expect` line moving —
+   the `playbooks.test.ts` pin, whose new string is the amended sentence. Four changed
+   assertions at three sites, no more. (An earlier wording of this criterion counted removed
+   lines alone and got a number that depended on how the pin was fixed; it was wrong twice.)
 10. The refused set is defined once, in `@skelcrew/shared`, and the daemon, the CLI and the
     runner all use it: no second list of characters exists in any of the three.
 

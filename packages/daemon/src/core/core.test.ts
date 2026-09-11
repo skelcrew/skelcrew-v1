@@ -1811,3 +1811,131 @@ describe("the daemon holds the gate", () => {
     ]);
   });
 });
+
+/**
+ * 015: a string the core stores carries no control character, so nothing a member writes can
+ * repaint the line it is printed on. A table over fields × characters, one assertion per cell:
+ * a field added later without the check fails a row rather than escaping notice.
+ */
+describe("control characters", () => {
+  /** Refused in every field, single-line or multi-line. */
+  const ALWAYS: Array<[string, string, string]> = [
+    ["a carriage return", "\r", "U+000D"],
+    ["an escape", "\x1b", "U+001B"],
+    ["a delete", "\x7f", "U+007F"],
+    ["a C1 next line", "\x85", "U+0085"],
+  ];
+  /** The two that lay text out: refused in a single-line field, kept in a multi-line one. */
+  const LAYOUT: Array<[string, string, string]> = [
+    ["a newline", "\n", "U+000A"],
+    ["a tab", "\t", "U+0009"],
+  ];
+
+  interface Field {
+    /** What the error must name. */
+    name: string;
+    write(char: string, cardId: number): void;
+  }
+
+  const SINGLE_LINE: Field[] = [
+    { name: "title", write: (c) => void core.createCard({ title: `a card${c}here` }, owner.id) },
+    { name: "member name", write: (c) => void core.ensureMember(`crew${c}2`, "agent") },
+    {
+      name: "branch",
+      write: (c, id) => void core.setRefs(id, { branch: `feat/x${c}y` }, owner.id),
+    },
+    {
+      name: "specPath",
+      write: (c, id) => void core.setRefs(id, { specPath: `docs/specs/015${c}x.md` }, owner.id),
+    },
+    {
+      name: "prUrl",
+      write: (c, id) =>
+        void core.setRefs(id, { prUrl: `https://example.invalid/pr${c}1` }, owner.id),
+    },
+    {
+      name: "reason",
+      write: (c, id) => void core.releaseCard(id, { reason: `stopping${c}now` }, owner.id),
+    },
+  ];
+
+  const MULTI_LINE: Field[] = [
+    {
+      name: "body",
+      write: (c) => void core.createCard({ title: "a card", body: `# Goal${c}here` }, owner.id),
+    },
+    { name: "body", write: (c, id) => void core.setBody(id, `# Goal${c}here`, owner.id) },
+    { name: "comment", write: (c, id) => void core.comment(id, `looks${c}fine`, owner.id) },
+    {
+      name: "note",
+      write: (c, id) =>
+        void core.requestAttention(id, { to: owner.id, note: `please${c}look` }, agent.id),
+    },
+  ];
+
+  /** Everything a member can see, so a refusal that wrote anything fails its cell. */
+  function snapshot() {
+    return {
+      members: core.listMembers(),
+      cards: core.listCards({ includeArchived: true }).map((c) => core.getCard(c.id)),
+      lastSeq: core.activitySince(0).at(-1)?.seq ?? 0,
+    };
+  }
+
+  for (const field of SINGLE_LINE) {
+    for (const [label, char, codePoint] of [...ALWAYS, ...LAYOUT]) {
+      test(`${field.name} refuses ${label} and changes nothing`, () => {
+        const card = core.createCard({ title: "a card" }, owner.id);
+        const before = snapshot();
+
+        expectCoreError(() => field.write(char, card.id), "invalid", field.name, codePoint);
+
+        expect(snapshot()).toEqual(before);
+      });
+    }
+  }
+
+  for (const field of MULTI_LINE) {
+    for (const [label, char, codePoint] of ALWAYS) {
+      test(`${field.name} refuses ${label} and changes nothing`, () => {
+        const card = core.createCard({ title: "a card" }, owner.id);
+        const before = snapshot();
+
+        expectCoreError(() => field.write(char, card.id), "invalid", field.name, codePoint);
+
+        expect(snapshot()).toEqual(before);
+      });
+    }
+  }
+
+  test("a multi-line field keeps newlines and tabs, stored as given", () => {
+    const text = "# Goal\n\n\tindented\nand more";
+    expect(core.createCard({ title: "a card", body: text }, owner.id).body).toBe(text);
+
+    const card = core.createCard({ title: "another" }, owner.id);
+    expect(core.setBody(card.id, text, owner.id).body).toBe(text);
+    expect((core.comment(card.id, text, owner.id) as { data: { text: string } }).data.text).toBe(
+      text,
+    );
+    expect(
+      core.requestAttention(card.id, { to: owner.id, note: text }, agent.id).attention?.note,
+    ).toBe(text);
+  });
+
+  /** The URL parser strips tab, LF and CR before parsing, so it never sees the repaint. */
+  test("a prUrl whose path carries a CRLF is refused, though the URL parser accepts it", () => {
+    const url = "https://example.invalid/\r\npr/1";
+    expect(new URL(url).protocol).toBe("https:");
+    const card = core.createCard({ title: "a card" }, owner.id);
+    const before = snapshot();
+
+    expectCoreError(
+      () => core.setRefs(card.id, { prUrl: url }, owner.id),
+      "invalid",
+      "prUrl",
+      "U+000D",
+    );
+
+    expect(snapshot()).toEqual(before);
+  });
+});

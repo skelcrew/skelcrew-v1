@@ -1777,6 +1777,96 @@ test("a run that raises no question ends by handing the card over with its own n
   expect(comments(1)[0]).toContain("run log at ");
 });
 
+// --- control characters in what the run relays (015) ---
+
+/**
+ * Criterion 8. The run relays text it did not write, and the core refuses a control character
+ * in a note or a comment — so the relay escapes what it passes on, and the record is kept
+ * rather than lost to a refusal. The question still reaches the card and the run still waits
+ * on it, as 013 criterion 2 requires.
+ */
+test("a permission question carries the tool's input with its escape sequence escaped", async () => {
+  await initRepo();
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      decision = await options.canUseTool("Bash", { command: "rm -rf build\x1b[2J" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Asks with an escape" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  const note = core.getCard(card.id).attention?.note as string;
+  expect(note).toBe(
+    `allow Bash? (skelcrew resolve ${card.id} -m allow | skelcrew resolve ${card.id} -m deny)\ninput:\n> rm -rf build\\x1b[2J`,
+  );
+
+  // And the run is still waiting on the answer, as it would be for any other input.
+  await Bun.sleep(100);
+  expect(decision).toBeUndefined();
+
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+  expect(decision).toEqual({ behavior: "allow" });
+  expect(comments(card.id)).toContain("allowed Bash: rm -rf build\\x1b[2J");
+  expect(warnings).toEqual([]);
+});
+
+/**
+ * Criterion 8a. The ending's note is built from whatever the harness threw, and a coding-agent
+ * CLI dying with an ANSI-coloured error line is the ordinary case. Posted raw, the core refuses
+ * the comment *and* the request, the claim is released with nothing on the card, and the free
+ * card in a claimable phase is claimed again at once — a retry loop, not a loud failure. The
+ * run count is the assertion that catches it.
+ */
+test("a driver error carrying an escape sequence ends the run once, with the sequence escaped", async () => {
+  await initRepo();
+  let runs = 0;
+  start({
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      yield { type: "text", text: "before" };
+      throw new Error("the harness died \x1b[31mred\x1b[0m");
+    }),
+  });
+  await runCard("Dies in colour");
+  // A retry would have claimed again long before this.
+  await Bun.sleep(200);
+
+  expect(runs).toBe(1);
+  expect(types(1).filter((type) => type === "claimed")).toHaveLength(1);
+  const said = comments(1);
+  expect(said.at(-1)).toContain("the harness died \\x1b[31mred\\x1b[0m");
+  expect(said.join("\n")).not.toContain("\x1b");
+  const card = core.getCard(1);
+  expect(card.attention?.to).toBe(owner.id);
+  expect(card.attention?.note).toContain("the harness died \\x1b[31mred\\x1b[0m");
+  expect(card.claim).toBeNull();
+  expect(warnings).toEqual([]);
+});
+
+test("a turn excerpt and a tool summary carrying an escape are posted with it escaped", async () => {
+  await initRepo();
+  start({
+    driver: fakeDriver(async function* () {
+      yield { type: "text", text: "done\x1b[2Jnow" };
+      yield { type: "tool_use", name: "Bash", input: { command: "git status\x1b[2J" } };
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Repaints its own turn");
+
+  const said = comments(1);
+  expect(said).toContain("done\\x1b[2Jnow");
+  expect(said).toContain("ran 1 tool: Bash `git status\\x1b[2J`");
+  expect(said.join("\n")).not.toContain("\x1b");
+  expect(warnings).toEqual([]);
+});
+
 // --- the time limit as the daemon reads it ---
 
 test("SKELCREW_RUN_MINUTES sets the limit; unset is an hour; anything else is refused", () => {

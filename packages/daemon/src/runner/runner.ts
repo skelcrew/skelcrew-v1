@@ -27,7 +27,7 @@ import {
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
 import { allowlistFor } from "./allowlist";
-import { endRun, runAttention, runQuestion } from "./ending";
+import { endRun, postingCore, runAttention, runQuestion } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
 import type { Playbooks } from "./playbooks";
 import {
@@ -150,7 +150,13 @@ function within(text: string): string {
 }
 
 export function startRunner(options: RunnerOptions): Runner {
-  const { core, dataDir, repoRoot, git, member, crew, agent } = options;
+  const { dataDir, repoRoot, git, member, crew, agent } = options;
+  /**
+   * Everything the runner half writes to a card goes through this one core, which escapes what
+   * it posts (`postingCore` in `./ending`): the runner's own comments here, every ending, and
+   * the run's stream of excerpts, questions and summaries. Reads and refs are untouched.
+   */
+  const core = postingCore(options.core);
   const warn = options.warn ?? ((line: string) => console.error(line));
   const now = options.now ?? Date.now;
   const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;

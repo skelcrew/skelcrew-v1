@@ -21,6 +21,7 @@ import {
   type Claim,
   COMMENT_MAX_BYTES,
   COMMITS_MAX_COUNT,
+  findControlCharacter,
   MEMBER_NAME_MAX_BYTES,
   type Member,
   type MemberKind,
@@ -30,6 +31,7 @@ import {
   type PhaseDef,
   PR_URL_MAX_BYTES,
   SPEC_PATH_MAX_BYTES,
+  type TextKind,
   TITLE_MAX_BYTES,
 } from "@skelcrew/shared";
 import { openDb, SCHEMA_VERSION } from "./db";
@@ -159,8 +161,26 @@ function byteLength(text: string): number {
   return Buffer.byteLength(text, "utf8");
 }
 
+/**
+ * A string the core stores carries no control character: one that reaches a terminal can
+ * overwrite the line it is printed on, so an entry could be made to read as something it is
+ * not. The set is `@skelcrew/shared`'s, the same one the CLI and the runner escape by; a
+ * single-line field refuses `\n` and `\t` with the rest, a multi-line one keeps those two.
+ * Checked before the field's own rules, so what the caller is told is the character.
+ */
+function requireNoControl(what: string, kind: TextKind, value: string): void {
+  const found = findControlCharacter(value, kind);
+  if (found !== undefined) {
+    throw new CoreError(
+      "invalid",
+      `${what} must not contain the control character ${found.codePoint}`,
+    );
+  }
+}
+
 /** A member name as stored: trimmed, non-empty, within the cap. Seeded owner and joiners alike. */
 function memberName(raw: string): string {
+  requireNoControl("member name", "single-line", raw);
   const trimmed = raw.trim();
   if (trimmed.length === 0) throw new CoreError("invalid", "member name must not be empty");
   if (byteLength(trimmed) > MEMBER_NAME_MAX_BYTES) {
@@ -228,12 +248,16 @@ function validateRefs(refs: unknown): CardRefs {
         if (typeof value !== "string" || value.length === 0) {
           throw new CoreError("invalid", "ref branch must be a non-empty string");
         }
+        requireNoControl("ref branch", "single-line", value);
         if (byteLength(value) > BRANCH_MAX_BYTES) {
           throw new CoreError("invalid", `ref branch exceeds ${BRANCH_MAX_BYTES} bytes`);
         }
         patch.branch = value;
         break;
       case "specPath":
+        // Before the path rule, which has a `\0`/`\n` check of its own: a control character is
+        // named as one, and `isRepoRelativePath` stays what it is — a rule about paths.
+        if (typeof value === "string") requireNoControl("ref specPath", "single-line", value);
         if (typeof value !== "string" || value.length === 0 || !isRepoRelativePath(value)) {
           throw new CoreError(
             "invalid",
@@ -258,6 +282,9 @@ function validateRefs(refs: unknown): CardRefs {
         patch.commits = value;
         break;
       case "prUrl":
+        // Before the parse: the WHATWG parser strips tab, LF and CR before parsing, so
+        // `https://x/\r\ny` is a valid URL to it and the raw string is what would be stored.
+        if (typeof value === "string") requireNoControl("ref prUrl", "single-line", value);
         if (typeof value !== "string" || !isHttpsUrl(value)) {
           throw new CoreError("invalid", "ref prUrl must be an absolute https URL");
         }
@@ -373,8 +400,14 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
     return card;
   }
 
-  /** The note or reason as stored: non-empty and within the comment cap, like a comment. */
-  function requireText(what: "comment" | "note" | "reason", text: string): void {
+  /**
+   * The note or reason as stored: non-empty and within the comment cap, like a comment, and
+   * carrying no control character. The kind is the caller's: a note and a comment are
+   * multi-line — they carry excerpts and the runner's laid-out questions — and a release
+   * reason is single-line, because the renderer shows it inline in one activity line.
+   */
+  function requireText(what: "comment" | "note" | "reason", kind: TextKind, text: string): void {
+    if (typeof text === "string") requireNoControl(what, kind, text);
     if (typeof text !== "string" || text.trim().length === 0) {
       throw new CoreError("invalid", `${what} must not be empty`);
     }
@@ -541,6 +574,8 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
     createCard({ title, body = "" }, actorId) {
       return mutate((log) => {
         getMember(actorId);
+        requireNoControl("title", "single-line", title);
+        requireNoControl("body", "multi-line", body);
         if (title.trim().length === 0) throw new CoreError("invalid", "title must not be empty");
         if (byteLength(title) > TITLE_MAX_BYTES) {
           throw new CoreError("invalid", `title exceeds ${TITLE_MAX_BYTES} bytes`);
@@ -610,6 +645,7 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
       return mutate((log) => {
         getMember(actorId);
         readMutableCard(id);
+        requireNoControl("body", "multi-line", body);
         const bytes = byteLength(body);
         if (bytes > BODY_MAX_BYTES) {
           throw new CoreError("invalid", `body exceeds ${BODY_MAX_BYTES} bytes`);
@@ -624,7 +660,7 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
       return mutate((log) => {
         getMember(actorId);
         readCard(id);
-        requireText("comment", text);
+        requireText("comment", "multi-line", text);
         return log(id, actorId, { type: "comment", data: { text } });
       });
     },
@@ -682,7 +718,7 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
         getMember(actorId);
         readMutableCard(id);
         const to = getMember(request.to).id;
-        requireText("note", request.note);
+        requireText("note", "multi-line", request.note);
         const moves = validateMoves(request.moves);
         const at = now();
         const attention: Attention = {
@@ -715,7 +751,7 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
           );
         }
         if (text !== undefined) {
-          requireText("comment", text);
+          requireText("comment", "multi-line", text);
           log(id, actorId, { type: "comment", data: { text } });
         }
         updateAttention.run(null, now(), id);
@@ -780,7 +816,7 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
         const card = readCard(id);
         // A bad reason is a bad call whatever the card's state.
         const reason = options.reason ?? null;
-        if (reason !== null) requireText("reason", reason);
+        if (reason !== null) requireText("reason", "single-line", reason);
         if (card.claim === null) return card;
         const at = now();
         // A lapsed claim counts as absent: anyone may clear it, and what is recorded is the

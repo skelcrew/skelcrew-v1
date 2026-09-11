@@ -168,10 +168,12 @@ Write a spec file **only** where the repository already keeps specs: its `AGENTS
 then:
 
 - Look at the card's refs in `skelcrew show <id>` first. If a `specPath` is recorded, that is
-  this card's spec file: **overwrite that path** from the card's body. Do not allocate a new
-  number, do not go looking for a match by content, and do not leave an older copy in place —
-  a card coming back from PR for revision would otherwise put a second, stale spec in the same
-  pull request.
+  this card's spec file: **overwrite that path** from the card's body, read with
+  `skelcrew show <id> --json` and taken from `.body` — `skelcrew show` marks every line of the
+  body so it cannot be mistaken for a line the CLI wrote, and the JSON is the body as stored.
+  Do not allocate a new number, do not go looking for a match by content, and do not leave an
+  older copy in place — a card coming back from PR for revision would otherwise put a second,
+  stale spec in the same pull request.
 - Only when no `specPath` is recorded, choose one by the repository's own naming, write it,
   and record it — so the next run reuses it rather than deriving it again:
 

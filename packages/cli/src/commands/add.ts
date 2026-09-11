@@ -1,11 +1,11 @@
 import { type Card, RpcError } from "@skelcrew/shared";
-import { formatId } from "../render";
+import { formatId, oneLine } from "../render";
 import { type Command, noExtraPositionals, readFile, string, UsageError } from "./command";
 
 type Input = { title: string; body?: string } | { bulk: true };
 
 function line(card: Card): string {
-  return `${formatId(card.id)} ${card.title}`;
+  return `${formatId(card.id)} ${oneLine(card.title)}`;
 }
 
 /** One card from the arguments, or one per non-empty stdin line when no title is given. */

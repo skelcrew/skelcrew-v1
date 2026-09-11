@@ -41,6 +41,18 @@ test("both playbooks tell the agent to ask rather than guess, with skelcrew atte
 });
 
 /**
+ * Criterion 8c (015). `skelcrew show` now marks every line of the body with `> `, so a spec
+ * file exported from what `show` prints would carry the markers. The body as stored is what an
+ * export copies, and `--json` is where that lives.
+ */
+test("the Code playbook reads the body for export through --json", () => {
+  const code = loadPlaybooks().code;
+  expect(code).toContain("`skelcrew show <id> --json`");
+  expect(code).toContain("`.body`");
+  expect(code).toMatch(/\*\*overwrite that path\*\* from the card's body[^.]*--json[^.]*\.body/);
+});
+
+/**
  * The paragraphs a playbook's commands are not read from. Criterion 11 is about the commands a
  * playbook *instructs*, and these two say something else: the paragraph advertising what needs
  * no asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
@@ -295,9 +307,14 @@ test("the Code playbook exports a spec file only where the repository already ke
   expect(prescribed(code)).toContain("skelcrew refs <id> --spec docs/specs/<NNN>-<name>.md");
 });
 
+/**
+ * One contiguous assertion, over the sentence 8c amended: relocating either half of it — the
+ * overwrite rule or the prohibition on a new number — fails this, which two `toContain`s either
+ * side of the inserted clause would not.
+ */
 test("the Code playbook reuses the recorded spec path on a card returning from PR", () => {
   expect(unwrapped(loadPlaybooks().code)).toContain(
-    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body. Do not allocate a new number",
+    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body, read with `skelcrew show <id> --json` and taken from `.body` — `skelcrew show` marks every line of the body so it cannot be mistaken for a line the CLI wrote, and the JSON is the body as stored. Do not allocate a new number",
   );
 });
 
