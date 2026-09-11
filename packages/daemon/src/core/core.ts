@@ -586,7 +586,9 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
         const at = now();
         // Someone else's live claim is their half-done work: an agent may not hand it off.
         // Unreachable while every phase's exit is the owner's — a non-human actor is turned
-        // away above — and kept because it is the rule, not the phase table, that says so.
+        // away above — and kept because it is the rule, not the phase table, that says so. It
+        // re-arms the moment a phase is declared `exit: "any"`, and it has no coverage today:
+        // see `PhaseDef.exit` in `@skelcrew/shared`, which says the same from that side.
         const live = liveClaim(card, at);
         if (live !== null && live.by !== actorId && actor.kind !== "human") {
           throw claimConflict(card, live);

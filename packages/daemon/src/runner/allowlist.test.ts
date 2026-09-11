@@ -99,8 +99,10 @@ test("the record says a subprocess reaches the five verbs and the daemon refuses
   }
   expect(record).toContain("the daemon refuses");
   expect(record).toContain("whatever called");
-  expect(record).not.toContain("obtained anyway");
-  expect(record).not.toContain("are obtained");
+  // The general forms, as `playbooks.test.ts` asserts them: pinning the previous sentence
+  // ("obtained anyway") would let any fresh phrasing of the same false claim back in.
+  expect(record).not.toContain("obtain");
+  expect(record).not.toContain("withhold");
 });
 
 /**

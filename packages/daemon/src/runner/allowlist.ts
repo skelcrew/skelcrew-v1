@@ -189,12 +189,20 @@
  *   caller asserting another identity — `skelcrew --as runner`, or no `--as` at all, which is
  *   the owner — and single-player with no auth cannot tell that lie from the truth. That is a
  *   gate, not a boundary, and it is 016's own limit rather than something this list could fix.
- *   Two more of its limits belong here beside it, because a subprocess is how each is reached:
- *   a process the run spawned that **outlives the run** is still `crew`, so once the runner
+ *   Its other limits belong here beside it, because a subprocess is how each is reached. A
+ *   process the run spawned that **outlives the run** is still `crew`, so once the runner
  *   releases the card it can claim the now-free card — which the next real run then meets as a
- *   `claimConflict`, visibly, rather than silently; and `crew` is **not scoped to its card**, so
- *   it can comment on, set the body of, or claim *another* card the runner does not hold. Both
- *   are carried from 014's "the runner's identity is unscoped", now named against `crew`.
+ *   `claimConflict`, visibly, rather than silently. `crew` is **not scoped to its card**, so it
+ *   can comment on, set the body of, or claim *another* card the runner does not hold. Both are
+ *   carried from 014's "the runner's identity is unscoped", now named against `crew`.
+ *   **`runner` and `crew` are names, not credentials**, so any caller that asserts one *joins*
+ *   it: a live terminal session speaking `--as crew` is the same member id every spawned run
+ *   uses, which means its `skelcrew body` satisfies a Spec contract (`contracts.ts` counts a
+ *   `body_set` by that id as the run's) and its comments are swallowed by the self-echo filter
+ *   in `./run`. And **a request `crew` raises may name any destination** — `skelcrew attention
+ *   <id> --move done` prints in the owner's queue as a ready-to-run `mv`, the same as a met
+ *   contract's move, because the queue does not distinguish the two. Nothing there is crossed:
+ *   the owner still executes the move. Closing either is a spec of its own.
  * - **Criteria 10b and 10c are true of tool calls and false of subprocesses**, which is how 013
  *   words them. `allowsTool` and `runsUnprompted` answer "does this tool call ask", and no
  *   assertion built on them says anything about what a process does once one has started. They

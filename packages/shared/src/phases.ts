@@ -17,6 +17,13 @@ export interface PhaseDef {
   readonly name: string;
   /** One line: what must exist on the card or in the repo when the phase ends. */
   readonly artefact: string;
+  /**
+   * Who may move a card out of the phase. **`"any"` has no instance since 016** — Code was the
+   * last — so declaring a phase `"any"` re-arms a path nothing exercises today: `moveCard`'s
+   * claim-conflict check sits directly beneath the exit check and is unreachable while every
+   * phase is the owner's, which means it has no coverage. Whoever declares the next `"any"`
+   * phase writes the test for it. The variant stays because the rule is the phase's to state.
+   */
   readonly exit: "owner" | "any";
   readonly claimable: boolean;
 }

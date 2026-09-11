@@ -49,8 +49,9 @@ Run record for `docs/specs/016-the-daemon-holds-the-gate.md`.
 
 The spec says only `core.test.ts`'s "an agent may move a card out of code" changes. With
 `code.exit = "owner"` and the archive rule in and nothing else touched, **fourteen** existing
-tests failed; two more changed because `agentEnvironment` took a parameter, and one was widened
-to cover the new daemon wiring. Every one is a consequence the spec itself requires. In full,
+tests failed; **three** more changed because `agentEnvironment` took a parameter
+(`shim.test.ts` ×2 and one call site in `run.test.ts`), and one was widened to cover the new
+daemon wiring — eighteen in all. Every one is a consequence the spec itself requires. In full,
 by file, with what changed in each:
 
 **The rule the spec sanctions**
@@ -121,16 +122,19 @@ is still reachable through the core (four cases keep it, unchanged).
 
 **Changed for the new signature, not the new rules**
 
-15. `shim.test.ts:47` and `:61` — both `agentEnvironment` calls take the member name, and the
-    expected `SKELCREW_AS` is that name rather than the literal `runner`. What the two assert —
-    that the environment is exactly those four variables, and the `PATH`/`HOME` handling — is
-    unchanged. A third case asserts the name is the one given.
-16. `run.test.ts:264` — the same call site inside "a Spec run: the log path, the turn, the
+15. `shim.test.ts:47` "the spawned environment is exactly PATH, HOME, SKELCREW_AS and
+    SKELCREW_DIR" — the call takes the member name and the expected `SKELCREW_AS` is that name
+    rather than the literal `runner`. What it asserts — that the environment is exactly those
+    four variables — is unchanged.
+16. `shim.test.ts:61` "with no PATH to inherit the shim's directory is the whole PATH, and an
+    absent HOME is not invented" — the same, with the `PATH`/`HOME` assertions unchanged. (A
+    third, new case at `:74` asserts the name is the one given.)
+17. `run.test.ts:264` — the same call site inside "a Spec run: the log path, the turn, the
     batched tools, and the handoff, in order"; the assertion is unchanged.
 
 **Widened to cover new wiring**
 
-17. `server/process.test.ts:422` "with SKELCREW_AGENT=claude the daemon loads the driver and its
+18. `server/process.test.ts:422` "with SKELCREW_AGENT=claude the daemon loads the driver and its
     playbooks and serves…" — `listMembers` was asserted with `toContain("runner")`; it now
     asserts the agent members are exactly `["runner", "crew"]`, which is the only coverage of
     `main.ts` joining the crew member.
@@ -148,4 +152,52 @@ a non-human actor is turned away before either is read. Both are kept and commen
 the spec says an owner may drop the archive rule "without touching anything else", and dropping
 it must not silently drop the claim protection under it. The same is true of `classifyEnding`'s
 self-archive and self-move branches, which is why their notes carry a line saying the wording
-would need revisiting if a rule ever revives them.
+would need revisiting if a rule ever revives them. `PhaseDef.exit`'s `"any"` variant is in the
+same position — no instance since 016 — and says so beside the `moveCard` guard it re-arms.
+
+## Review round 1 — changes requested, two Important and six Minor
+
+Fixed in `685f6df`, documentation and comments only:
+
+- **Important 1** — this record counted the changed tests behind four group labels where
+  criterion 12 asks for each one named with what changed in it; the enumeration above is the
+  fix, and `process.test.ts` had been left out of it entirely.
+- **Important 2** — `run.test.ts`'s `agentAsks` kept raising as the runner (correct: it is the
+  one fixture where the agent's question and the run's own share a `raisedBy`, so it is what
+  would fail if 013's `RunQuestion` construction were ever replaced by a `raisedBy` comparison)
+  while its docstring said that was forced rather than chosen. The comment now says why.
+- **Minors** — `ending.ts`'s unreachable branches note that their "the agent …" wording is
+  stale if a rule revives them; `allowlist.ts` records all of 016's open limits rather than one,
+  and its `--as` bullet no longer credits the omission of `resolve` with what the daemon
+  refuses; the CLI gate test names the refusal per verb (`forbidden` for mv/release/archive/
+  resolve, `conflict` for claim) instead of accepting either.
+
+## Review round 2 — approved, five Minor
+
+The reviewer re-derived the gate from four sides — the owner's (every phase still leaves as the
+owner, and the queue's offered move is still executed by a human), the runner's (the claim is
+`runner`'s for the whole run and every ending is attributed to it), startup (`main.ts` joins
+both members, and `process.test.ts` pins it), and the shim (`SKELCREW_AS=crew`, so a subprocess
+inherits the crew's identity and meets the core's refusals) — and confirmed each red by
+reverting the change in a scratch copy.
+
+Disposition of the five:
+
+1. **`PhaseDef.exit: "any"` has no instance, and `moveCard`'s claim guard beneath it has no
+   coverage** — fixed here: a note on `PhaseDef.exit` and one beside the guard, each pointing at
+   the other. The variant and the guard stay.
+2. **`allowlist.test.ts` pinned the previous wording** (`not.toContain("obtained anyway")`)
+   rather than the forbidden claim — fixed here: `not.toContain("obtain")` and
+   `not.toContain("withhold")`, as `playbooks.test.ts` already does. Checked by inserting "A
+   subprocess obtains all five verbs regardless." into the record: the new assertion fails, and
+   the two old pins would both have passed. The insertion was reverted.
+3. **The `--move done` composition and the `runner`/`crew` name-join** — recorded in the spec's
+   red-team by the coordinator.
+4. **Those two limits belong in `allowlist.ts`'s record too**, since the spec says each open
+   limit is written down there — added: a caller asserting `--as crew` joins the crew member
+   itself (so its `body_set` satisfies a Spec contract and its comments hit the self-echo
+   filter), and a request `crew` raises may name any destination, which the owner's queue prints
+   as a ready-to-run `mv` indistinguishable from a met contract's. Neither crosses a gate; the
+   owner still executes the move.
+5. **The record's arithmetic** — three tests changed for `agentEnvironment`'s new parameter, not
+   two; items 15-18 are now split one per test and the count reads eighteen.
