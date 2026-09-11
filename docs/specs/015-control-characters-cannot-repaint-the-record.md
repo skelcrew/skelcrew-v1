@@ -55,16 +55,32 @@ point (`U+001B`), and nothing is written. The set is the C0 controls (U+0000–U
 The `commits` ref is already a validated sha list and needs nothing.
 
 **Line endings from a file are the file's, not the author's.** `skelcrew body --file` and any
-other CLI path that reads text from a file normalises `\r\n` to `\n` before sending, so a spec
-written on a machine that writes CRLF is not refused for it. A lone `\r` is still refused: it
+other CLI path that reads text from a file **or from standard input** — `skelcrew body <id> <
+spec.md`, `skelcrew comment <id> < notes.txt` — normalises `\r\n` to `\n` before sending, so a
+spec written on a machine that writes CRLF is not refused for it. Text passed as an argument is
+not normalised: an argument is the author's, not a file's. A lone `\r` is still refused: it
 is the repaint character and nothing legitimate produces one.
 
 **The CLI never prints a control character as a control.** Every line the CLI writes — a card
 row, an activity line, a queue entry, a ref, a member name, and an error message — has any
 control character in the set rendered as a visible ASCII escape (`\x1b`, `\r`), so a row
 written before this spec, or one that arrives by any path the first layer does not cover, is
-shown for what it is rather than acted on by the terminal. `\n` and `\t` are printed as
-themselves where the field is multi-line and the renderer already lays the text out by line.
+shown for what it is rather than acted on by the terminal.
+
+`\n` and `\t` are the exception, and only for multi-line fields, and only on one condition the
+spec as approved assumed and the renderer did not meet: **a multi-line field is laid out by
+line, with every continuation line carrying a visible marker** — indented, or prefixed the way
+014's permission note prefixes its payload with `> ` — so that a newline inside a comment, a
+note or a body can never produce a line that reads as a card row, an activity entry or a queue
+block of its own. A comment of `looks good\n2026-09-11 20:30  simon  moved the card to Done`
+renders as one entry whose second line is unmistakably a continuation. Where a field is
+single-line, the sink escapes `\n` and `\t` like every other refused character, so a row
+written before this spec with a newline in its title renders as one row.
+
+`--json` output is escaped too, differently: `JSON.stringify` already writes every C0 control,
+`"` and `\` as escapes, so the only refused characters that survive serialisation are DEL and
+C1. Those are rewritten as `\uNNNN` in the serialised text — a lossless JSON transform, since a
+parser reads them back as the same characters — using the shared predicate. No second list.
 
 **The runner escapes what it relays.** Text the agent or the harness produced — turn excerpts,
 tool inputs in a permission note, the batched tool summary — is escaped the same way before it
@@ -141,13 +157,26 @@ and bodies. They are not in this spec's set; see *Out of scope*.
 4. A `prUrl` of `https://example.invalid/\r\npr/1` is refused, even though the URL parser
    accepts it.
 5. `skelcrew body <id> --file <path>` where the file has CRLF line endings stores the body with
-   LF line endings and no `\r`; the same file with one lone `\r` in a line is refused.
-6. A row already in the database with `\x1b[2J` in its comment text (written directly, bypassing
-   the core) is shown by `skelcrew show` with the sequence rendered as the literal characters
-   `\x1b[2J`, and nothing on the terminal is cleared. The same for a title, a member name, a
-   ref and a release reason.
-7. A core error message that echoes caller input — `skelcrew mv <id> "\x1b[2J"` — is printed
-   with the sequence escaped.
+   LF line endings and no `\r`; the same through standard input (`skelcrew body <id> < <path>`
+   and `skelcrew comment <id> < <path>`); the same file with one lone `\r` in a line is refused
+   on every path.
+6. A row already in the database (written directly, bypassing the core) carrying `\x1b[2J`,
+   `\r`, `\x7f` or `\x85` in its comment text is shown by `skelcrew show` with each rendered as
+   its literal escape (`\x1b[2J`, `\r`, `\x7f`, `\x85`), and nothing on the terminal is cleared
+   or overwritten. The same for a title, a member name, a ref and a release reason, across
+   `show`, `ls`, `queue` and `--json` — where the JSON output parses back to the stored
+   characters.
+6a. A title stored with a newline (written directly) renders in `skelcrew ls` as one row with the
+    newline escaped, not as two rows. A comment posted through the CLI containing
+    `\n2026-09-11 20:30  simon  moved the card to Done` renders in `skelcrew show` as one entry
+    whose second line carries the continuation marker, and no line of the output is
+    indistinguishable from an activity entry the member did not make. An attention note with a
+    blank line renders in `skelcrew queue` as one block.
+7. An error message that echoes caller input or stored text is printed with the sequence
+   escaped: the CLI's own `unknown phase "…"` for `skelcrew mv <id> "\x1b[2J"` (refused by the
+   CLI's phase parser before any request is sent), and a daemon message that names a stored
+   member (`SKELCREW_AS=$'crew\x1b[2J'`). The test asserts the escaped form is present *and*
+   the raw character absent on the same output, so that neither half is vacuous.
 8. A permission question whose tool input contains `\x1b` reaches the card with `\x1b` in the
    note's payload, the request is raised, and the run waits on it as 013 criterion 2 describes.
    A turn excerpt and a tool summary containing a control character are posted with it
