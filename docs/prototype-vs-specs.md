@@ -18,8 +18,8 @@ but not yet shipped.
 
 |  | `prototype` | `main` |
 | --- | --- | --- |
-| Calendar span | 2 days | 5 days |
-| Commits | 2 | 68 |
+| Elapsed | under 23h28m, in one sitting | 4 working days |
+| Commits | 2 (one of them a one-line README) | 68 |
 | Source files (`.ts`, excluding tests) | 12 | 44 |
 | Source lines | 2,425 | 5,111 |
 | Test files | 0 | 24 |
@@ -28,8 +28,23 @@ but not yet shipped.
 | Comment lines | 138 (5% of source) | 738 (14% of source) |
 
 Roughly twice the source for a *narrower* scope, and three times the total volume once tests
-count — in two and a half times the calendar days. The spike's scope was wider: it carried a
-board server, a web UI and an MCP endpoint that `main` deliberately does not have.
+count. The spike's scope was wider: it carried a board server, a web UI and an MCP endpoint
+that `main` deliberately does not have.
+
+The timing is closer than it looks, and that is the surprising part. The repository begins as a
+one-line README at 2026-09-07 09:03:57. The entire spike — twelve source files, a board server,
+a web UI, an MCP endpoint and a daemon that ran a real spec stage and a real develop stage —
+arrives in **a single commit** at 2026-09-08 08:31:51. That is 23h28m of wall clock across a
+night, so the true figure is one sitting inside that window and git cannot narrow it further.
+The rebuild's first commit lands at 08:34:01, two minutes and ten seconds later: the spike was
+finished and the pivot began immediately.
+
+Against that, `main`'s working windows are 08:34–21:00, 08:26–13:24, 09:36–20:07 and 08:32–08:46
+across four days — on the order of a day and a half of elapsed time, most of it supervision
+rather than typing, since agents write the code. Neither figure is effort and both include time
+not spent working, but as upper bounds they are the same order of magnitude. The specced build
+did not cost ten times the spike. It cost a few times the spike, for three times the artefact
+and a defect list the spike does not have.
 
 To re-derive: `git ls-tree -r --name-only <branch>`, filter `.ts`, split on `.test.ts`, count
 lines with `git show <branch>:<file>`.
