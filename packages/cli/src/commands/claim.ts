@@ -1,5 +1,5 @@
 import type { Card, Claim } from "@skelcrew/shared";
-import { formatId, formatTime } from "../render";
+import { formatId, formatTime, oneLine } from "../render";
 import { type Command, noExtraPositionals, parseId, string, UsageError } from "./command";
 
 type Input = { id: number; ttlSeconds?: number };
@@ -24,7 +24,7 @@ export const claim: Command<Input, Card> = {
     return {
       result: card,
       render: () =>
-        `${formatId(card.id)} claimed by ${ctx.client.member.name} until ${formatTime(held.expiresAt)} (${held.ttlSeconds}s)`,
+        `${formatId(card.id)} claimed by ${oneLine(ctx.client.member.name)} until ${formatTime(held.expiresAt)} (${held.ttlSeconds}s)`,
     };
   },
 };

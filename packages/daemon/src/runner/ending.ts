@@ -57,7 +57,12 @@
  * an agent — or any use of it after work has happened — adopts the guard here rather than
  * inheriting the exemption as settled.
  */
-import type { Activity, Attention, Phase } from "@skelcrew/shared";
+import {
+  type Activity,
+  type Attention,
+  escapeControlCharacters,
+  type Phase,
+} from "@skelcrew/shared";
 import type { Core } from "../core/core";
 
 /**
@@ -66,6 +71,44 @@ import type { Core } from "../core/core";
  * compile error rather than something a reviewer has to notice.
  */
 export type RunCore = Omit<Core, "requestAttention">;
+
+/**
+ * The core the runner half posts through: every text it writes to a card — a comment, an
+ * attention note, a release reason — is escaped by `@skelcrew/shared`'s definition on the way
+ * in, so nothing the runner posts can be refused for a control character.
+ *
+ * A wrapper rather than an escape in each helper, because the helpers are not where this can
+ * be got right: 015 first escaped the three relay helpers the spec enumerated, and a driver
+ * dying with an ANSI-coloured error line — which is what a coding-agent CLI emits — went
+ * through a fourth path. The core refused the ending's comment *and* its request, `endRun`
+ * warned to the daemon's stderr and released the claim, and the free card in a claimable phase
+ * was claimed again at once: an unbounded retry loop, with no record anywhere a member reads.
+ * A salvage note built from a filename does the same. So the escape sits here, where the
+ * runner posts, and a path added later inherits it rather than having to remember it.
+ *
+ * What is *not* escaped is everything that is not a posting: refs in particular. A branch or a
+ * path is a reference into the repository, and an escaped one would name something that does
+ * not exist — the core refuses those, which is the right answer for a reference.
+ */
+export function postingCore(core: Core): Core {
+  return {
+    ...core,
+    comment(id, text, actorId) {
+      return core.comment(id, escapeControlCharacters(text, "multi-line"), actorId);
+    },
+    requestAttention(id, request, actorId) {
+      const note = escapeControlCharacters(request.note, "multi-line");
+      return core.requestAttention(id, { ...request, note }, actorId);
+    },
+    releaseCard(id, options, actorId) {
+      const reason =
+        options.reason === undefined
+          ? undefined
+          : escapeControlCharacters(options.reason, "single-line");
+      return core.releaseCard(id, reason === undefined ? options : { ...options, reason }, actorId);
+    },
+  };
+}
 
 /**
  * The run's own permission question, while it is the card's open request. What the core

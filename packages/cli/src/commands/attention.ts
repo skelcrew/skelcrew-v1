@@ -1,11 +1,5 @@
-import {
-  type Card,
-  ERROR_CODES,
-  escapeControlCharacters,
-  type Phase,
-  RpcError,
-} from "@skelcrew/shared";
-import { formatId } from "../render";
+import { type Card, ERROR_CODES, type Phase, RpcError } from "@skelcrew/shared";
+import { formatId, oneLine } from "../render";
 import {
   type Command,
   noExtraPositionals,
@@ -56,7 +50,6 @@ export const attention: Command<Input, Card> = {
       moves: input.moves,
     });
     // The name is a stored single-line field: one line here, whatever a pre-015 row holds.
-    const name = escapeControlCharacters(to.name, "single-line");
-    return { result: card, render: () => `${formatId(card.id)} waiting on ${name}` };
+    return { result: card, render: () => `${formatId(card.id)} waiting on ${oneLine(to.name)}` };
   },
 };

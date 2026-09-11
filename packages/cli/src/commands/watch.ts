@@ -1,6 +1,6 @@
 import type { Activity, Member } from "@skelcrew/shared";
 import { notify, selectNotifier } from "../notify";
-import { activityLine, formatId } from "../render";
+import { activityLine, formatId, oneLine } from "../render";
 import { type Command, flag, noExtraPositionals, string, UsageError } from "./command";
 
 type Input = { since?: number };
@@ -59,7 +59,10 @@ export const watch: Command<Input, null> = {
           open.raisedAt === event.data.raisedAt &&
           open.raisedBy === event.data.raisedBy
         ) {
-          const text = `${formatId(card.id)} ${card.title}: ${event.data.note}`;
+          // A notification is one line by nature — a desktop banner, or a printed line beside
+          // the events when there is no notifier — so the title and the note are single-line
+          // fields here, whatever they are on the card.
+          const text = `${formatId(card.id)} ${oneLine(card.title)}: ${oneLine(event.data.note)}`;
           await notify(notifier, "skelcrew", text, ctx.out);
         }
       }
@@ -75,7 +78,7 @@ export const watch: Command<Input, null> = {
           ctx.warn(`error: ${error instanceof Error ? error.message : String(error)}`);
         });
     }, input.since);
-    ctx.warn(`watching as ${me.name}; ctrl-c to stop`);
+    ctx.warn(`watching as ${oneLine(me.name)}; ctrl-c to stop`);
 
     // A dead tail that looks alive is worse than none: losing the daemon is an error.
     const outcome = await Promise.race([

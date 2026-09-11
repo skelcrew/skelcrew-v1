@@ -332,6 +332,28 @@ test("a dirty worktree lists at most twenty changed paths", async () => {
   expect(existsSync(path)).toBe(true);
 });
 
+/**
+ * Criterion 8a, the other trigger: the salvage note is built from filenames as git prints
+ * them, and a file may be named anything but `/` and NUL. Posted raw, the core refuses the
+ * comment and the record of what was kept is lost to a line on the daemon's stderr.
+ */
+test("a salvage note naming a file whose name carries an escape lands on the card, escaped", async () => {
+  await initRepo();
+  start();
+  await runCard("Dirty with an escape");
+  const path = worktreePath(1);
+  const name = "wip\x1b[31m.txt";
+  writeFileSync(join(path, name), "half-written\n");
+
+  const kept = untilEvent(commentContaining(1, "kept"));
+  core.moveCard(1, "pr", owner.id);
+  const text = ((await kept).data as { text: string }).text;
+
+  expect(text).toContain("wip\\x1b[31m.txt");
+  expect(text).not.toContain("\x1b");
+  expect(existsSync(join(path, name))).toBe(true);
+});
+
 test("archiving removes a clean worktree and keeps a dirty one with a comment", async () => {
   await initRepo();
   start();

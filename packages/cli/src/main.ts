@@ -89,6 +89,15 @@ function safe(text: string): string {
 }
 
 /**
+ * A message the CLI writes about something rather than a field it laid out: an error, a
+ * warning. It is one line by nature and is escaped as one, so a newline in a daemon message
+ * that echoes stored text cannot put a second line on the terminal that reads as a record.
+ */
+function safeLine(text: string): string {
+  return escapeControlCharacters(text, "single-line");
+}
+
+/**
  * The result as JSON, for a machine. `JSON.stringify` already writes every C0 control, `"` and
  * `\` as escapes, so the only characters of the shared set that survive it are DEL and C1:
  * those are rewritten as `\uNNNN` — the code point the shared predicate names, in JSON's own
@@ -109,7 +118,8 @@ function safeJson(result: unknown): string {
 }
 
 function fail(message: string, extra?: string): void {
-  process.stderr.write(`error: ${safe(message)}\n`);
+  process.stderr.write(`error: ${safeLine(message)}\n`);
+  // `extra` is the CLI's own usage block, laid out over lines it wrote itself.
   if (extra !== undefined) process.stderr.write(`${safe(extra)}\n`);
 }
 
@@ -210,7 +220,7 @@ async function main(argv: string[]): Promise<number> {
         socketPath,
         stdin: async () => withLfLineEndings(await Bun.stdin.text()),
         out: (line) => process.stdout.write(`${safe(line)}\n`),
-        warn: (line) => process.stderr.write(`${safe(line)}\n`),
+        warn: (line) => process.stderr.write(`${safeLine(line)}\n`),
       },
       input,
     );

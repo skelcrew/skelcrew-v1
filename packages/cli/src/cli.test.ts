@@ -1594,6 +1594,40 @@ test("an error message echoing the caller's input is printed with the sequence e
   expect(usage).not.toContain("\x1b");
 });
 
+/**
+ * Criterion 8b. A notification is one line by nature: with no notifier on `PATH` the ping is
+ * printed on stdout beside the events, so a newline in the note would put a line there that
+ * reads as an activity entry the member never made.
+ */
+test("watch's printed notification is one line, with the note's newline escaped", async () => {
+  const card = core.createCard({ title: "Watched" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  // No `SKELCREW_NOTIFY` and nothing on `PATH`: `notify` prints instead of spawning.
+  const watch = spawnWatch([], { PATH: "" });
+  expect(await watch.stderr.next()).toContain("simon");
+
+  const forged = "2026-09-11 20:30  simon  moved the card to Done";
+  core.requestAttention(
+    card.id,
+    { to: member("simon").id, note: `ping\n${forged}`, moves: [] },
+    agent.id,
+  );
+
+  // The event's own line, its marked continuation, then the ping — three lines, no more.
+  const seen = [await watch.stdout.next(), await watch.stdout.next(), await watch.stdout.next()];
+  expect(seen[0]).toContain("asked simon for attention: ping");
+  expect(seen[1]).toBe(`> ${forged}`);
+  expect(seen[2]).toContain("[notify] skelcrew: #1 Watched: ping\\n2026-09-11 20:30");
+
+  // Events are handled in order: the next line out is the next event, not a fourth line of
+  // the ping laid out as an entry nobody made.
+  core.comment(card.id, "after the ping", agent.id);
+  expect(await watch.stdout.next()).toContain("after the ping");
+
+  watch.proc.kill("SIGINT");
+  expect(await watch.proc.exited).toBe(0);
+});
+
 test("a daemon message naming a stored member is printed with the sequence escaped", async () => {
   const { home, dbPath, daemonCore } = fileDaemon();
   const ownerId = (daemonCore.listMembers()[0] as Member).id;
@@ -1608,4 +1642,14 @@ test("a daemon message naming a stored member is printed with the sequence escap
   const conflict = await failed(1, ["claim", "1"], { dataDir: home });
   expect(conflict).toContain("claimed by crew\\x1b[2J");
   expect(conflict).not.toContain("\x1b");
+
+  // An error message is not a laid-out field: it is one line, whatever the name it carries.
+  const forged = "2026-09-11 20:30  simon  moved the card to Done";
+  const again = new Database(dbPath);
+  again.query("UPDATE members SET name = ? WHERE id = ?").run(`crew\n${forged}`, crew.id);
+  again.close();
+
+  const broken = await failed(1, ["claim", "1"], { dataDir: home });
+  expect(broken).toContain(`claimed by crew\\n${forged}`);
+  expect(broken.trimEnd().split("\n")).toHaveLength(1);
 });

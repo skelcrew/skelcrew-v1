@@ -226,9 +226,13 @@ function cutMarked(text: string, budget: number): string {
 /**
  * Text the run relays but did not write — a turn, a tool's input, a batch's summary — with
  * every control character rendered visible, by the same definition the core refuses them by.
- * The run keeps the record rather than losing it to a refusal, and nothing an agent produced
- * can repaint the line it lands on. `\n` and `\t` stay: a comment and a note are multi-line.
- * The run log is untouched by this; it records the stream verbatim, and it is not a terminal.
+ *
+ * This is **not** what makes the guarantee: `postingCore` escapes everything the runner writes
+ * to a card, so a relay that skipped this one would still land. What it buys is the byte caps
+ * below — an excerpt, a note and a summary are each cut to fit a comment, and cutting before
+ * escaping would measure a budget against text that is not what gets posted. `\n` and `\t`
+ * stay: a comment and a note are multi-line. The run log is untouched by any of it; it records
+ * the stream verbatim, and it is a file rather than a terminal.
  */
 function relayed(text: string): string {
   return escapeControlCharacters(text, "multi-line");
@@ -262,9 +266,9 @@ function inputOf(tool: string, input: Record<string, unknown>): string {
  * the owner answers, which carries the input whole (`questionFor`).
  */
 function describeInput(tool: string, input: Record<string, unknown>): string {
-  // `oneLine` first, as it always has: it collapses the newlines, and what survives that is
-  // what has to be made visible.
-  return relayed(oneLine(inputOf(tool, input), INPUT_LINE_MAX));
+  // Escaped first, like every other relay here, so the line's own cut is measured on what is
+  // actually shown; `oneLine` then collapses the line breaks the escape kept.
+  return oneLine(relayed(inputOf(tool, input)), INPUT_LINE_MAX);
 }
 
 /**
@@ -456,8 +460,8 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   const questionFor = (pending: Ask): string => {
     const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\ninput:\n`;
     // Escaped where it is composed, before it is quoted or measured: the payload is the
-    // agent's text, and a control character in it would otherwise be refused by the core —
-    // losing the question — or repaint the queue view that prints the note verbatim.
+    // agent's text, and the note's cap below has to be measured on what is actually posted.
+    // The sink escapes it in any case (`postingCore`); this is about the cut, not the safety.
     const raw = relayed(inputOf(pending.tool, pending.input));
     const text = quoted(raw);
     const fixed = Buffer.byteLength(frame, "utf8");

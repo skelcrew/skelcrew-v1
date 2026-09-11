@@ -23,8 +23,11 @@ import {
  * every control character in the shared set is escaped, `\n` and `\t` included, so a row
  * written before 015 with a newline in its title is one row and not two. The sink escapes
  * whatever reaches it as well; this is what tells it which fields may keep their line breaks.
+ *
+ * Exported because a few commands compose a line of their own from a stored field — a member
+ * name, a card's title, a notification — and there is one of these, not one per caller.
  */
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   return escapeControlCharacters(text, "single-line");
 }
 

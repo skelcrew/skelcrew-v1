@@ -1816,6 +1816,39 @@ test("a permission question carries the tool's input with its escape sequence es
   expect(warnings).toEqual([]);
 });
 
+/**
+ * Criterion 8a. The ending's note is built from whatever the harness threw, and a coding-agent
+ * CLI dying with an ANSI-coloured error line is the ordinary case. Posted raw, the core refuses
+ * the comment *and* the request, the claim is released with nothing on the card, and the free
+ * card in a claimable phase is claimed again at once — a retry loop, not a loud failure. The
+ * run count is the assertion that catches it.
+ */
+test("a driver error carrying an escape sequence ends the run once, with the sequence escaped", async () => {
+  await initRepo();
+  let runs = 0;
+  start({
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      yield { type: "text", text: "before" };
+      throw new Error("the harness died \x1b[31mred\x1b[0m");
+    }),
+  });
+  await runCard("Dies in colour");
+  // A retry would have claimed again long before this.
+  await Bun.sleep(200);
+
+  expect(runs).toBe(1);
+  expect(types(1).filter((type) => type === "claimed")).toHaveLength(1);
+  const said = comments(1);
+  expect(said.at(-1)).toContain("the harness died \\x1b[31mred\\x1b[0m");
+  expect(said.join("\n")).not.toContain("\x1b");
+  const card = core.getCard(1);
+  expect(card.attention?.to).toBe(owner.id);
+  expect(card.attention?.note).toContain("the harness died \\x1b[31mred\\x1b[0m");
+  expect(card.claim).toBeNull();
+  expect(warnings).toEqual([]);
+});
+
 test("a turn excerpt and a tool summary carrying an escape are posted with it escaped", async () => {
   await initRepo();
   start({

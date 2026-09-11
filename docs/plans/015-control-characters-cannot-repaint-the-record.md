@@ -49,10 +49,9 @@
   definition would need (`\xNN`/`\uNNNN` escapes, `0xNN` literals, `charCodeAt`/`codePointAt`)
   and asserts `shared/src/text.ts` is the only file with any. Test files are excluded: they
   spell control characters out by necessity.
-- **Not escaped, and why:** the tool *name* in `describeCall` and in the question's frame. The
-  spec names `excerpt`, `quoted`/`inputOf` and `summarizeTools` as the relay helpers; a control
-  character in a tool name is the "relay path this spec misses" the spec describes, refused
-  loudly by the core.
+- **Not escaped, and why:** the tool *name* in `describeCall` and in the question's frame.
+  *(Superseded in round 3: the core's refusal is not loud — it loops. Everything the runner
+  posts is escaped at its sink, tool names included.)*
 
 ## Red, then green (round 1)
 
@@ -105,3 +104,57 @@ body from stdin or a file…" now assert the marked layout beside the unchanged 
 - The scan tripwire was checked by execution: with the reviewer's `export const CONTROLS =
   /\p{Cc}/u;` added to `render.ts` in a scratch copy, the round-1 regex passed and the round-2
   regex fails, naming `cli/src/render.ts`.
+
+## Round 3 — review findings, against the amended spec
+
+The spec was amended again (`028523f`), and both Criticals were regressions this spec itself
+introduced by escaping an *enumerated* set of helpers.
+
+1. **The runner escapes at its posting sink, not in helpers** (Critical 1). `postingCore` in
+   `ending.ts` wraps the core the runner half is given — `startRunner` uses it for everything —
+   and escapes a comment's text, an attention note and a release reason on the way in. Refs are
+   deliberately untouched: a branch or a path is a reference, and an escaped one would name
+   something that does not exist, so the core's refusal is the right answer there.
+
+   Why a wrapper rather than the two call sites the finding named: the failure mode was an
+   *unenumerated* path. A driver dying with an ANSI-coloured error line had its message posted
+   raw as the ending note, the core refused both the comment and the request, `endRun` released
+   the claim, and the free card in a claimable phase was claimed again at once. Reproduced here
+   before the fix: **13 runs in 200 ms** (the reviewer saw 186 in three seconds). The salvage
+   note built from `git status` filenames does the same, and neither is `excerpt`, `quoted` or
+   `summarizeTools`. A wrapper is what makes "a path added later inherits it" true.
+
+   The helpers still escape early — the comment in `relayed()` now says why: the byte caps for
+   an excerpt, a question and a summary have to be measured on what is actually posted, not on
+   what it was before escaping. `describeInput` escapes before `oneLine` for the same reason
+   (Minor 6). Every "refused loudly by the core" claim in code comments and in this record is
+   corrected.
+2. **`watch`'s notification is one line** (Critical 2). `watch.ts` composes the ping from
+   `oneLine(card.title)` and `oneLine(event.data.note)`, so the print fallback cannot put a
+   line on stdout that reads as an activity entry.
+3. **The Code playbook reads the body through `--json`** (Important 3). `playbooks/code.md` §5
+   now says so, and `playbooks.test.ts` pins the sentence. One existing pin — "reuses the
+   recorded spec path" — matched the old sentence verbatim and now asserts its two halves; the
+   rule it pins is unchanged.
+4. **`fail` and `warn` escape single-line** (Minor 4), through `safeLine`; only `out` and the
+   rendered result keep the multi-line kind, and `fail`'s `extra` is the CLI's own usage block.
+5. **One `oneLine`** (Minor 5), exported from `render.ts` and used by `add`, `attention`,
+   `claim` and `watch` — every command that composes a line from a stored single-line field.
+
+### Red, then green (round 3)
+
+Against the round-2 commit `1915ef9` (its nine implementation files and `code.md` restored into
+a scratch copy, final test files, `bun --cwd`): **5 fail, 149 pass** — exactly the five tests
+this round adds or changes, and nothing else, so the fixes changed no other observable.
+
+- `run.test.ts` "a driver error carrying an escape sequence ends the run once…" → `expect(runs)
+  .toBe(1)` received **13**.
+- `runner.test.ts` "a salvage note naming a file whose name carries an escape…" → no `kept`
+  comment within 2 s; the card got `teardown failed: comment must not contain…` instead.
+- `cli.test.ts` "watch's printed notification is one line…" → the ping printed
+  `[notify] skelcrew: #1 Watched: ping` and the forged entry on the line after it.
+- `cli.test.ts` "a daemon message naming a stored member…" (changed: a second half added) →
+  `Received: "error: card 1 is claimed by crew\n2026-09-11 20:30  simon  moved the card to Done
+  until …"`, two lines.
+- `playbooks.test.ts` "the Code playbook reads the body for export through --json" → the
+  playbook did not contain `skelcrew show <id> --json`.

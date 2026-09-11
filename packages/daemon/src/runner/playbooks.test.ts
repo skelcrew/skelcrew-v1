@@ -41,6 +41,18 @@ test("both playbooks tell the agent to ask rather than guess, with skelcrew atte
 });
 
 /**
+ * Criterion 8c (015). `skelcrew show` now marks every line of the body with `> `, so a spec
+ * file exported from what `show` prints would carry the markers. The body as stored is what an
+ * export copies, and `--json` is where that lives.
+ */
+test("the Code playbook reads the body for export through --json", () => {
+  const code = loadPlaybooks().code;
+  expect(code).toContain("`skelcrew show <id> --json`");
+  expect(code).toContain("`.body`");
+  expect(code).toMatch(/\*\*overwrite that path\*\* from the card's body[^.]*--json[^.]*\.body/);
+});
+
+/**
  * The paragraphs a playbook's commands are not read from. Criterion 11 is about the commands a
  * playbook *instructs*, and these two say something else: the paragraph advertising what needs
  * no asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
@@ -296,9 +308,11 @@ test("the Code playbook exports a spec file only where the repository already ke
 });
 
 test("the Code playbook reuses the recorded spec path on a card returning from PR", () => {
-  expect(unwrapped(loadPlaybooks().code)).toContain(
-    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body. Do not allocate a new number",
+  const code = unwrapped(loadPlaybooks().code);
+  expect(code).toContain(
+    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body",
   );
+  expect(code).toContain("Do not allocate a new number");
 });
 
 test("no command either playbook names carries a shell operator", () => {
