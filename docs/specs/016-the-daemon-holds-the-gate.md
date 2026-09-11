@@ -149,9 +149,10 @@ It cannot, and the correction is the stronger reading of the spec's own principl
 
 ### Records
 
-`allowlist.ts`'s *What a subprocess reaches* and rule 4, `playbooks/code.md`'s subprocess
-paragraph, and the run-start comment's wording where it names the withheld verbs. Each says the
-verbs are reachable and refused, and that the refusal is the daemon's. 013's criterion 10f
+`allowlist.ts`'s *What a subprocess reaches* and rule 4, and `playbooks/code.md`'s subprocess
+paragraph. Each says the verbs are reachable and refused, and that the refusal is the daemon's.
+(The spec as approved also named the run-start comment; it never mentioned the verbs, and the
+clause was dropped during implementation rather than satisfied by absence.) 013's criterion 10f
 ("no artefact claims a boundary a subprocess does not respect") is the standard: after this
 spec the claim is that the daemon refuses, and that claim must be true.
 
@@ -181,11 +182,13 @@ did not name; it preserves an invariant `run.ts` already documents.
 This spec grants a role — the `crew` member — so the check applies.
 
 1. **Gate or boundary:** gate; see the Goal. Defeated by asserting another identity.
-2. **What the grant reaches.** `crew` is an ordinary agent member: it can read any card, and
-   on any card comment, set the body, set refs and raise attention — including on cards the
-   runner does not hold. It can claim a *free* card in a claimable phase and then release its
-   own claim. It cannot move any card, archive any card, resolve a request not addressed to it,
-   or release or claim a card another member holds.
+2. **What the grant reaches.** `crew` is an ordinary agent member: it can read any card;
+   create a card, which lands in Idea, a phase it cannot leave; and on any card comment, set
+   the body, set refs and raise attention — including on cards the runner does not hold, and
+   including *over* the card's single open request, the runner's own permission question among
+   them (013 designed for that: the run re-queues its ask). It can claim a *free* card in a
+   claimable phase and then release its own claim. It cannot move any card, archive any card,
+   resolve a request not addressed to it, or release or claim a card another member holds.
 3. **Composed.** `crew` raising a request *to itself* and resolving it crosses nothing — the
    owner's gate is the owner's request. `crew` raising a request to the owner with `--move pr`
    is the intended handoff; the owner executes the move. `crew` setting `refs --pr` is the
@@ -234,8 +237,7 @@ says it is) after the runner releases; `crew` is not scoped to its card. Each is
     `classifyEnding`'s self-move and self-archive branches remain in place as defence in depth.
 11. `allowlist.ts`'s *What a subprocess reaches* record and `playbooks/code.md`'s subprocess
     paragraph say the five verbs are reachable and refused by the daemon, and neither says the
-    subprocess obtains them. The run-start comment does not claim the verbs are withheld by
-    the list.
+    subprocess obtains them.
 12. Existing 012, 013 and 014 coverage passes unchanged except where an agent left Code or
     archived a card, as a subject or as a fixture step: each such test keeps its subject and
     changes only the actor or the expected refusal, every one is enumerated in the run record,
