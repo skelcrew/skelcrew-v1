@@ -2,9 +2,11 @@
  * The phase track. Not a table: the closed set of phase ids is this constant, and the
  * daemon's schema constrains the card's phase column to it.
  *
- * `exit` is who may move a card out of the phase. The owner's gates are what gets worked on
- * (leaving Idea), what gets built (leaving Spec), and what ships (leaving PR); the crew's
- * only handoff is Code → PR, so `code` is the one phase any member may leave.
+ * `exit` is who may move a card out of the phase, and every phase is the owner's: what gets
+ * worked on (leaving Idea), what gets built (leaving Spec), what is ready to review (leaving
+ * Code), and what ships (leaving PR). A crew that finishes Code hands off the way every other
+ * phase does — an attention request carrying the move, which the owner executes — so the
+ * artefact check is never crossed by the run that was supposed to meet it.
  *
  * `claimable` is whether a member works on a card in the phase: Spec and Code are where a
  * run happens; Idea, PR, and Done are the owner's. A card in a claimable phase, unarchived
@@ -15,6 +17,13 @@ export interface PhaseDef {
   readonly name: string;
   /** One line: what must exist on the card or in the repo when the phase ends. */
   readonly artefact: string;
+  /**
+   * Who may move a card out of the phase. **`"any"` has no instance since 016** — Code was the
+   * last — so declaring a phase `"any"` re-arms a path nothing exercises today: `moveCard`'s
+   * claim-conflict check sits directly beneath the exit check and is unreachable while every
+   * phase is the owner's, which means it has no coverage. Whoever declares the next `"any"`
+   * phase writes the test for it. The variant stays because the rule is the phase's to state.
+   */
   readonly exit: "owner" | "any";
   readonly claimable: boolean;
 }
@@ -40,7 +49,7 @@ export const PHASES: readonly PhaseDef[] = [
     id: "code",
     name: "Code",
     artefact: "A branch with commits and a pull request",
-    exit: "any",
+    exit: "owner",
     claimable: true,
   },
   { id: "pr", name: "PR", artefact: "A merged pull request", exit: "owner", claimable: false },

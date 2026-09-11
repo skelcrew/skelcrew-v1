@@ -427,7 +427,10 @@ test("with SKELCREW_AGENT=claude the daemon loads the driver and its playbooks a
     `skelcrew daemon ${VERSION} listening on ${join(data, "skelcrew.sock")}`,
   );
   const client = await connect(join(data, "skelcrew.sock"), { kind: "human" });
-  expect((await client.call("listMembers", {})).map((m) => m.name)).toContain("runner");
+  // Two agent members: the runner, which claims, and the crew, which a spawned agent speaks
+  // as. They are two so that the claim's holder and the agent's identity differ (016).
+  const members = await client.call("listMembers", {});
+  expect(members.filter((m) => m.kind === "agent").map((m) => m.name)).toEqual(["runner", "crew"]);
   expect(await client.call("listCards", {})).toEqual([]);
   await client.close();
   // The agent's `skelcrew` is in place before any run could need it.

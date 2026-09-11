@@ -85,7 +85,8 @@ test("two subscribers each receive five mutations in seq order; unsubscribe stop
 
   const card = await c.call("createCard", { title: "streamed" });
   core.moveCard(card.id, "code", owner.id);
-  await c.call("moveCard", { id: card.id, phase: "pr" });
+  // The moves and the archive are the owner's: since 016 no agent may make either.
+  await a.call("moveCard", { id: card.id, phase: "pr" });
   await c.call("setBody", { id: card.id, body: "# spec" });
   await c.call("comment", { id: card.id, text: "hi" });
   await c.call("setRefs", { id: card.id, refs: { branch: "feat/s" } });
@@ -100,7 +101,7 @@ test("two subscribers each receive five mutations in seq order; unsubscribe stop
 
   await a.unsubscribe();
   await c.call("comment", { id: card.id, text: "after" });
-  await c.call("archiveCard", { id: card.id });
+  await a.call("archiveCard", { id: card.id });
   await rb.until(8);
   // Anything the daemon had sent to `a` before this reply would have arrived before it.
   await a.call("listCards", {});

@@ -279,11 +279,19 @@ describe("phases and gates", () => {
     expect(core.getCard(card.id).phase).toBe("done");
   });
 
-  test("an agent may move a card out of code, and the owner can send it back", () => {
+  /**
+   * 016: leaving Code is the owner's, like every other phase. An agent finishing Code hands
+   * off with an attention request carrying the move, which the owner executes — so the one
+   * phase the crew could once leave on its own is now a gate like the rest.
+   */
+  test("an agent may not move a card out of code; the owner moves it, and can send it back", () => {
     const card = cardIn("code");
     const seqBefore = core.activitySince(0).at(-1)?.seq ?? 0;
 
-    const moved = core.moveCard(card.id, "pr", agent.id);
+    expectCoreError(() => core.moveCard(card.id, "pr", agent.id), "forbidden", "code", agent.name);
+    expect(core.getCard(card.id).phase).toBe("code");
+
+    const moved = core.moveCard(card.id, "pr", owner.id);
     expect(moved.phase).toBe("pr");
     expect(moved.updatedAt).toBeGreaterThanOrEqual(card.updatedAt);
 
@@ -291,20 +299,43 @@ describe("phases and gates", () => {
     expect(back.phase).toBe("code");
 
     const moves = core.activitySince(seqBefore);
-    expect(moves).toHaveLength(2);
+    expect(moves).toHaveLength(3);
     expect(moves[0]).toMatchObject({
-      type: "card_moved",
+      type: "move_rejected",
       cardId: card.id,
       actorId: agent.id,
-      data: { from: "code", to: "pr" },
+      data: { from: "code", to: "pr", reason: expect.any(String) },
     });
     expect(moves[1]).toMatchObject({
+      type: "card_moved",
+      cardId: card.id,
+      actorId: owner.id,
+      data: { from: "code", to: "pr" },
+    });
+    expect(moves[2]).toMatchObject({
       type: "card_moved",
       cardId: card.id,
       actorId: owner.id,
       data: { from: "pr", to: "code" },
     });
   });
+
+  /** 016, criterion 9: every destination, for both kinds of member. */
+  test.each<Phase>(["idea", "spec", "pr", "done"])(
+    "the owner may move a card out of code to %s; an agent may not",
+    (to) => {
+      const card = cardIn("code");
+      expectCoreError(() => core.moveCard(card.id, to, agent.id), "forbidden", "code", agent.name);
+      expect(core.getCard(card.id).phase).toBe("code");
+      expect(events(card.id, "move_rejected")).toHaveLength(1);
+      expect(events(card.id, "move_rejected")[0]).toMatchObject({
+        actorId: agent.id,
+        data: { to },
+      });
+
+      expect(core.moveCard(card.id, to, owner.id).phase).toBe(to);
+    },
+  );
 
   test("the owner may move a card out of every phase, to any phase", () => {
     const card = core.createCard({ title: "x" }, owner.id);
@@ -674,7 +705,7 @@ describe("activity", () => {
     core.setBody(card.id, "body", agent.id);
     core.comment(card.id, "hi", agent.id);
     core.setRefs(card.id, { branch: "feat/x" }, agent.id);
-    core.moveCard(card.id, "pr", agent.id);
+    core.moveCard(card.id, "pr", owner.id);
     core.moveCard(card.id, "code", owner.id);
     core.moveCard(card.id, "code", owner.id); // no-op
     core.ensureMember("crew-2", "agent");
@@ -1425,14 +1456,16 @@ describe("claims", () => {
     expect(core.activitySince(seqBefore)).toEqual([]);
   });
 
+  // The holder is the owner here because 016 made every phase the owner's to leave: a member
+  // of kind agent can no longer move a card out of any phase, its own claim included.
   test("a move out of the phase by the holder records card_moved then released { reason: moved }", () => {
     const card = cardIn("code");
-    core.claimCard(card.id, {}, agent.id);
+    core.claimCard(card.id, {}, owner.id);
     const seqBefore = lastSeq();
     const seen: Activity[] = [];
     core.subscribe((event) => seen.push(event));
 
-    const moved = core.moveCard(card.id, "pr", agent.id);
+    const moved = core.moveCard(card.id, "pr", owner.id);
 
     expect(moved.phase).toBe("pr");
     expect(moved.claim).toBeNull();
@@ -1440,44 +1473,51 @@ describe("claims", () => {
     expect(since.map((e) => e.type)).toEqual(["card_moved", "released"]);
     expect(since[1]).toMatchObject({
       cardId: card.id,
-      actorId: agent.id,
+      actorId: owner.id,
       data: { reason: "moved" },
     });
     expect(seen).toEqual(since);
     expect(core.getCard(card.id).claim).toBeNull();
   });
 
+  /**
+   * The refusal is now the phase's, not the claim's: 016 made every phase the owner's to
+   * leave, so a non-human actor is turned away before `moveCard` looks at the claim at all —
+   * and what it records is `move_rejected` rather than nothing. The claim's own refusal is
+   * asserted through `releaseCard` and `claimCard`, which still reach it.
+   */
   test("a non-holder agent may not move a card with a live claim; the owner may, and it releases", () => {
     const card = cardIn("code");
     const claimed = core.claimCard(card.id, {}, agent.id);
     const seqBefore = lastSeq();
 
-    expectCoreError(() => core.moveCard(card.id, "pr", other.id), "conflict", agent.name);
+    expectCoreError(() => core.moveCard(card.id, "pr", other.id), "forbidden", other.name);
 
     expect(core.getCard(card.id).phase).toBe("code");
     expect(core.getCard(card.id).claim).toEqual(claimed.claim);
-    expect(core.activitySince(seqBefore)).toEqual([]);
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["move_rejected"]);
 
     const moved = core.moveCard(card.id, "pr", owner.id);
     expect(moved.claim).toBeNull();
     expect(core.activitySince(seqBefore).map((e) => [e.type, e.actorId])).toEqual([
+      ["move_rejected", other.id],
       ["card_moved", owner.id],
       ["released", owner.id],
     ]);
   });
 
-  test("a lapsed claim does not block another agent's move; the move records the interruption, not a release", () => {
+  test("a lapsed claim does not block the owner's move; the move records the interruption, not a release", () => {
     const card = cardIn("code");
     core.claimCard(card.id, {}, agent.id);
     clock = T0 + 120_000;
     const seqBefore = lastSeq();
 
-    const moved = core.moveCard(card.id, "pr", other.id);
+    const moved = core.moveCard(card.id, "pr", owner.id);
 
     expect(moved.claim).toBeNull();
     const since = core.activitySince(seqBefore);
     expect(since.map((e) => [e.type, e.actorId])).toEqual([
-      ["card_moved", other.id],
+      ["card_moved", owner.id],
       ["run_interrupted", agent.id],
     ]);
     expect(since[1]?.data).toEqual({ by: agent.id, expiresAt: T0 + 120_000 });
@@ -1490,25 +1530,30 @@ describe("claims", () => {
     clock = T0 + 30_000;
     const seqBefore = lastSeq();
 
-    const archived = core.archiveCard(card.id, other.id);
+    const archived = core.archiveCard(card.id, owner.id);
 
     expect(archived.claim).toBeNull();
     const since = core.activitySince(seqBefore);
     expect(since.map((e) => [e.type, e.actorId])).toEqual([
-      ["card_archived", other.id],
+      ["card_archived", owner.id],
       ["run_interrupted", agent.id],
     ]);
     expect(since[1]?.data).toEqual({ by: agent.id, expiresAt: T0 + 30_000 });
     expect(core.sweepClaims()).toEqual([]);
   });
 
-  test("a non-holder agent may not archive a card with a live claim; the owner may, and it releases", () => {
+  /**
+   * 016: archiving is the owner's, held or free — "done" is a human's call the way merging is.
+   * So neither the holder nor a non-holder may archive, and the refusal is the same
+   * `forbidden` either way; what the owner may do is unchanged, claim and all.
+   */
+  test("no agent may archive a card, holder or not; the owner may, and it releases", () => {
     const card = cardIn("code");
     const claimed = core.claimCard(card.id, {}, agent.id);
     const before = core.getCard(card.id);
     const seqBefore = lastSeq();
 
-    expectCoreError(() => core.archiveCard(card.id, other.id), "conflict", agent.name);
+    expectCoreError(() => core.archiveCard(card.id, other.id), "forbidden", other.name);
 
     expect(core.getCard(card.id)).toEqual(before);
     expect(core.getCard(card.id).archivedAt).toBeNull();
@@ -1516,19 +1561,13 @@ describe("claims", () => {
     expect(core.listCards().map((c) => c.id)).toEqual([card.id]);
     expect(core.activitySince(seqBefore)).toEqual([]);
 
-    // The holder may archive its own claimed card.
+    // Nor may the holder archive its own claimed card.
     const own = cardIn("code");
     core.claimCard(own.id, {}, agent.id);
-    expect(core.archiveCard(own.id, agent.id).claim).toBeNull();
-
-    expect(
-      events(own.id)
-        .slice(-2)
-        .map((e) => [e.type, e.actorId]),
-    ).toEqual([
-      ["card_archived", agent.id],
-      ["released", agent.id],
-    ]);
+    expectCoreError(() => core.archiveCard(own.id, agent.id), "forbidden", agent.name);
+    expect(core.getCard(own.id).archivedAt).toBeNull();
+    expect(core.getCard(own.id).claim?.by).toBe(agent.id);
+    expect(events(own.id, "card_archived")).toEqual([]);
 
     const archived = core.archiveCard(card.id, owner.id);
     expect(archived.archivedAt).not.toBeNull();
@@ -1676,5 +1715,99 @@ describe("claims", () => {
     core.setRefs(card.id, { branch: "feat/x" }, agent.id);
     core.setBody(card.id, "# spec", owner.id);
     expect(core.getCard(card.id).claim).toEqual(claimed.claim);
+  });
+});
+
+/**
+ * 016. The rules that keep a run from crossing a gate are the core's own, decided from state
+ * the daemon holds — who has the claim on this card — rather than from what the caller says.
+ * The mechanism is identity: the spawned agent speaks as `crew`, the claim is `runner`'s, and
+ * most of the refusals below are what the core already did to a member acting on another
+ * member's live claim, now that the two are two members. Two are new rules: leaving Code, and
+ * archiving.
+ *
+ * Every case runs against the real core and asserts the card is as it was afterwards.
+ * `cli.test.ts` puts the same five verbs through the CLI against a live daemon, which is where
+ * the agent meets them.
+ */
+describe("the daemon holds the gate", () => {
+  let runner: Member;
+  let crew: Member;
+  let held: Card;
+  let free: Card;
+
+  beforeEach(() => {
+    runner = core.ensureMember("runner", "agent");
+    crew = core.ensureMember("crew", "agent");
+    const claimed = cardIn("code");
+    core.claimCard(claimed.id, {}, runner.id);
+    held = core.getCard(claimed.id);
+    free = cardIn("code");
+  });
+
+  test.each<Phase>(["pr", "done", "idea"])(
+    "crew may not move the runner's card to %s: the phase, the claim and the record stand",
+    (to) => {
+      expectCoreError(() => core.moveCard(held.id, to, crew.id), "forbidden", "code", crew.name);
+
+      expect(core.getCard(held.id).phase).toBe("code");
+      expect(core.getCard(held.id).claim).toEqual(held.claim);
+      const rejected = events(held.id, "move_rejected");
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({ actorId: crew.id, data: { from: "code", to } });
+    },
+  );
+
+  test("crew may not release the runner's claim", () => {
+    expectCoreError(() => core.releaseCard(held.id, {}, crew.id), "forbidden", crew.name);
+    expect(core.getCard(held.id).claim).toEqual(held.claim);
+    expect(events(held.id, "released")).toEqual([]);
+  });
+
+  test("crew may not archive a card the runner holds, nor a free one", () => {
+    expectCoreError(() => core.archiveCard(held.id, crew.id), "forbidden", crew.name);
+    expectCoreError(() => core.archiveCard(free.id, crew.id), "forbidden", crew.name);
+
+    expect(core.getCard(held.id).archivedAt).toBeNull();
+    expect(core.getCard(held.id).claim).toEqual(held.claim);
+    expect(core.getCard(free.id).archivedAt).toBeNull();
+    expect(core.listCards().map((c) => c.id)).toEqual([held.id, free.id]);
+    expect(events(held.id, "card_archived")).toEqual([]);
+    expect(events(free.id, "card_archived")).toEqual([]);
+  });
+
+  test("crew may not claim a card the runner holds", () => {
+    expectCoreError(() => core.claimCard(held.id, {}, crew.id), "conflict", runner.name);
+    expect(core.getCard(held.id).claim).toEqual(held.claim);
+    expect(events(held.id, "claimed")).toHaveLength(1);
+  });
+
+  test("crew may not resolve the request the runner raised to the owner", () => {
+    core.requestAttention(held.id, { to: owner.id, note: "allow Bash?" }, runner.id);
+    const raised = core.getCard(held.id);
+
+    expectCoreError(() => core.resolveAttention(held.id, "allow", crew.id), "forbidden", crew.name);
+
+    expect(core.getCard(held.id).attention).toEqual(raised.attention);
+    expect(core.listAttention({ to: owner.id }).map((a) => a.cardId)).toEqual([held.id]);
+    expect(events(held.id, "attention_resolved")).toEqual([]);
+    expect(core.getCard(held.id).activity).toEqual(raised.activity);
+  });
+
+  /** What the identity split does not take away: the agent's ordinary work on the card. */
+  test("crew still comments, sets the body and records refs on the card the runner holds", () => {
+    core.comment(held.id, "read the spec", crew.id);
+    core.setBody(held.id, "# the spec", crew.id);
+    core.setRefs(held.id, { prUrl: "https://example.invalid/pr/1" }, crew.id);
+
+    const card = core.getCard(held.id);
+    expect(card.body).toBe("# the spec");
+    expect(card.refs.prUrl).toBe("https://example.invalid/pr/1");
+    expect(card.claim?.by).toBe(runner.id);
+    expect(card.activity.slice(-3).map((e) => [e.type, e.actorId])).toEqual([
+      ["comment", crew.id],
+      ["body_set", crew.id],
+      ["refs_set", crew.id],
+    ]);
   });
 });

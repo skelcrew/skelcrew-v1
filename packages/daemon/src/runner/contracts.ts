@@ -39,7 +39,11 @@ export interface ContractInput {
   branchHead: string;
   base: string;
   cardId: number;
-  /** The `runner` member: whose `body_set` and `refs_set` count as this run's. */
+  /**
+   * The `crew` member the agent spoke as: whose `body_set` and `refs_set` count as this run's.
+   * The artefact is the agent's to produce, so it is the agent's writes that are counted — the
+   * runner's own `refs_set` records the branch and answers no condition here.
+   */
   memberId: number;
   /** The last sequence number before the run began: what "during this run" means. */
   sinceSeq: number;

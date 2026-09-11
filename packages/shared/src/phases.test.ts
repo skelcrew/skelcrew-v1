@@ -14,9 +14,19 @@ test("every phase declares a one-line artefact", () => {
   }
 });
 
-test("only code may be left by any member; the rest are the owner's", () => {
+/**
+ * 016: leaving Code is the owner's too. An agent finishing Code hands off with an attention
+ * request carrying the move, which the owner executes — so every phase is now a gate.
+ */
+test("every phase is the owner's to leave", () => {
   const exits = Object.fromEntries(PHASES.map((p) => [p.id, p.exit]));
-  expect(exits).toEqual({ idea: "owner", spec: "owner", code: "any", pr: "owner", done: "owner" });
+  expect(exits).toEqual({
+    idea: "owner",
+    spec: "owner",
+    code: "owner",
+    pr: "owner",
+    done: "owner",
+  });
 });
 
 test("only spec and code are claimable: the phases where a run happens", () => {

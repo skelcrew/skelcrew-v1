@@ -37,10 +37,16 @@ export function writeShim(dataDir: string, cliMain: string = CLI_MAIN): string {
  * one that answers, and the two variables that say who the agent speaks as and which
  * daemon it reaches. The daemon's own environment is not passed on — skelcrew holds no
  * credentials, and what it does hold is none of the agent's business.
+ *
+ * `memberName` is who the agent is, and it is not the member holding the card's claim: the
+ * runner claims as itself and spawns the agent as `crew`, so every gate the core keeps —
+ * moving, releasing, claiming, resolving — is a refusal on the daemon's own facts rather than
+ * a verb left off a list.
  */
 export function agentEnvironment(
   base: Record<string, string | undefined>,
   dataDir: string,
+  memberName: string,
 ): Record<string, string> {
   const dir = shimDir(dataDir);
   const path = base.PATH;
@@ -48,7 +54,7 @@ export function agentEnvironment(
     PATH: path === undefined || path === "" ? dir : `${dir}${delimiter}${path}`,
   };
   if (base.HOME !== undefined) env.HOME = base.HOME;
-  env.SKELCREW_AS = "runner";
+  env.SKELCREW_AS = memberName;
   env.SKELCREW_DIR = dataDir;
   return env;
 }
