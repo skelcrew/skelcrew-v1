@@ -25,8 +25,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 9 | 012 Spawn an agent, show what it does | landed, PR #10 |
 | 10 | 013 The agent asks the owner | landed, PR #11 — seven review rounds, every Critical a spec defect |
 | 11 | 014 A phase ends in a verified artefact | landed, PR #12 |
-| 12 | 016 The gate is the daemon's, not the allowlist's | planned |
-| 13 | 015 Control characters can't repaint the record | planned |
+| 12 | 016 The gate is the daemon's, not the allowlist's | landed, PR #13 |
+| 13 | 015 Control characters can't repaint the record | landed, PR #14 — two Criticals were regressions the spec itself introduced |
 | 14 | 017 A playbook's commands are checked against the harness that runs them | planned |
 | 15 | 008 The full loop | planned — rewritten after 014; split into 008a–c below |
 | | 005 | dropped |
@@ -286,7 +286,15 @@ When 008a lands, skelcrew can start building skelcrew.
 **Carried findings.** What the coordinator agent costs, and why a planner agent and a work
 hierarchy stay out — `docs/research/orca.md`, `docs/research/field-scan.md`. The activity feed
 as a memory layer, and the rules a learning has to follow — `docs/research/README.md`,
-`docs/research/hermes.md`.
+`docs/research/hermes.md`. **A failed ending must park the card, not re-enter the queue** —
+found in 015's review: `endRun` catches any refusal of its comment and attention request,
+warns to stderr, and releases the claim; a free card in a claimable phase is then claimed again
+at once, with no backoff and nothing on the card. 015 removed the one reachable trigger (a
+control character in the note) and left the shape. The next refusal at that sink — a byte cap,
+a core rule added later — costs 186 runs in three seconds and no record, which is exactly what
+*everything observable* forbids. It belongs with 008b's runner-enforced machinery: the runner
+counts, the runner stops, and a run that cannot say why it ended raises that fact rather than
+retrying.
 
 ## 009 — Claims as leases
 
@@ -476,6 +484,22 @@ comment may carry an excerpt — must keep `\n` and `\t` while rejecting the res
 included. A blanket rule would break the body; a blanket exemption is the hole. Consider also
 whether rendering should defend itself regardless of what validation accepts, since the terminal
 is where the damage lands and old rows already in a database were never validated.
+
+**Carried findings.** Landed as two layers — refused at every write, escaped at the CLI's one
+sink — and the review found two regressions the spec itself introduced, both by running the
+thing rather than reading it: a comment with a newline forged an activity entry because the spec
+assumed a layout the renderer never had, and a driver dying with an ANSI-coloured error put the
+runner into an unbounded re-claim loop because the spec escaped three enumerated helpers and a
+fourth path was the one that mattered. The cure for both was the same construction, applied at
+the one place the text passes: a marker on every line of a multi-line field, and an escape on
+the runner's posting sink rather than in its helpers. Three things it did not close, recorded
+in the run record: the daemon's own stderr is unescaped, so a git error under `color.ui =
+always` can colour the daemon operator's console (not the record); `postingCore` wraps the three
+core methods the runner calls and its doc says "every text", which is true of the runner as
+written and not of the promise; and the Code playbook now reads the body for export through
+`--json`, reconstructing markdown from a JSON string, when the body is already verbatim in the
+run's first user message — a raw-body output mode, or naming that message as the source, is
+the cheaper fix.
 
 ## 016 — The gate is the daemon's, not the allowlist's
 
