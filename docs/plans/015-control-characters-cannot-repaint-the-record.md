@@ -151,7 +151,10 @@ a scratch copy, final test files, `bun --cwd`): **5 fail, 149 pass** — exactly
 this round adds or changes, and nothing else, so the fixes changed no other observable.
 
 - `run.test.ts` "a driver error carrying an escape sequence ends the run once…" → `expect(runs)
-  .toBe(1)` received **13**.
+  .toBe(1)` received **13** here and **14** in the verifier's run. That count is how many
+  re-claims fit in the 200 ms the test waits, so it is timing-dependent and machine-dependent;
+  nothing rests on the number, which is why the assertion is "exactly one run" rather than a
+  ceiling. Where this record and *Verification* below quote different figures, this is why.
 - `runner.test.ts` "a salvage note naming a file whose name carries an escape…" → no `kept`
   comment within 2 s; the card got `teardown failed: comment must not contain…` instead.
 - `cli.test.ts` "watch's printed notification is one line…" → the ping printed
@@ -205,15 +208,58 @@ named tests. The Minors, with their disposition:
 each round's implementation files in scratch copies and ran the final suite against each: base
 → 72 of 74 new-or-changed tests fail (the two passes named above); round 1's implementation →
 13 fail (the record's 8 plus round 3's 5); round 2's → exactly the 5 named. The loop test
-received **14** against round 2. The shared predicate was executed over U+0000–U+01FF; every
+received **14** against round 2 (13 in the implementer's run; the count is timing-dependent —
+see *Red, then green (round 3)*). The shared predicate was executed over U+0000–U+01FF; every
 CLI write site was enumerated (`fail`, `VERSION`, `usage()`, `out`, `warn`, `safe`/`safeJson`);
 `postingCore` was traced to every runner write but `setRefs`.
 
 What was unmet: criterion 9, amended in `40aa846` to name the two `cli.test.ts` assertions 6a
-changed, still said "no other existing assertion changes" — and the diff removes exactly
-**three** `expect` lines, the third being `playbooks.test.ts`'s split pin, required by 8c and
-committed in `2f6129d` *before* the amendment that missed it. Corrected by the orchestrator: the
-spec now names all three, and says the count is what checks it. Two record gaps were corrected
-in the same pass: the stale "69/68" figure above, and this section, which the record lacked.
-No further verification pass was run for the record's own edits beyond the narrow re-check
-that follows; the code was not touched after `2f6129d`.
+changed, still said "no other existing assertion changes" — and against `2f6129d` the diff
+removed **four** `expect` lines at three sites: three in `cli.test.ts` (`toContain(body)` in
+"show prints the card…", and `toContain(fromStdin)` and `toContain(fromFile)` in "body replaces
+the body from stdin or a file…", which asserted both fixtures), plus `playbooks.test.ts`'s pin,
+required by 8c and committed in `2f6129d` *before* the amendment that missed it. Corrected by
+the orchestrator: the spec now names all four, at those three sites, and says the count is what
+checks it. Two record gaps were corrected in the same pass: the stale "69/68" figure above, and
+this section, which the record lacked. The code was not touched after `2f6129d` except for the
+pin below.
+
+A second narrow re-verification then failed on two things: the loop count, quoted as two
+different numbers in two places with nothing saying why, and the pin's adjacency — the split
+`playbooks.test.ts` pin was mutation-tested by moving `Do not allocate a new number` into an
+unrelated appendix of `code.md`, and it still passed. Both are fixed below.
+
+## Fix after verification — the pin restored, the counts corrected
+
+`playbooks.test.ts`'s "reuses the recorded spec path" pin is one contiguous `toContain` again,
+over the sentence 8c amended: from `**overwrite that path** from the card's body` through the
+`--json`/`.body` clause to `Do not allocate a new number`. Splitting it either side of the
+inserted clause left the second half free-floating — the 8c test pins the `--json` clause to the
+first half, and nothing pinned the prohibition to the sentence at all.
+
+Red first, the verifier's way, in a scratch copy of the tree with `Do not allocate a new number`
+moved out of §5 and into an appendix:
+
+- with the split pin as committed in `2f6129d`: **16 pass, 0 fail** — the hole, reproduced.
+- with the contiguous pin: **15 pass, 1 fail**, `expect(received).toContain(expected)` naming
+  the whole sentence.
+- with the contiguous pin against `code.md` as it is: **16 pass, 0 fail**.
+
+The two count corrections are made above, at the place each number appears.
+
+**And restoring the pin moves criterion 9's own count back to three.** The contiguous pin leaves
+that test's `expect(unwrapped(loadPlaybooks().code)).toContain(` line exactly as base wrote it
+and changes only the string literal inside it, so the removal disappears along with the
+weakening that caused it. Measured, both ways:
+
+```
+git diff 63011e8 -- '*.test.ts' | grep -c '^-.*expect('   # 3, as committed here
+git diff 63011e8 2f6129d -- '*.test.ts' | grep -c '^-.*expect('   # 4, with the split pin
+```
+
+The three are `cli.test.ts`'s, all from criterion 6a. Three *sites* are still touched, as
+criterion 9 says, and `playbooks.test.ts` is still one of them — its pinned text changed. So
+criterion 9's "**four** removed `expect` lines" was written against the split pin and now reads
+one too many: the spec needs the number put back to three, or the sentence rephrased to count
+changed assertions rather than removed lines. Flagged rather than implemented around; nothing
+in the code depends on it.

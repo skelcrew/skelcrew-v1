@@ -307,12 +307,15 @@ test("the Code playbook exports a spec file only where the repository already ke
   expect(prescribed(code)).toContain("skelcrew refs <id> --spec docs/specs/<NNN>-<name>.md");
 });
 
+/**
+ * One contiguous assertion, over the sentence 8c amended: relocating either half of it — the
+ * overwrite rule or the prohibition on a new number — fails this, which two `toContain`s either
+ * side of the inserted clause would not.
+ */
 test("the Code playbook reuses the recorded spec path on a card returning from PR", () => {
-  const code = unwrapped(loadPlaybooks().code);
-  expect(code).toContain(
-    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body",
+  expect(unwrapped(loadPlaybooks().code)).toContain(
+    "If a `specPath` is recorded, that is this card's spec file: **overwrite that path** from the card's body, read with `skelcrew show <id> --json` and taken from `.body` — `skelcrew show` marks every line of the body so it cannot be mistaken for a line the CLI wrote, and the JSON is the body as stored. Do not allocate a new number",
   );
-  expect(code).toContain("Do not allocate a new number");
 });
 
 test("no command either playbook names carries a shell operator", () => {
