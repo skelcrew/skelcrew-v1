@@ -54,7 +54,7 @@ const CHECK_FILE = `packages/daemon/src/runner/${CHECK_MODULE}.ts`;
  * rather than a drift. The daemon's own run path is still `claude.ts` alone: `harness-check.ts`
  * is not imported by anything the daemon runs, and `bun run check` does not execute it.
  */
-test("the harness SDK is named by exactly one source file, and imported by exactly two", async () => {
+test("the harness SDK is named by exactly three files, and imported at runtime by exactly two", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
   const naming: string[] = [];
