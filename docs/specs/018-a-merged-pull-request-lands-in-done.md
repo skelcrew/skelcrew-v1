@@ -134,7 +134,9 @@ way `runner.ts` resolves it. The poll runs where the runner runs — off under `
 and without a `repoRoot` — because it spawns a subprocess against the repository. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
 spawning; otherwise ask the forge about each, and:
 
-- merged, and the pull request is this repository's and its head is the card's `refs.branch`:
+- merged, and the pull request is this repository's and its head is the branch the runner
+  recorded for the card (the last `refs_set` by the `runner` member naming `branch` — never
+  `refs.branch` as it sits on the card, which `crew` can rewrite):
   `core.comment(id, "pull request <url> merged at <mergedAt>", runnerId)` then
   `core.moveCard(id, "done", ownerId)`. The comment first, so the move's reason precedes it on
   the feed.
@@ -168,8 +170,8 @@ Recorded as a decision rather than left for review.
 - **Polling rather than a member action** was the owner's decision (see the run record's
   question). Polling only while a PR-phase card exists is what keeps *cards drive the runner*
   true: entering PR is the card asking to be watched, and leaving it ends the watch.
-- **The ownership check** (repository and head branch) is not optional and not a later
-  hardening: without it, `crew`'s ability to set `prUrl` on any card is a way past the merge
+- **The ownership check** (repository, and the head branch the runner recorded) is not optional
+  and not a later hardening: without it, `crew`'s ability to set `prUrl` on any card is a way past the merge
   gate. It is the composition 016's red-team named and this spec would otherwise reintroduce.
 - **No attention request on a successful merge.** The point is one gesture; a request would be
   the second. The owner's queue stays for things that need the owner.
