@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -89,12 +90,18 @@ function spawnDaemon(options: {
   dataDir?: string;
   runner?: boolean;
   agent?: string;
+  mergePollSeconds?: string;
+  /** Merged last: a `PATH` with a shim on it, and whatever that shim needs. */
+  env?: Record<string, string>;
 }): Daemon {
   const env: Record<string, string | undefined> = { ...process.env, ...GIT_ENV };
   delete env.SKELCREW_DIR;
   if (options.dataDir) env.SKELCREW_DIR = options.dataDir;
   env.SKELCREW_RUNNER = options.runner ? "1" : "0";
   env.SKELCREW_AGENT = options.agent ?? "none";
+  if (options.mergePollSeconds === undefined) delete env.SKELCREW_MERGE_POLL_SECONDS;
+  else env.SKELCREW_MERGE_POLL_SECONDS = options.mergePollSeconds;
+  Object.assign(env, options.env ?? {});
   const proc = Bun.spawn([process.execPath, MAIN], {
     cwd: options.cwd,
     env,
@@ -407,6 +414,112 @@ test("with SKELCREW_DIR set but no repository around the cwd, the daemon serves 
   expect(await stopped(daemon, "SIGTERM")).toBe(0);
   expect(await daemon.stderr()).toContain("runner");
   expect(await daemon.stderr()).toContain("not inside a git repository");
+});
+
+// --- the merge poll's interval (018) ---
+
+/**
+ * A `gh` of our own, first on `PATH`: it records what the daemon asked it and answers as the
+ * real one does (verified field names and casing; `018`'s `forge.ts` records the version). No
+ * test runs the real `gh` — this shim is that boundary, the way the fake driver is the agent's.
+ */
+const GH_SHIM = `#!/bin/sh
+echo "$@" >> "$GH_LOG"
+case "$1 $2" in
+"repo view") echo '{"url":"https://example.invalid/o/r"}' ;;
+"pr view") echo '{"headRefName":"x","mergedAt":null,"state":"OPEN","url":"https://example.invalid/o/r/pull/1"}' ;;
+*) exit 1 ;;
+esac
+`;
+
+/** Whatever `read` returns first, polled every 50 ms; throws when the deadline passes. */
+async function until<T>(read: () => T | undefined, timeoutMs: number, what: string): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = read();
+    if (value !== undefined) return value;
+    if (Date.now() > deadline) throw new Error(`${what} within ${timeoutMs} ms`);
+    await Bun.sleep(50);
+  }
+}
+
+test("the poll asks gh on its interval, and asks nothing while no card in PR carries a pull request", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const log = join(dir, "gh.log");
+  writeFileSync(join(bin, "gh"), GH_SHIM);
+  chmodSync(join(bin, "gh"), 0o755);
+
+  const daemon = spawnDaemon({
+    cwd: repo,
+    dataDir: data,
+    runner: true,
+    mergePollSeconds: "1",
+    env: { PATH: `${bin}:${process.env.PATH ?? ""}`, GH_LOG: log },
+  });
+  expect(await daemon.firstLine()).toBe(
+    `skelcrew daemon ${VERSION} listening on ${join(data, "skelcrew.sock")}`,
+  );
+  const client = await connect(join(data, "skelcrew.sock"), { kind: "human" });
+
+  // A board that holds the two shapes which must not be polled: a card in PR the owner moved
+  // there by hand, and a card with a pull request that is not in PR.
+  const byHand = await client.call("createCard", { title: "By hand" });
+  await client.call("moveCard", { id: byHand.id, phase: "pr" });
+  const elsewhere = await client.call("createCard", { title: "Not in PR" });
+  await client.call("setRefs", {
+    id: elsewhere.id,
+    refs: { prUrl: "https://example.invalid/o/r/pull/9" },
+  });
+
+  // Two intervals of that board: no `gh` was ever spawned.
+  await Bun.sleep(2200);
+  expect(existsSync(log)).toBe(false);
+
+  const card = await client.call("createCard", { title: "Merge me" });
+  await client.call("setRefs", {
+    id: card.id,
+    refs: { prUrl: "https://example.invalid/o/r/pull/1" },
+  });
+  await client.call("moveCard", { id: card.id, phase: "pr" });
+
+  // Both calls of one tick, in order: the repository first, then the card's pull request. The
+  // wait is for the second, since the file exists as soon as the first is written.
+  const asked = await until(
+    () => {
+      const text = existsSync(log) ? readFileSync(log, "utf8") : "";
+      return text.includes("pr view") ? text : undefined;
+    },
+    5000,
+    "gh was not asked about the pull request",
+  );
+  expect(asked).toContain("repo view --json url");
+  expect(asked).toContain(
+    "pr view https://example.invalid/o/r/pull/1 --json state,mergedAt,headRefName,url",
+  );
+  // The pull request is open, so nothing happened to the card and nothing was said.
+  const detail = await client.call("getCard", { id: card.id });
+  expect(detail.phase).toBe("pr");
+  expect(detail.activity.filter((e) => e.type === "comment")).toEqual([]);
+  await client.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
+});
+
+test("a SKELCREW_MERGE_POLL_SECONDS that is not seconds stops the daemon before it creates anything", async () => {
+  const daemon = spawnDaemon({
+    cwd: dir,
+    dataDir: join(dir, "data"),
+    mergePollSeconds: "every minute",
+  });
+  expect(await daemon.proc.exited).toBe(1);
+  expect(await daemon.stderr()).toContain(
+    'SKELCREW_MERGE_POLL_SECONDS must be a positive number of seconds, not "every minute"',
+  );
+  expect(await daemon.stdout()).toBe("");
+  expect(existsSync(join(dir, "data"))).toBe(false);
 });
 
 // --- the driver selection (012) ---

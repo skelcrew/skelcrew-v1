@@ -51,12 +51,45 @@ request <url> merged at <time>` — and then a `card_moved` PR → Done whose ac
 attention request is raised; nothing waits on the owner.
 
 **The pull request has to be the card's own.** The daemon believes a merge only when the forge
-says the pull request at the card's `prUrl` is in this repository, its head branch is the card's
-recorded branch, and its state is merged. A `prUrl` pointing anywhere else — another
-repository, another branch, a URL `crew` chose — is not a merge of this card's work, and the
-card stays in PR with a comment saying what did not match. This is the composition 016's
-red-team predicted: `crew` can set refs on any card, and a `prUrl` naming an already-merged pull
-request elsewhere would otherwise walk a card into Done past the owner's merge gate.
+says the pull request at the card's `prUrl` is in this repository, its head branch is **the
+branch the runner recorded for this card**, and its state is merged. A `prUrl` pointing
+anywhere else — another repository, another branch, a URL `crew` chose — is not a merge of this
+card's work, and the card stays in PR with a comment saying what did not match. This is the
+composition 016's red-team predicted: `crew` can set refs on any card, and a `prUrl` naming an
+already-merged pull request elsewhere would otherwise walk a card into Done past the owner's
+merge gate.
+
+The branch compared is not `refs.branch` as it sits on the card, because `crew` can write that
+too — `setRefs` has no actor restriction — and review demonstrated, through the real CLI, that
+one `skelcrew --as crew refs <id> --branch <other> --pr <other's merged url>` walked a card into
+Done with the spec as approved. The runner records the card's branch itself at run start
+(`runner.ts`, `setRefs({ branch })` as `runner`), and the owner may record one by hand. The
+check reads the branch from the last `refs_set` on the card whose actor is the `runner` member
+**or a human member** — the same activity read the once-rule already performs — and compares
+the forge's head branch to that. A human-recorded branch binds because the human who wrote it
+can `skelcrew mv <id> done` anyway, so accepting it costs nothing and keeps the hand-driven
+card (branch and pull request made in a terminal, `skelcrew refs --pr`, moved to PR) able to
+land. What then remains is a pull request from this card's own branch merged under a different
+number, which is the card's own work and is accepted.
+
+What this binds, stated without the overclaim the spec made on its first correction: a wrong,
+stale or copied `prUrl`, and an agent that keeps the identity the runner gave it. It does
+**not** bind a caller that asserts `runner` — the spec as corrected said `crew` "cannot produce
+a `refs_set` as `runner`", and review walked it live: `skelcrew --as runner refs <id> --branch
+<other>` joins the `runner` member, because names are not credentials (`allowlist.ts`, since
+016) and `hello` reserves none. That caller is owner-equivalent by choosing no `--as` at all,
+and 016 records the limit. If a real bind is ever wanted, "`hello` refuses the reserved member
+names" is its own finding, carried to MILESTONES, and it interacts with the deliberate
+`--as crew` join `allowlist.ts` documents.
+
+**The tick acts on the card as it is now, not as it was.** A tick reads the card, then awaits
+the forge — one `gh` round-trip per card, and for the *n*-th card in the list *n* of them. The
+owner can move a card back to Code inside that window, and a run can start on it. So before the
+comment and the move, the tick re-reads the card and proceeds only if it is still in PR, still
+unarchived, and still carries the `prUrl` the forge was asked about; otherwise it does nothing
+and says nothing. Review demonstrated the alternative: a card sent back to Code mid-await was
+moved **Code → Done** as the owner, releasing the fresh claim mid-run — the owner's own
+decision undone, in the owner's name.
 
 **The daemon polls only while something is in PR.** No unarchived card in PR with a `prUrl`, no
 `gh` call. A card in PR without a `prUrl` — the owner moved it there by hand — is left alone.
@@ -66,8 +99,16 @@ The interval is slow (a minute by default) and configurable the way the run limi
 an attention request to the owner — `pull request <url> closed without merging` — with no move
 attached. Sending it back to Code, or archiving, is the owner's call, and the queue shows it.
 
-**`gh` missing or not logged in is said once and then waited out.** The daemon warns once per
-process (not per tick), the cards stay in PR, and `skelcrew mv <id> done` by hand still works.
+**`gh` that cannot answer is said once and then waited out.** The daemon warns once per process
+per cause (not per tick) — the repository's own URL, or a pull request — the cards stay in PR,
+and `skelcrew mv <id> done` by hand still works. A `gh` that is absent or logged out surfaces on
+the repository line, since that is every tick's first call, and the warning says which it could
+not answer rather than guessing why. **A `gh` that hangs is bounded**: each spawn has a timeout
+after which the child is killed and the call counts as "cannot answer", so a stalled network
+collapses into the warned-once path instead of holding the poll's one-tick-at-a-time guard for
+the life of the process. Review found the unbounded version: one `gh` call, then eight silent
+ticks, no warning, no recovery short of a restart — the last arc of the product stopped turning
+and nothing said so. A tick skipped because one is still in flight is said too, once.
 The daemon holds no credential for the forge: `gh` uses the owner's own login, the way the agent
 already does.
 
@@ -79,12 +120,23 @@ merge, and anything on the forge beyond reading the pull request's state are out
 
 ### A forge, beside git
 
-A `Forge` interface in `packages/daemon/src/runner/forge.ts` with one method:
+A `Forge` interface in `packages/daemon/src/runner/forge.ts` with two methods:
 `pullRequest(repoRoot, url)` returning `{ url, state: "open" | "merged" | "closed", mergedAt?,
 headRefName, baseRepo }` or `undefined` when `gh` cannot answer (absent, not logged in, the URL
-not a pull request). Implemented with `Bun.spawn(["gh", "pr", "view", url, "--json", ...])` run
-in `repoRoot`, following `git.ts`'s shape exactly — the same error wrapping, the same "spawn
-failed" distinction. Tests fake it; no test runs `gh`.
+not a pull request); and `repoUrl(repoRoot)` returning the repository's own URL, or `undefined`.
+Both implemented with `Bun.spawn(["gh", ...])` and an argv array, following `git.ts`'s shape
+exactly — the same error wrapping, the same "spawn failed" distinction. Tests fake it; no test
+runs `gh`.
+
+Why two and not the one the spec as approved named: `gh pr view <url>` takes the URL as its
+authority and **ignores the directory it runs in** — verified against the installed `gh`, which
+answered about another repository's pull request from inside this one — and the installed `gh`
+(2.86.0) has **no base-repository field** at all (`baseRepository` is "Unknown JSON field";
+`headRepository.nameWithOwner` comes back empty). So "is this pull request in this repository"
+cannot be read off the pull request. It is read by comparing the canonical `url` `gh` returns for
+the pull request against the repository's own URL from `gh repo view --json url`, both `gh`'s own
+output, asked once per tick and only when a candidate card exists. `baseRepo` is that URL —
+`https://host/owner/repo` — so two hosts with the same slug cannot match.
 
 Why `gh` and not git: a squash merge leaves no ancestry to check, and a deleted remote branch
 is a setting, not a signal. Why a URL and not a number: `prUrl` is what the card carries, and
@@ -92,13 +144,27 @@ is a setting, not a signal. Why a URL and not a number: `prUrl` is what the card
 
 ### A merge tick, beside the sweep
 
-`packages/daemon/src/merges.ts`, in `sweep.ts`'s shape: one `mergeTick(core, forge, repoRoot,
-ownerId, runnerId, warn)` the daemon calls on an interval — `MERGE_POLL_INTERVAL_MS`, sixty
-seconds, overridable by `SKELCREW_MERGE_POLL_SECONDS` the way `SKELCREW_RUN_MINUTES` overrides
-the run limit. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
-spawning; otherwise ask the forge about each, and:
+`packages/daemon/src/merges.ts`, in `sweep.ts`'s shape but with one difference the spec as
+approved missed: `mergePoll({ core, forge, repoRoot, runnerId, warn })` returns a `tick()` the
+daemon calls on an interval — `MERGE_POLL_INTERVAL_MS`, sixty seconds, overridable by
+`SKELCREW_MERGE_POLL_SECONDS` the way `SKELCREW_RUN_MINUTES` overrides the run limit. A closure
+rather than the free `mergeTick(...)` first written, because "warn once per process" is state
+that lives *between* ticks, and a free function has nowhere to keep it; the closure is also where
+a test drives many ticks and counts the warnings. The owner's id is resolved inside the tick, the
+way `runner.ts` resolves it. The poll runs where the runner runs — off under `SKELCREW_RUNNER=0`
+and without a `repoRoot` — because it spawns a subprocess against the repository. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
+spawning; otherwise ask the forge for the repository's own URL, and for each card compare the
+`prUrl`'s origin (scheme and host) to that URL's origin **before** asking about the pull
+request: a `prUrl` on another host is a mismatch, recorded through the same once-rule as the
+mismatches below with a comment saying which host it is on and that the forge was not asked
+(not "is merged, but", since nothing was asked), and `gh pr view` is never run against it. Review round 3 established why: `gh pr view
+<url>` sends a request to the host named in the URL, so a card whose `prUrl` names a host `crew`
+chose would otherwise make the daemon contact that host every interval for as long as the card
+sits in PR. For the cards that pass, ask the forge about each, and:
 
-- merged, and the pull request is this repository's and its head is the card's `refs.branch`:
+- merged, and the pull request is this repository's and its head is the branch the runner
+  recorded for the card (the last `refs_set` by the `runner` member naming `branch` — never
+  `refs.branch` as it sits on the card, which `crew` can rewrite):
   `core.comment(id, "pull request <url> merged at <mergedAt>", runnerId)` then
   `core.moveCard(id, "done", ownerId)`. The comment first, so the move's reason precedes it on
   the feed.
@@ -132,8 +198,8 @@ Recorded as a decision rather than left for review.
 - **Polling rather than a member action** was the owner's decision (see the run record's
   question). Polling only while a PR-phase card exists is what keeps *cards drive the runner*
   true: entering PR is the card asking to be watched, and leaving it ends the watch.
-- **The ownership check** (repository and head branch) is not optional and not a later
-  hardening: without it, `crew`'s ability to set `prUrl` on any card is a way past the merge
+- **The ownership check** (repository, and the head branch the runner recorded) is not optional
+  and not a later hardening: without it, `crew`'s ability to set `prUrl` on any card is a way past the merge
   gate. It is the composition 016's red-team named and this spec would otherwise reintroduce.
 - **No attention request on a successful merge.** The point is one gesture; a request would be
   the second. The owner's queue stays for things that need the owner.
@@ -151,22 +217,39 @@ This spec grants the daemon a command and a member's action, so the check applie
 2. **What `gh pr view` reaches.** Read-only: it returns JSON about a pull request. Its `--json`
    fields are enumerated in the call; no `--web`, no `--comments`, nothing that runs a program.
    The daemon passes the card's `prUrl`, an https URL validated at write time and free of control
-   characters (015), as one argument; `gh` treats it as a URL or rejects it. No shell is involved
-   (`Bun.spawn` with an argv array, as `git.ts`).
+   characters (015), as one argument. No shell is involved (`Bun.spawn` with an argv array, as
+   `git.ts`). But `gh pr view <url>` is not passive about the URL: it sends a request to the host
+   the URL names (review round 3 ran it against `https://example.com/o/r/pull/1` and got `HTTP
+   405` back from `example.com`), and the poll asks again every interval. So the tick compares
+   the `prUrl`'s origin to the repository's own URL first and never runs `gh pr view` against a
+   host that is not this repository's. The spec as approved said `gh` "treats it as a URL or
+   rejects it", which was wrong.
 3. **Composed with what `crew` can do.** `crew` can set any card's `prUrl` (016, recorded). Without
    the ownership check, a `prUrl` naming a merged pull request in any repository moves a card to
    Done as the owner. With it, the pull request must be this repository's and its head must be
-   the card's branch; `crew` cannot merge (`gh pr merge` asks — 013) and cannot move the card
-   (016). What remains: `crew` could set `prUrl` to a *different* pull request from the same
-   branch in this repository, if one existed and had merged — which means the card's own work
-   merged, under another number. That is the same outcome, recorded with a different URL, and it
-   is left as it is.
+   the branch **the runner recorded** — not `refs.branch` as `crew` may have rewritten it, since
+   `setRefs` has no actor restriction and review walked a card into Done with two `crew` writes
+   under the spec as approved. `crew` cannot merge (`gh pr merge` asks — 013) and cannot move
+   the card (016). What remains: `crew` could set `prUrl` to a *different* pull request from
+   this card's own branch, if one existed and had merged — which means the card's own work
+   merged, under another number. That is the same outcome, recorded with a different URL, and
+   it is left as it is. And what this check is *for*, stated without overclaiming: it binds a
+   wrong, stale or copied `prUrl`, and it binds an agent that keeps the identity it was given.
+   It does not bind a caller asserting another identity over the socket — `allowlist.ts` records
+   that `runner` and `crew` are names, not credentials, so `skelcrew --as runner` *joins* the
+   runner member and can write the `refs_set` this check reads; and no `--as` at all is the
+   owner, who can `skelcrew mv <id> done` directly. That is 016's recorded limit, and it is a
+   gate, not a boundary, here as there. (The spec's first correction said `--as runner` "is the
+   owner" and that `crew` "cannot write a `refs_set` as `runner`"; both were wrong, and review
+   demonstrated the second live.)
 4. **The enforcer is the core's `moveCard`**, run directly by the tests, plus the daemon's own
    ownership check, which the tests drive with a faked forge returning every mismatch shape.
    `gh`'s real output shape is verified once by the implementer against the installed `gh`
-   (`gh pr view <a real URL> --json state,mergedAt,headRefName,baseRepository`) and the field
-   names recorded in `forge.ts`; that is the one semantics this spec takes from a tool, and it is
-   pinned by the `gh` version the implementer ran.
+   (`gh pr view <a real URL> --json state,mergedAt,headRefName,url` and `gh repo view --json
+   url`) and the field names recorded in `forge.ts`; that is the one semantics this spec takes
+   from a tool, and it is pinned by the `gh` version the implementer ran. The spec as approved
+   named `baseRepository` here; the installed `gh` has no such field, which is what forced the
+   second method above. `state` is upper-case and `mergedAt` is `null` unless merged.
 5. **What parses the string.** The URL is an argv element to `gh`, never composed into a shell
    line; the comment text the daemon posts is built from the URL and a timestamp and goes through
    `postingCore` (015), so it cannot be refused.
@@ -177,8 +260,9 @@ under a different number reading as a merge of the card's work.
 
 ## Acceptance criteria
 
-1. `bun run check` passes. No test spawns `gh`, a real coding agent, or calls a model; the
-   forge is faked.
+1. `bun run check` passes. No test runs the real `gh`, spawns a real coding agent, or calls a
+   model; the forge is faked, and a test that needs a `gh` process puts one of its own making
+   first on `PATH`.
 2. A card in PR with a `prUrl` whose faked forge answer is merged, in this repository, from the
    card's branch, is in Done after one tick, with a comment by `runner` naming the URL and the
    merge time immediately before a `card_moved` PR → Done whose actor is the owner. No attention
