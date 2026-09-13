@@ -28,7 +28,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 12 | 016 The gate is the daemon's, not the allowlist's | landed, PR #13 |
 | 13 | 015 Control characters can't repaint the record | landed, PR #14 — two Criticals were regressions the spec itself introduced |
 | 14 | 017 A playbook's commands are checked against the harness that runs them | landed, PR #15 |
-| 15 | 018 A merged pull request lands the card in Done (008a) | specified |
+| 15 | 018 A merged pull request lands the card in Done (008a) | landed, PR #16 — three review rounds, every Important a claim nobody had run |
 | 16 | 008b The review loop inside Code, with a budget the runner enforces | planned |
 | 17 | 008c When the default branch moves | planned, deferred until needed |
 | | 005 | dropped |
@@ -273,7 +273,13 @@ branch advances, bouncing a conflicted card back to Code with a rebase brief, an
 the in-run review before its PR updates. Deferred deliberately: it is the most machinery for
 the least-proven need, it has the same *cards drive the runner* tension as 008a in a sharper
 form, and nothing in a single-owner repository forces it until two cards land close together.
-Specify it when that has actually happened.
+Specify it when that has actually happened. One input from 018's review, for when it is:
+`gh pr view --json mergeCommit` gives a sha git can verify in the local clone, so "this card's
+own work merged" can be read off the default branch's ancestry rather than off the forge's word
+about branch names. That is the strongest available form of 018's ownership check and the
+natural companion to dry-run merging, since both read the default branch's history. 018 did
+not take it (its check is branch-name based, by spec), and a squash merge still leaves no
+ancestry, so it complements rather than replaces what 018 does.
 
 Two corrections to what this entry used to say, both from 014. The develop playbook does
 **not** commit the spec to `docs/specs/` as it starts — the card body is the spec, a file is an
@@ -567,6 +573,52 @@ hand, which is a method, not a test. What it is not: a boundary. It guards the p
 ergonomics, not the owner's gates — those are 016's. And it should stay small: the cheapest way
 to have fewer commands to check is to prescribe fewer commands, which is containment over
 enumeration one more time.
+
+## 018 — A merged pull request lands the card in Done
+
+008a, landed as PR #16. Entering PR is the card asking to be watched: the daemon polls `gh`
+once a minute for every unarchived card in PR that carries a pull request URL, and none at all
+otherwise. A merge of the card's own work moves the card to Done *as the owner*, with a runner
+comment saying why immediately before the move — the one place the daemon records a member's
+decision without that member typing it, and `merges.ts` says what a later spec has to argue
+against before it may do that elsewhere. Anything else — merged but not this card's work,
+closed without merging, `gh` unable to answer — leaves the card in PR and says so once.
+
+Three review rounds, and every Important finding was a sentence asserting something nobody had
+run: that a tick could act on the card it listed (the owner had moved it meanwhile); that the
+branch on the card was the runner's (the agent can write it); that a member name is a
+credential (`skelcrew --as runner` joins the runner member); that `gh` "treats the URL as a URL
+or rejects it" (it sends a request to whatever host the URL names). The check that landed reads
+the branch from the last `refs_set` by the runner member or the owner, compares the pull
+request's host to the repository's own before `gh` is ever asked, and re-reads the card after
+the forge answers. It is a gate: it binds a wrong, stale or copied URL and an agent that keeps
+the identity it was given, and it does not bind a caller who asserts another name over the
+socket, which is 016's recorded limit.
+
+**Carried findings.**
+
+- **`hello` reserves no member names.** `--as runner` joins `runner`; `--as crew` joins `crew`.
+  `allowlist.ts` has recorded this as "names are not credentials" since 016, and 018's review
+  showed the consequence live: a caller asserting `runner` writes the `refs_set` 018's
+  ownership check reads. No authority is lost (the same caller can drop `--as` and be the
+  owner), but every future check that treats "an event by `runner`" as something the agent
+  cannot produce is wrong. If a real bind is ever wanted, `hello` refusing the reserved names is
+  its own small spec, and it has to reckon with the deliberate `--as crew` join `allowlist.ts`
+  documents (a live session speaking as `crew` shares the member every spawned run uses).
+- **A subprocess handed a card-carried URL may dial it.** `gh pr view <url>` contacts the host
+  in the URL, and a poll does so every interval for as long as the card sits there. 018 compares
+  the host first. Any later spec that passes a ref from a card to a subprocess should ask the
+  same question before the review round that would otherwise ask it.
+- **Unverified `gh` behaviours 018 rests on**, recorded rather than accepted: `gh repo view
+  --json url` in a fork or with several remotes may name the parent while pull requests target
+  the fork, in which case every merge reads as "another repository" and no card lands; `gh pr
+  view <url>` ignoring its working directory and `headRepository.nameWithOwner` coming back empty
+  were each observed once (2.86.0) and not re-verified; `mergedAt` is assumed set on every merged
+  pull request, and the code says "merged" without a time if it is not. `forge.ts` pins the
+  version.
+- **Killing a hanging `gh` leaves what it spawned.** SIGKILL on the direct child reparents its
+  descendants to pid 1, so a `gh` that hangs every tick leaks one orphan per tick for the life
+  of the daemon. Recorded in `forge.ts`; a process-group kill is the fix if it ever matters.
 
 ## Later, deliberately unplanned
 
