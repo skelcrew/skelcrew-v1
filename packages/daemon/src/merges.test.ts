@@ -87,10 +87,15 @@ function poll(forge: Forge, over: Core = core) {
   });
 }
 
-/** A card the owner has approved into PR, with the refs a Code run left on it. */
+/**
+ * A card the owner has approved into PR, with the refs a Code run leaves on it: the branch
+ * recorded by `runner` at run start, the pull request recorded by `crew` (014) — which is who
+ * writes each in a real run, and what the ownership check depends on.
+ */
 function cardInPr(refs: { branch?: string; prUrl?: string } = { branch: BRANCH, prUrl: PR_URL }) {
   const card = core.createCard({ title: "a card" }, owner.id);
-  core.setRefs(card.id, refs, crew.id);
+  if (refs.branch !== undefined) core.setRefs(card.id, { branch: refs.branch }, runnerMember.id);
+  if (refs.prUrl !== undefined) core.setRefs(card.id, { prUrl: refs.prUrl }, crew.id);
   return core.moveCard(card.id, "pr", owner.id);
 }
 
@@ -102,6 +107,47 @@ function comments(cardId: number): string[] {
   return activity(cardId)
     .filter((e) => e.type === "comment")
     .map((e) => e.data.text);
+}
+
+/** Every phase move on the card, as `<from>-<to>`: what the owner's decisions add up to. */
+function moves(cardId: number): string[] {
+  return activity(cardId)
+    .filter((e) => e.type === "card_moved")
+    .map((e) => `${e.data.from}-${e.data.to}`);
+}
+
+/**
+ * A forge that stops with the card's pull request asked about and waits: `arrived` resolves
+ * inside the call, `release` lets it answer. What the test does in between is what a member can
+ * do while a `gh` round-trip is in flight.
+ */
+function gatedForge(answer: () => PullRequest): {
+  forge: Forge;
+  arrived: Promise<void>;
+  release: () => void;
+} {
+  let asked: () => void = () => {};
+  const arrived = new Promise<void>((resolve) => {
+    asked = resolve;
+  });
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    forge: {
+      async pullRequest() {
+        asked();
+        await gate;
+        return answer();
+      },
+      async repoUrl() {
+        return REPO_URL;
+      },
+    },
+    arrived,
+    release: () => release(),
+  };
 }
 
 const MISMATCH = `pull request ${PR_URL} is merged, but it is not this card's work: `;
@@ -206,14 +252,62 @@ test("both mismatches are named at once, the repository before the branch", asyn
   expect(core.getCard(card.id).phase).toBe("pr");
 });
 
-test("a card with a pull request but no branch has nothing for the head to match", async () => {
+test("a card no run has recorded a branch on has nothing for the head to match", async () => {
   const card = cardInPr({ prUrl: PR_URL });
   await poll(fakeForge({ answer: () => mergedPr() })).tick();
 
   expect(core.getCard(card.id).phase).toBe("pr");
   expect(comments(card.id)).toEqual([
-    `${MISMATCH}its head branch is ${BRANCH}, and this card records no branch`,
+    `${MISMATCH}its head branch is ${BRANCH}, and no run has recorded a branch on this card`,
   ]);
+});
+
+/**
+ * Review round 1, Important 2, demonstrated through the real CLI: `crew` can write `branch` as
+ * well as `prUrl` (`setRefs` has no actor restriction), so a check against `refs.branch` as it
+ * sits on the card compares two fields the same member controls. The branch compared is the one
+ * the *runner* recorded — a `refs_set` by `runner`, which `crew` cannot produce.
+ */
+test("crew rewriting the branch and the pull request does not land the card in Done", async () => {
+  const card = cardInPr();
+  // Two writes as `crew`: another card's merged pull request, and a branch to match its head.
+  core.setRefs(card.id, { branch: "skelcrew/1-probe", prUrl: `${REPO_URL}/pull/7` }, crew.id);
+
+  await poll(
+    fakeForge({
+      answer: (url) => mergedPr({ url, headRefName: "skelcrew/1-probe" }),
+    }),
+  ).tick();
+
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([
+    `pull request ${REPO_URL}/pull/7 is merged, but it is not this card's work: its head branch is skelcrew/1-probe, not ${BRANCH}`,
+  ]);
+});
+
+test("a branch only crew ever recorded is no branch of this card's", async () => {
+  const card = core.createCard({ title: "a card" }, owner.id);
+  core.setRefs(card.id, { branch: BRANCH, prUrl: PR_URL }, crew.id);
+  core.moveCard(card.id, "pr", owner.id);
+
+  await poll(fakeForge({ answer: () => mergedPr() })).tick();
+
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([
+    `${MISMATCH}its head branch is ${BRANCH}, and no run has recorded a branch on this card`,
+  ]);
+});
+
+test("the branch compared is the last one a run recorded, so a re-run's branch counts", async () => {
+  const card = cardInPr();
+  // A second run on the same card records its branch again; that is the one that binds.
+  core.setRefs(card.id, { branch: "skelcrew/1-a-card-again" }, runnerMember.id);
+
+  await poll(
+    fakeForge({ answer: () => mergedPr({ headRefName: "skelcrew/1-a-card-again" }) }),
+  ).tick();
+
+  expect(core.getCard(card.id).phase).toBe("done");
 });
 
 test("'once' is since the card entered PR: sent back and returned, it is told again", async () => {
@@ -291,14 +385,62 @@ test("a pull request closed without merging asks the owner, with no move, once",
     moves: [],
     raisedBy: runnerMember.id,
   });
-  // The comment comes first here too: the request's note is a reason already on the feed.
+  // The request comes first and the comment follows it: the comment is what the once-rule
+  // reads, so posting it before a raise that fails would suppress every later tick's retry
+  // (review round 1, Minor 4). The request carries the same text, so the feed reads the same.
   const last = activity(card.id).slice(-2);
-  expect(last[0]?.type).toBe("comment");
-  expect(last[1]?.type).toBe("attention_requested");
+  expect(last[0]?.type).toBe("attention_requested");
+  expect(last[1]?.type).toBe("comment");
 
   const seen = activity(card.id).length;
   await poller.tick();
   expect(activity(card.id).length).toBe(seen);
+});
+
+test("a request the poll did not raise is not replaced, and nothing is said over it", async () => {
+  const card = cardInPr();
+  // The owner's own question on the card: the poll may not overwrite it.
+  core.requestAttention(card.id, { to: owner.id, note: "what happened here?" }, owner.id);
+  const poller = poll(fakeForge({ answer: () => closedPr() }));
+
+  await poller.tick();
+
+  expect(core.getCard(card.id).attention?.note).toBe("what happened here?");
+  expect(comments(card.id)).toEqual([]);
+
+  // Once the owner has answered it, the next tick says its piece.
+  core.resolveAttention(card.id, undefined, owner.id);
+  await poller.tick();
+
+  const note = `pull request ${PR_URL} closed without merging`;
+  expect(comments(card.id)).toEqual([note]);
+  expect(core.getCard(card.id).attention?.note).toBe(note);
+});
+
+test("a raise that fails posts no comment, so the next tick asks again", async () => {
+  const card = cardInPr();
+  let fail = true;
+  const refusing: Core = {
+    ...core,
+    requestAttention(id, request, actorId) {
+      if (fail) throw new Error("database is locked");
+      return core.requestAttention(id, request, actorId);
+    },
+  };
+  const poller = poll(fakeForge({ answer: () => closedPr() }), refusing);
+
+  await poller.tick();
+  expect(comments(card.id)).toEqual([]);
+  expect(core.getCard(card.id).attention).toBeNull();
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain(`card ${card.id}`);
+
+  fail = false;
+  await poller.tick();
+
+  const note = `pull request ${PR_URL} closed without merging`;
+  expect(comments(card.id)).toEqual([note]);
+  expect(core.getCard(card.id).attention?.note).toBe(note);
 });
 
 // --- criterion 5: only a card in PR with a pull request is asked about ---
@@ -354,6 +496,10 @@ test("a forge that cannot answer changes nothing and is said once, however many 
   expect(comments(card.id)).toEqual([]);
   expect(warnings).toHaveLength(1);
   expect(warnings[0]).toContain("gh");
+  // The repository's own URL is what could not be read; whether `gh` is logged in is not the
+  // likely cause there, so the line does not guess (review round 1, Minor 7).
+  expect(warnings[0]).toContain("/repo");
+  expect(warnings[0]).not.toContain("logged in");
 
   available = true;
   await poller.tick();
@@ -373,6 +519,32 @@ test("a pull request the forge cannot answer about leaves the card alone, said o
   expect(comments(card.id)).toEqual([]);
   expect(warnings).toHaveLength(1);
   expect(warnings[0]).toContain(PR_URL);
+  expect(warnings[0]).toContain("logged in");
+});
+
+test("each cause is said once: the repository's URL and a pull request are not one line", async () => {
+  cardInPr();
+  let repoKnown = false;
+  const forge: Forge = {
+    async pullRequest() {
+      return undefined;
+    },
+    async repoUrl() {
+      return repoKnown ? REPO_URL : undefined;
+    },
+  };
+  const poller = poll(forge);
+
+  await poller.tick();
+  await poller.tick();
+  expect(warnings).toHaveLength(1);
+
+  repoKnown = true;
+  await poller.tick();
+  await poller.tick();
+
+  expect(warnings).toHaveLength(2);
+  expect(warnings[0]).not.toBe(warnings[1]);
 });
 
 // --- criterion 7: the interval ---
@@ -424,6 +596,92 @@ test("a tick while a tick is in flight is not a second tick", async () => {
 
   expect(comments(card.id)).toEqual([`pull request ${PR_URL} merged at ${MERGED_AT}`]);
   expect(core.getCard(card.id).phase).toBe("done");
+});
+
+// --- the card as it is now, not as the tick listed it (review round 1, Important 1) ---
+
+test("a card the owner sends back to Code while gh is being asked is left where they put it", async () => {
+  const card = cardInPr();
+  const gated = gatedForge(() => mergedPr());
+  const poller = poll(gated.forge);
+
+  const tick = poller.tick();
+  await gated.arrived;
+  // The owner's decision, inside the window the `gh` round-trip opens.
+  core.moveCard(card.id, "code", owner.id);
+  gated.release();
+  await tick;
+
+  expect(core.getCard(card.id).phase).toBe("code");
+  expect(moves(card.id)).toEqual(["idea-pr", "pr-code"]);
+  expect(comments(card.id)).toEqual([]);
+});
+
+test("a card archived while gh is being asked stays archived and unremarked", async () => {
+  const card = cardInPr();
+  const gated = gatedForge(() => mergedPr());
+  const poller = poll(gated.forge);
+
+  const tick = poller.tick();
+  await gated.arrived;
+  core.archiveCard(card.id, owner.id);
+  gated.release();
+  await tick;
+
+  expect(core.getCard(card.id).archivedAt).not.toBeNull();
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([]);
+});
+
+test("a pull request replaced while gh is being asked is not the answer the tick has", async () => {
+  const card = cardInPr();
+  const gated = gatedForge(() => mergedPr());
+  const poller = poll(gated.forge);
+
+  const tick = poller.tick();
+  await gated.arrived;
+  core.setRefs(card.id, { prUrl: `${REPO_URL}/pull/2` }, crew.id);
+  gated.release();
+  await tick;
+
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([]);
+});
+
+test("a mismatch is not commented on a card that left PR while gh was being asked", async () => {
+  const card = cardInPr();
+  const gated = gatedForge(() => mergedPr({ headRefName: "someone-elses" }));
+  const poller = poll(gated.forge);
+
+  const tick = poller.tick();
+  await gated.arrived;
+  core.moveCard(card.id, "code", owner.id);
+  gated.release();
+  await tick;
+
+  expect(comments(card.id)).toEqual([]);
+  expect(core.getCard(card.id).phase).toBe("code");
+});
+
+// --- a move that fails does not re-say the merge (review round 1, Minor 5) ---
+
+test("a merge whose move keeps failing is commented once, and the move is retried", async () => {
+  const card = cardInPr();
+  const refusing: Core = {
+    ...core,
+    moveCard() {
+      throw new Error("database is locked");
+    },
+  };
+  const poller = poll(fakeForge({ answer: () => mergedPr() }), refusing);
+
+  await poller.tick();
+  await poller.tick();
+
+  expect(comments(card.id)).toEqual([`pull request ${PR_URL} merged at ${MERGED_AT}`]);
+  expect(core.getCard(card.id).phase).toBe("pr");
+  // Each tick still tried, and each failure is on the daemon's stderr.
+  expect(warnings).toHaveLength(2);
 });
 
 test("a card the core refuses is one warning; the rest of the tick goes on", async () => {

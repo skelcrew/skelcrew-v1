@@ -518,6 +518,57 @@ test("a merged pull request lands the card in Done; the owner can still send it 
   expect(warnings).toEqual([]);
 });
 
+/**
+ * Review round 1, Important 2, against a real run's refs: the branch the ownership check reads
+ * is the one *this* run recorded as `runner` at run start, so `crew` rewriting both `branch` and
+ * `prUrl` — two writes the core allows it — buys nothing.
+ */
+test("crew pointing a card's refs at another merged pull request leaves it in PR", async () => {
+  await initRepo();
+  start({
+    driver: fakeDriver(async function* (options) {
+      await commitIn(options.cwd, "feature.ts");
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Probe", "code");
+  const recorded = core.getCard(1).refs.branch as string;
+  expect(recorded).toBe("skelcrew/1-probe");
+
+  core.moveCard(1, "pr", owner.id);
+  // `crew`'s two writes: someone else's merged pull request, and a branch matching its head.
+  const foreign = "https://example.invalid/skelcrew/pull/99";
+  core.setRefs(1, { branch: "someone-elses", prUrl: foreign }, crewMember.id);
+
+  const forge: Forge = {
+    async pullRequest(_repoRoot, url) {
+      return {
+        url,
+        state: "merged",
+        mergedAt: "2026-09-09T08:44:11Z",
+        headRefName: "someone-elses",
+        baseRepo: REPO_URL,
+      };
+    },
+    async repoUrl() {
+      return REPO_URL;
+    },
+  };
+  await mergePoll({
+    core,
+    forge,
+    repoRoot: repo,
+    runnerId: runnerMember.id,
+    warn: (line) => warnings.push(line),
+  }).tick();
+
+  expect(core.getCard(1).phase).toBe("pr");
+  expect(comments(1).at(-1)).toBe(
+    `pull request ${foreign} is merged, but it is not this card's work: its head branch is someone-elses, not ${recorded}`,
+  );
+});
+
 // --- a tag that shadows a branch name ---
 
 test("a tag named after the base branch does not make an empty branch look like work", async () => {

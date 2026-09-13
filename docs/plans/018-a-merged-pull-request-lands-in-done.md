@@ -106,3 +106,47 @@ Green first, each with its reason:
 - **`process.test.ts` "a SKELCREW_MERGE_POLL_SECONDS that is not seconds stops the daemon"** —
   written after the wiring in `main.ts`. Checked by mutation: with `main.ts` taking
   `MERGE_POLL_INTERVAL_MS` instead of reading the environment, it is the one case that fails.
+
+## Review round 1, and what each finding became
+
+Two Important, five Minor, no Critical. Every finding is fixed; the spec was amended first
+(`docs:` commits `df668e6`, `562ec23`) and the amended wording is what the code now matches.
+
+- **Important 1 — the tick acted on a stale snapshot.** `visit` now re-reads the card after the
+  forge answers (`stillWatched`) and writes nothing unless it is still in PR, still unarchived,
+  and still carrying the `prUrl` the forge was asked about. Red first, in the reviewer's own
+  shape: with the owner moving the card back mid-await, *`Expected: "code" Received: "done"`* —
+  the tick had moved a card in Code to Done as the owner. Four new cases: sent back to Code,
+  archived, `prUrl` replaced, and the same for the mismatch comment.
+- **Important 2 — the check compared two fields `crew` can write.** `recordedBranch` reads the
+  branch from the last `refs_set` whose actor is `runner` and whose `set` names `branch`; a card
+  no run has recorded a branch on is a mismatch. Red first: *`Expected: "pr" Received: "done"`*
+  for the two-`crew`-writes case. Four new cases (`crew` rewrites both refs; a branch only `crew`
+  ever recorded; a re-run's branch is the one that binds; plus the real-runner version in
+  `contracts.test.ts`), and `cardInPr` now records the branch as `runner` and the pull request as
+  `crew`, which is who writes each in a real run. The doc says what the check binds and what it
+  does not — a caller asserting the owner's identity over the socket is 016's recorded limit.
+- **Minor 3** — the precedent paragraph now says the daemon records a member's *decision*, and
+  names the sweep's `run_interrupted` as the event it is not.
+- **Minor 4** — the closed path raises through `runAttention` (the helper the runs use) with a
+  `runQuestion` that records nothing, so *any* open request refuses the raise; the comment is
+  posted only after a raise that took. Red first: the request the poll did not raise was
+  overwritten, and a throwing `requestAttention` left a comment that suppressed every retry. Two
+  new cases; criterion 4's order assertion is now request-then-comment, for that reason.
+- **Minor 5** — the merged comment goes through the once-rule too, while the move is still
+  attempted every tick. Red first: two ticks against a throwing `moveCard` gave two identical
+  comments (*`Expected - 0 Received + 1`*).
+- **Minor 6** — `process.test.ts` now drives the real daemon with a `gh` shim first on `PATH`
+  that records its arguments: a board holding the two shapes that must not be polled spawns no
+  `gh` across two intervals, and a card in PR with a `prUrl` is asked about within one.
+  Mutations: `setInterval(…, 60_000)` fails it (*"gh was not asked within 5000 ms"*), and
+  dropping `watched()`'s phase condition fails it on the "no `gh` yet" assertion.
+- **Minor 7** — one flag per cause. The repository line names the repository root and does not
+  guess at a login; the pull-request line still does, because there it is the likely cause. A new
+  case drives both causes and counts one line each.
+
+Green first in this round, with reasons: `contracts.test.ts`'s "crew pointing a card's refs at
+another merged pull request leaves it in PR" (the same composition already driven red in
+`merges.test.ts`, here against a real run's `refs_set` — checked by mutation: reverting the check
+to `card.refs.branch` fails it and the two unit cases), and `process.test.ts`'s poll-interval case
+(written after the wiring; checked by the two mutations above).
