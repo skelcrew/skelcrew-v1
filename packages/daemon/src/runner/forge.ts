@@ -30,8 +30,11 @@
  *
  * **Every spawn is bounded.** `gh` talks to a network, and review round 2 found the unbounded
  * version: one `gh` that never returned held the merge poll's one-tick-at-a-time guard for the
- * life of the process — eight silent ticks, nothing on any card, no warning. On expiry the child
- * is killed and the call is "cannot answer", which is the path a logged-out `gh` already takes.
+ * life of the process — eight silent ticks, nothing on any card, no warning. On expiry the `gh`
+ * process is killed and the call is "cannot answer", which is the path a logged-out `gh` already
+ * takes. Only that process: anything `gh` itself spawned is neither killed nor waited for and may
+ * outlive it, reparented (review round 3 watched exactly that happen to a shim's `/bin/sleep`).
+ * What is guaranteed is that the call ends.
  */
 
 /** What `gh pr view` is asked for. Nothing here runs a program or fetches a body. */

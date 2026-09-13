@@ -291,8 +291,13 @@ test("a card no run has recorded a branch on has nothing for the head to match",
 /**
  * Review round 1, Important 2, demonstrated through the real CLI: `crew` can write `branch` as
  * well as `prUrl` (`setRefs` has no actor restriction), so a check against `refs.branch` as it
- * sits on the card compares two fields the same member controls. The branch compared is the one
- * the *runner* recorded — a `refs_set` by `runner`, which `crew` cannot produce.
+ * sits on the card compares two fields the same member controls. The branch compared is read
+ * from a `refs_set` by the `runner` member or by a human member instead, which binds a wrong,
+ * stale or copied `prUrl` and an agent that keeps the identity it was given. It does **not** bind
+ * a caller that asserts another name over the socket: review round 3 ran `skelcrew --as runner
+ * refs <id> --branch <other>` live, and it joined the `runner` member and wrote the very event
+ * this check reads — names are not credentials (`allowlist.ts`, since 016). That caller is
+ * owner-equivalent by passing no `--as` at all, which is 016's recorded limit.
  */
 test("crew rewriting the branch and the pull request does not land the card in Done", async () => {
   const card = cardInPr();
@@ -431,6 +436,93 @@ describe("the ownership check", () => {
       expect(core.getCard(card.id).phase).toBe(shape.lands ? "done" : "pr");
     });
   }
+});
+
+// --- a prUrl on another host is never dialled (review round 3, Important 2) ---
+
+/**
+ * `gh pr view <url>` is not passive about the URL: it sends a request to the host the URL names
+ * (review round 3 got `HTTP 405` back from `example.com`), and the poll asks again every interval.
+ * `crew` can set any card's `prUrl` (016), so a card whose `prUrl` names a host of the agent's
+ * choosing would otherwise make the owner's daemon contact that host once a minute for as long as
+ * the card sits in PR. The origin is compared before anything is asked — and the faked forge here
+ * would answer "merged, this repository, this card's branch", so a tick that asks it at all lands
+ * the card in Done.
+ */
+test("a prUrl on another host is a mismatch before it is a question: the forge is not asked", async () => {
+  const elsewhere = "https://attacker.invalid/someone/else/pull/1";
+  const card = cardInPr({ branch: BRANCH, prUrl: elsewhere });
+  const forge = fakeForge({ answer: (url) => mergedPr({ url, baseRepo: REPO_URL }) });
+  const poller = poll(forge);
+
+  await poller.tick();
+
+  expect(forge.asked).toEqual([]);
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([
+    `pull request ${elsewhere} is not this card's work: it is on https://attacker.invalid, not ${
+      new URL(REPO_URL).origin
+    }, so the forge was not asked about it`,
+  ]);
+
+  // Through the same once-rule as every other mismatch, and still never dialled.
+  const seen = activity(card.id).length;
+  await poller.tick();
+  expect(activity(card.id).length).toBe(seen);
+  expect(forge.asked).toEqual([]);
+  expect(core.getCard(card.id).phase).toBe("pr");
+});
+
+/**
+ * The origin, not the whole slug: a repository that was renamed or redirects is still on this
+ * repository's forge, and the pull request's canonical `url` is what the repository comparison
+ * then reads — which is the case above, "a merged pull request in another repository", where the
+ * host matches and the answer is asked for and rejected.
+ */
+test("a prUrl on this host in another repository is still asked about", async () => {
+  const card = cardInPr({ branch: BRANCH, prUrl: `${OTHER_REPO_URL}/pull/1` });
+  const forge = fakeForge({
+    answer: (url) => mergedPr({ url, baseRepo: OTHER_REPO_URL }),
+  });
+
+  await poll(forge).tick();
+
+  expect(forge.asked).toEqual([`${OTHER_REPO_URL}/pull/1`]);
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([
+    `pull request ${OTHER_REPO_URL}/pull/1 is merged, but it is not this card's work: it is in ${OTHER_REPO_URL}, not ${REPO_URL}`,
+  ]);
+});
+
+/**
+ * The origin comparison needs the repository's own URL, and a forge that cannot give one takes
+ * the warned-once path: no pull request is dialled either, and the card stays in PR. This holds
+ * before this round's change as well as after it — it is here so that moving the origin
+ * comparison after the call would be visible.
+ */
+test("a forge that cannot say what repository this is dials no pull request", async () => {
+  const card = cardInPr();
+  const forge = fakeForge({ answer: () => mergedPr(), repoUrl: undefined });
+
+  await poll(forge).tick();
+
+  expect(forge.asked).toEqual([]);
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("/repo");
+});
+
+/** And a repository URL no origin can be read from is the same "cannot answer", not a guess. */
+test("a repository URL that is not a URL dials nothing either", async () => {
+  const card = cardInPr();
+  const forge = fakeForge({ answer: () => mergedPr(), repoUrl: "not a url" });
+
+  await poll(forge).tick();
+
+  expect(forge.asked).toEqual([]);
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(warnings).toHaveLength(1);
 });
 
 // --- criterion 4: closed without merging is the owner's to decide ---

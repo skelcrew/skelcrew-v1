@@ -108,7 +108,7 @@ async function hangingGh(finished: string): Promise<string> {
   return bin;
 }
 
-test("a gh that does not answer in time is no answer, and its child is killed", async () => {
+test("a gh that does not answer in time is no answer, and the gh process is killed", async () => {
   const finished = join(tmp, "finished");
   const bin = await hangingGh(finished);
   const forge = createForge({ env: { PATH: bin }, timeoutMs: 150 });
@@ -119,8 +119,11 @@ test("a gh that does not answer in time is no answer, and its child is killed", 
   // Bounded: two calls of 150 ms each, and neither waited for the child it started.
   expect(Date.now() - started).toBeLessThan(1000);
 
-  // And both children are gone rather than sleeping on: a survivor would have written its file
-  // by now, which is what an unkilled `gh` doing the real thing would go on to do.
+  // And both `gh` processes are dead rather than sleeping on: a survivor would have written its
+  // file by now, which is what an unkilled `gh` doing the real thing would go on to do. Only the
+  // `gh` process itself, though — review round 3 watched the `/bin/sleep` each shim spawned
+  // outlive the kill, reparented to pid 1. What it spawns is not killed and not waited for; the
+  // guarantee is that the call ends and nothing further is written on this shim's behalf.
   await Bun.sleep(1500);
   expect(existsSync(finished)).toBe(false);
 });

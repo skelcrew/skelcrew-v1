@@ -155,10 +155,11 @@ to `card.refs.branch` fails it and the two unit cases), and `process.test.ts`'s 
 
 Two Important, five Minor, no Critical; the spec was amended first (`32e873c`, `2b48319`).
 
-- **Important 1 — "`crew` cannot produce a `refs_set` as `runner`" was false.** Review joined the
-  `runner` member over the socket (`skelcrew --as runner refs <id> --branch <other>`) and wrote
-  the event the check reads: names are not credentials, which `allowlist.ts` has recorded since
-  016. `recordedBranch` now takes a `binds(actorId)` predicate — the `runner` member **or any
+- **Important 1 — round 1's claim that only a run could write the `refs_set` this check reads was
+  false.** Review joined the `runner` member over the socket (`skelcrew --as runner refs <id>
+  --branch <other>`) and wrote the event the check reads: names are not credentials, which
+  `allowlist.ts` has recorded since 016.
+  `recordedBranch` now takes a `binds(actorId)` predicate — the `runner` member **or any
   human member** — so the owner's own `skelcrew refs --branch` binds and the hand-driven card
   lands, which is the amended spec's reason (that human can `mv <id> done` anyway). Every "cannot
   forge" sentence is gone from `merges.ts`; the doc says what the check binds (a wrong, stale or
@@ -200,3 +201,46 @@ Two Important, five Minor, no Critical; the spec was amended first (`32e873c`, `
 Carried to MILESTONES by the reviewer, not implemented here: `gh repo view` in a fork or with
 several remotes; `hello` refusing the reserved member names; `mergeCommit` as a sha git could
 verify locally (008c).
+
+## Review round 3, and what each finding became
+
+Two Important, two Minor, no Critical; the spec was amended first (`dd8f070`).
+
+- **Important 1 — a falsified "cannot" survived round 2, in a test's doc comment.**
+  `merges.test.ts`'s comment above "crew rewriting the branch and the pull request does not land
+  the card in Done" still said the compared branch is "a `refs_set` by `runner`, which `crew`
+  cannot produce". Round 2 deleted that claim from `merges.ts` and the spec and missed this copy.
+  It now says what `merges.ts` says: the check reads a `refs_set` by the `runner` member or a human
+  member, so it binds a wrong, stale or copied `prUrl` and an agent that keeps the identity it was
+  given — and it does **not** bind a caller that asserts another name over the socket, which
+  review walked live again this round. Wording only; no assertion changed. Two more copies of the
+  phrase, both already labelled false, are gone too: `merges.ts`'s "Round 1's fix said `crew`
+  'cannot produce…'" now reads "Round 1's fix claimed such a caller was bound", and round 2's
+  heading in this file names the claim instead of quoting it. `git diff 51d62a6 | grep "^+.*cannot
+  produce\|cannot forge"` is now empty.
+- **Important 2 — the card's `prUrl` was dialled before anything checked it was on this forge.**
+  `gh pr view <url>` sends a request to the host in the URL (review round 3 got `HTTP 405` back
+  from `example.com`), so a `prUrl` `crew` chose made the owner's daemon contact that host once per
+  interval, indefinitely, with one stderr line. `visit` now compares the `prUrl`'s origin to the
+  repository's own **before** asking anything: a mismatch on the host is recorded through the same
+  once-rule and `forge.pullRequest` is never called. The comment does not borrow `mismatch`'s "is
+  merged", because nothing was asked: `pull request <url> is not this card's work: it is on
+  <host>, not <home>, so the forge was not asked about it`. Red first, against a faked forge that
+  would have answered "merged, this repository, this card's branch": *`expect(forge.asked).toEqual
+  ([])` → `- [] + ["https://attacker.invalid/someone/else/pull/1"]`*, and the card had reached
+  Done. Three more cases: the origin only and not the whole slug, so a `prUrl` on this host in
+  another repository is still asked about and rejected by the existing repository comparison
+  (mutation — comparing `url.startsWith(repoUrl)` — fails exactly that one); a repository URL the
+  forge cannot give, which is the existing warned-once path and dials nothing (green before this
+  round too, and said so in the test, so that moving the comparison after the call would show);
+  and a repository URL with no origin to read, which takes that same path (red first, for the same
+  reason as the first case). The existing same-host mismatch, merged, and ownership-table cases are
+  unchanged and pass.
+- **Minor 3** — "both children are gone" is not what SIGKILL does. Checked live: a shim shell
+  killed with SIGKILL leaves its `/bin/sleep` running, reparented to pid 1, which is why the shim's
+  `finished` file never appears and the assertion still holds. `forge.test.ts`'s comment and the
+  test's name, and `forge.ts`'s doc, now say the `gh` process is killed while anything it spawned
+  is neither killed nor waited for and may outlive it — the guarantee being that the call ends.
+  No process-group kill, as the finding allows.
+- **Minor 4** — criterion 1's wording was amended by the orchestrator; no test comment quoted the
+  old wording, so nothing to do.

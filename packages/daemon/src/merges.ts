@@ -3,8 +3,8 @@
  * merge on the forge. One tick asks the forge about the pull request of every unarchived card
  * in PR that carries one, and a merge of *that card's work* lands the card in Done.
  *
- * In `sweep.ts`'s shape — a timer the daemon owns, not a member action — with four differences
- * the spec names, and this is where all four are recorded.
+ * In `sweep.ts`'s shape — a timer the daemon owns, not a member action — with five differences
+ * the spec names, and this is where all five are recorded.
  *
  * **1. The move into Done is made as the owner.** `core.moveCard(id, "done", ownerId())` below
  * is the one place in skelcrew where the daemon records a member's *decision* without that
@@ -40,8 +40,8 @@
  *
  * What this binds, stated without the overclaim round 1 made: a wrong, stale or copied `prUrl`,
  * and an agent that keeps the identity the runner gave it. It does **not** bind a caller that
- * asserts `runner` over the socket. Round 1's fix said `crew` "cannot produce a `refs_set` as
- * `runner`"; review round 2 walked `skelcrew --as runner refs <id> --branch <other>` live, and it
+ * asserts `runner` over the socket. Round 1's fix claimed such a caller was bound; review rounds 2
+ * and 3 both walked `skelcrew --as runner refs <id> --branch <other>` live, and each time it
  * joined the `runner` member and wrote the very event this check reads — names are not
  * credentials (`allowlist.ts` has recorded that since 016, and `hello` reserves none). Nothing is
  * lost by it: that caller can drop `--as` and be the owner, who moves cards to Done by typing.
@@ -64,6 +64,18 @@
  * runner with that note, and no other. The only state this module keeps between ticks is whether
  * it has already said that `gh` could not answer, or that a tick was skipped: one flag per cause,
  * not about any card, which the spec asks to be said once per process.
+ *
+ * **5. The `prUrl`'s host is compared before `gh` is ever run against it.** `gh pr view <url>`
+ * sends a request to the host the URL names — review round 3 ran it against a URL on
+ * `example.com` and got that host's `HTTP 405` back — and the poll asks again every interval. So
+ * a card whose `prUrl` is on another host would make the owner's daemon contact a host `crew`
+ * chose (016: `crew` can set any card's refs) once a minute for as long as the card sat in PR,
+ * long after the run that wrote it ended. `visit` therefore compares the `prUrl`'s origin to the
+ * repository's own before asking anything, and a card that fails it is a mismatch recorded
+ * through the once-rule with nothing dialled. The origin only, not the whole slug: a renamed or
+ * redirecting repository is still on this forge, and which repository the pull request is in is
+ * what the comparison in `mismatch` then reads off `gh`'s canonical `url`. No repository URL — or
+ * one with no origin to read — is the warned-once path, and nothing is dialled there either.
  */
 import type { Attention, Card, CardDetail } from "@skelcrew/shared";
 import type { Core } from "./core/core";
@@ -138,6 +150,26 @@ function recordedBranch(card: CardDetail, binds: (actorId: number) => boolean): 
     (e) => e.type === "refs_set" && binds(e.actorId) && (e.data.set?.includes("branch") ?? false),
   );
   return event?.type === "refs_set" ? event.data.refs.branch : undefined;
+}
+
+/** The scheme and host a URL names, or nothing when it names neither. See the doc, point 5. */
+function originOf(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Why a `prUrl` is not this card's work before the forge is asked anything: it is not on this
+ * repository's forge at all, so `gh pr view` is never run against it (doc, point 5). Said in
+ * `mismatch`'s shape but without its "is merged" — nothing has been asked, so the pull request's
+ * state is unknown, and the card says only what is known.
+ */
+function elsewhere(url: string, host: string | undefined, home: string): string {
+  const on = host === undefined ? "on no host that can be read" : `on ${host}`;
+  return `pull request ${url} is not this card's work: it is ${on}, not ${home}, so the forge was not asked about it`;
 }
 
 /**
@@ -282,9 +314,18 @@ export function mergePoll({
     return current ? card : undefined;
   }
 
-  async function visit(listed: Card, repoUrl: string): Promise<void> {
+  async function visit(listed: Card, repoUrl: string, home: string): Promise<void> {
     const url = listed.refs.prUrl;
     if (url === undefined) return;
+    const host = originOf(url);
+    if (host !== home) {
+      // Another forge entirely, and `gh pr view` would dial it every interval (doc, point 5):
+      // a mismatch before it is a question, recorded through the same once-rule.
+      const other = stillWatched(listed.id, url);
+      if (other === undefined) return;
+      record(other, elsewhere(url, host, home));
+      return;
+    }
     const pr = await bounded(forge.pullRequest(repoRoot, url));
     if (pr === undefined) {
       cannotAnswerPullRequest(url);
@@ -343,14 +384,17 @@ export function mergePoll({
         const cards = core.listCards().filter(watched);
         if (cards.length === 0) return;
         const repoUrl = await bounded(forge.repoUrl(repoRoot));
-        if (repoUrl === undefined) {
+        // No answer about the repository, or an answer with no origin to compare against: either
+        // way nothing is dialled, and it is the same warned-once line (doc, point 5).
+        const home = repoUrl === undefined ? undefined : originOf(repoUrl);
+        if (repoUrl === undefined || home === undefined) {
           cannotAnswerRepo();
           return;
         }
         for (const card of cards) {
           // One card's failure is not the others': the tick goes on and says which card.
           try {
-            await visit(card, repoUrl);
+            await visit(card, repoUrl, home);
           } catch (error) {
             warn(`skelcrew daemon: merge poll: card ${card.id}: ${message(error)}`);
           }
