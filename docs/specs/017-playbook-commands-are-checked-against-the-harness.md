@@ -142,7 +142,7 @@ a real login, which this spec forbids.
 
 Through `claude.ts`'s option builder, called with the same inputs a run gives it — a temporary
 target repository with a fenced `bun run check` in its `AGENTS.md`, a worktree created the way
-`runner.ts` creates one, `allowlistFor`'s output for that worktree — and the four overrides
+`runner.ts` creates one, `allowlistFor`'s output for that worktree — and the five overrides
 above applied after. `canUseTool` is supplied and must never be called: under `dontAsk` a
 prompt is a denial, and a call reaching `canUseTool` is itself a failure of the check, since
 it means the mode was not honoured.
