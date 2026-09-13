@@ -216,8 +216,11 @@ Two Important, two Minor, no Critical; the spec was amended first (`dd8f070`).
   review walked live again this round. Wording only; no assertion changed. Two more copies of the
   phrase, both already labelled false, are gone too: `merges.ts`'s "Round 1's fix said `crew`
   'cannot produce…'" now reads "Round 1's fix claimed such a caller was bound", and round 2's
-  heading in this file names the claim instead of quoting it. `git diff 51d62a6 | grep "^+.*cannot
-  produce\|cannot forge"` is now empty.
+  heading in this file names the claim instead of quoting it. Over the code and tests —
+  `git diff 51d62a6 -- packages/ | grep "^+.*cannot produce\|cannot forge"` — the output is
+  empty. Over the whole diff it is not: the spec and this record quote the phrase in order to
+  retract it, and the verifier caught the first version of this sentence claiming the whole-diff
+  grep was empty when the sentence itself was one of its hits.
 - **Important 2 — the card's `prUrl` was dialled before anything checked it was on this forge.**
   `gh pr view <url>` sends a request to the host in the URL (review round 3 got `HTTP 405` back
   from `example.com`), so a `prUrl` `crew` chose made the owner's daemon contact that host once per
