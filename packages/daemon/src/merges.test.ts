@@ -77,13 +77,14 @@ function fakeForge(
   return forge;
 }
 
-function poll(forge: Forge, over: Core = core) {
+function poll(forge: Forge, over: Core = core, timeoutMs?: number) {
   return mergePoll({
     core: over,
     forge,
     repoRoot: "/repo",
     runnerId: runnerMember.id,
     warn: (line) => warnings.push(line),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
 }
 
@@ -123,12 +124,15 @@ function moves(cardId: number): string[] {
  */
 function gatedForge(answer: () => PullRequest): {
   forge: Forge;
+  /** Every pull request URL asked about, in order. */
+  asked: string[];
   arrived: Promise<void>;
   release: () => void;
 } {
-  let asked: () => void = () => {};
+  const asked: string[] = [];
+  let hasAsked: () => void = () => {};
   const arrived = new Promise<void>((resolve) => {
-    asked = resolve;
+    hasAsked = resolve;
   });
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
@@ -136,8 +140,9 @@ function gatedForge(answer: () => PullRequest): {
   });
   return {
     forge: {
-      async pullRequest() {
-        asked();
+      async pullRequest(_repoRoot, url) {
+        asked.push(url);
+        hasAsked();
         await gate;
         return answer();
       },
@@ -145,6 +150,7 @@ function gatedForge(answer: () => PullRequest): {
         return REPO_URL;
       },
     },
+    asked,
     arrived,
     release: () => release(),
   };
@@ -181,6 +187,26 @@ test("a merged pull request of this card's own work lands it in Done, the runner
   // And the card, now in Done, is not asked about again.
   await poller.tick();
   expect(forge.asked).toEqual([PR_URL]);
+});
+
+/**
+ * Review round 2, Minor 5: the merge time is best-effort. Whether the real `gh` can answer
+ * `MERGED` with `mergedAt: null` is unverified — every merged pull request it was asked about
+ * carried a time — so the card says what is known and the merge still lands.
+ */
+test("a merge the forge gives no time for lands the card, and the comment says only that", async () => {
+  const card = cardInPr();
+  const noTime: PullRequest = {
+    url: PR_URL,
+    state: "merged",
+    headRefName: BRANCH,
+    baseRepo: REPO_URL,
+  };
+
+  await poll(fakeForge({ answer: () => noTime })).tick();
+
+  expect(core.getCard(card.id).phase).toBe("done");
+  expect(comments(card.id)).toEqual([`pull request ${PR_URL} merged`]);
 });
 
 test("an open pull request is nothing on the card at all", async () => {
@@ -291,6 +317,48 @@ test("a branch only crew ever recorded is no branch of this card's", async () =>
   core.moveCard(card.id, "pr", owner.id);
 
   await poll(fakeForge({ answer: () => mergedPr() })).tick();
+
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([
+    `${MISMATCH}its head branch is ${BRANCH}, and no run has recorded a branch on this card`,
+  ]);
+});
+
+/**
+ * Review round 2, Important 1: the round-1 fix claimed `crew` could not produce a `refs_set` as
+ * `runner`, and review walked `skelcrew --as runner refs <id> --branch <other>` live — names are
+ * not credentials. So the check binds an agent that keeps the identity it was given, and a branch
+ * a *human* member recorded binds too: that member can `mv <id> done` anyway, and the card whose
+ * branch and pull request were made by hand in a terminal must still be able to land.
+ */
+test("a branch the owner recorded by hand binds: the hand-driven card lands", async () => {
+  const card = core.createCard({ title: "by hand" }, owner.id);
+  core.setRefs(card.id, { branch: "my-own-branch", prUrl: PR_URL }, owner.id);
+  core.moveCard(card.id, "pr", owner.id);
+
+  await poll(fakeForge({ answer: () => mergedPr({ headRefName: "my-own-branch" }) })).tick();
+
+  expect(core.getCard(card.id).phase).toBe("done");
+});
+
+test("a refs_set from before 011, which recorded no `set`, says nothing about the branch", async () => {
+  const card = cardInPr();
+  // 011's note: `set` absent means unknown, never "nothing" — and never "branch" either. The
+  // core writes `set` on every event now, so the shape is reproduced by stripping it here.
+  const legacy: Core = {
+    ...core,
+    getCard(id) {
+      const detail = core.getCard(id);
+      return {
+        ...detail,
+        activity: detail.activity.map((e) =>
+          e.type === "refs_set" ? { ...e, data: { refs: e.data.refs } } : e,
+        ),
+      };
+    },
+  };
+
+  await poll(fakeForge({ answer: () => mergedPr() }), legacy).tick();
 
   expect(core.getCard(card.id).phase).toBe("pr");
   expect(comments(card.id)).toEqual([
@@ -417,6 +485,40 @@ test("a request the poll did not raise is not replaced, and nothing is said over
   expect(core.getCard(card.id).attention?.note).toBe(note);
 });
 
+/**
+ * Review round 2, Minor 4: the raise took and the comment threw, which left the card carrying
+ * the request and no comment — and every later tick refused to raise over a request the poll
+ * itself had made. The poll may replace an open request that *is* the one it would raise (same
+ * member, same note) and nothing else, so the next tick finishes what the last one started.
+ */
+test("a comment that fails after the raise is retried, and the poll may replace its own request", async () => {
+  const card = cardInPr();
+  let fail = true;
+  const refusing: Core = {
+    ...core,
+    comment(id, text, actorId) {
+      if (fail) throw new Error("database is locked");
+      return core.comment(id, text, actorId);
+    },
+  };
+  const poller = poll(fakeForge({ answer: () => closedPr() }), refusing);
+  const note = `pull request ${PR_URL} closed without merging`;
+
+  await poller.tick();
+  expect(comments(card.id)).toEqual([]);
+  expect(core.getCard(card.id).attention?.note).toBe(note);
+  expect(warnings).toHaveLength(1);
+
+  fail = false;
+  await poller.tick();
+
+  expect(comments(card.id)).toEqual([note]);
+  expect(core.getCard(card.id).attention?.note).toBe(note);
+  // Its own identical request, raised again: the replacement carries no new information, and it
+  // is the price of the comment being retried at all.
+  expect(activity(card.id).filter((e) => e.type === "attention_requested")).toHaveLength(2);
+});
+
 test("a raise that fails posts no comment, so the next tick asks again", async () => {
   const card = cardInPr();
   let fail = true;
@@ -496,10 +598,11 @@ test("a forge that cannot answer changes nothing and is said once, however many 
   expect(comments(card.id)).toEqual([]);
   expect(warnings).toHaveLength(1);
   expect(warnings[0]).toContain("gh");
-  // The repository's own URL is what could not be read; whether `gh` is logged in is not the
-  // likely cause there, so the line does not guess (review round 1, Minor 7).
+  // The repository's own URL is what could not be read, and `gh repo view` is every tick's first
+  // call — so this is the one line an owner with no `gh` at all ever sees, and it says so
+  // (review round 2, Minor 6, correcting round 1's Minor 7).
   expect(warnings[0]).toContain("/repo");
-  expect(warnings[0]).not.toContain("logged in");
+  expect(warnings[0]).toContain("installed and logged in");
 
   available = true;
   await poller.tick();
@@ -572,30 +675,73 @@ describe("the poll interval", () => {
 
 // --- one tick at a time, and one card's failure is not the others' ---
 
-test("a tick while a tick is in flight is not a second tick", async () => {
+test("a tick while a tick is in flight is not a second tick: the forge is asked once", async () => {
   const card = cardInPr();
-  let release: () => void = () => {};
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const gated = gatedForge(() => mergedPr());
+  const poller = poll(gated.forge);
+
+  const first = poller.tick();
+  const second = poller.tick();
+  const third = poller.tick();
+  await gated.arrived;
+  gated.release();
+  await Promise.all([first, second, third]);
+
+  // What the guard is for: one `gh` round-trip, not three, and one comment rather than three.
+  expect(gated.asked).toEqual([PR_URL]);
+  expect(comments(card.id)).toEqual([`pull request ${PR_URL} merged at ${MERGED_AT}`]);
+  expect(core.getCard(card.id).phase).toBe("done");
+  // A skipped tick is said — once for the process, however many are skipped.
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("still in flight");
+});
+
+// --- a forge that never answers (review round 2, Important 2) ---
+
+test("a tick whose forge never answers ends anyway, says so once, and the next tick runs", async () => {
+  const card = cardInPr();
+  let asks = 0;
   const forge: Forge = {
-    async pullRequest(_repoRoot, url) {
-      await gate;
-      return mergedPr({ url });
+    async pullRequest() {
+      asks += 1;
+      // A `gh` that hangs: this is what `proc.exited` did on a stalled network.
+      return new Promise<undefined>(() => {});
     },
     async repoUrl() {
       return REPO_URL;
     },
   };
-  const poller = poll(forge);
+  const poller = poll(forge, core, 20);
 
-  const first = poller.tick();
-  const second = poller.tick();
-  release();
-  await Promise.all([first, second]);
+  await poller.tick();
+  await poller.tick();
 
-  expect(comments(card.id)).toEqual([`pull request ${PR_URL} merged at ${MERGED_AT}`]);
-  expect(core.getCard(card.id).phase).toBe("done");
+  expect(asks).toBe(2);
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(comments(card.id)).toEqual([]);
+  // The hang joins the "cannot answer" path: one line, and the poll is not wedged.
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain(PR_URL);
+});
+
+test("a tick whose forge never says what repository this is ends anyway", async () => {
+  const card = cardInPr();
+  const forge: Forge = {
+    async pullRequest() {
+      return mergedPr();
+    },
+    async repoUrl() {
+      return new Promise<undefined>(() => {});
+    },
+  };
+  const poller = poll(forge, core, 20);
+
+  await poller.tick();
+  await poller.tick();
+
+  expect(core.getCard(card.id).phase).toBe("pr");
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("/repo");
 });
 
 // --- the card as it is now, not as the tick listed it (review round 1, Important 1) ---

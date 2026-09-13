@@ -29,34 +29,46 @@
  * call site; and a record of the cause on the card immediately before the action. Convenience
  * is not one of those things.
  *
- * **2. The branch compared is the one the runner recorded, not `refs.branch`.** `setRefs` has no
- * actor restriction, so `crew` writes `branch` as well as `prUrl`: comparing the forge's head
- * branch against `refs.branch` would compare two fields one member controls, and review round 1
- * walked a card into Done with two `crew` writes through the real CLI. `recordedBranch` reads the
- * last `refs_set` on the card whose actor is `runner` and whose `set` names `branch` — the write
- * the runner makes at run start, which `crew` cannot forge because it cannot act as `runner`. A
- * card no run has recorded a branch on is a mismatch. What this binds, without overclaiming: a
- * wrong, stale or copied `prUrl`, and `crew` acting as `crew`. What it does not bind is a caller
- * asserting another identity over the socket — that caller is the owner and can `skelcrew mv <id>
- * done` outright, which is 016's recorded limit.
+ * **2. The branch compared is the one a run or a human recorded, not `refs.branch`.** `setRefs`
+ * has no actor restriction, so `crew` writes `branch` as well as `prUrl`: comparing the forge's
+ * head branch against `refs.branch` would compare two fields one member controls, and review
+ * round 1 walked a card into Done with two `crew` writes through the real CLI. `recordedBranch`
+ * reads the last `refs_set` on the card whose `set` names `branch` and whose actor is the
+ * `runner` member or a human member — the write the runner makes at run start, or the owner's own
+ * by hand, which binds because that human can `skelcrew mv <id> done` anyway and the hand-driven
+ * card must still be able to land. A card no such write exists on is a mismatch.
+ *
+ * What this binds, stated without the overclaim round 1 made: a wrong, stale or copied `prUrl`,
+ * and an agent that keeps the identity the runner gave it. It does **not** bind a caller that
+ * asserts `runner` over the socket. Round 1's fix said `crew` "cannot produce a `refs_set` as
+ * `runner`"; review round 2 walked `skelcrew --as runner refs <id> --branch <other>` live, and it
+ * joined the `runner` member and wrote the very event this check reads — names are not
+ * credentials (`allowlist.ts` has recorded that since 016, and `hello` reserves none). Nothing is
+ * lost by it: that caller can drop `--as` and be the owner, who moves cards to Done by typing.
+ * A real bind would be `hello` refusing the reserved names, which is its own finding.
  *
  * **3. The tick acts on the card as it is now, not as it listed it.** Each card costs a `gh`
  * round-trip, and the owner can move a card back to Code inside that window — with a run
  * claiming it. So every write below is preceded by a re-read: still in PR, still unarchived,
  * still carrying the `prUrl` the forge answered about, or the tick does nothing and says nothing.
+ * Each of those waits is bounded, too: an unbounded one held the tick guard below for the life of
+ * the process when `gh` hung (review round 2), so a forge that does not answer inside
+ * `timeoutMs` is "cannot answer" — the same path a logged-out `gh` takes — and `forge.ts` kills
+ * the child it spawned.
  *
  * **4. What must not repeat is derived from the card, not remembered here.** A mismatch, a
  * closed-without-merge and a merge are each posted only when the card does not already carry
  * that exact comment by the runner since it last entered PR, so a tick every minute does not
- * fill the feed, and a card the owner sends back and approves again is told afresh. The only
- * state this module keeps between ticks is whether it has already said that `gh` could not
- * answer — one flag per cause, not about any card, which the spec asks to be said once per
- * process.
+ * fill the feed, and a card the owner sends back and approves again is told afresh. Which open
+ * request the poll may replace is derived the same way — the one it would raise itself, by the
+ * runner with that note, and no other. The only state this module keeps between ticks is whether
+ * it has already said that `gh` could not answer, or that a tick was skipped: one flag per cause,
+ * not about any card, which the spec asks to be said once per process.
  */
-import type { Card, CardDetail } from "@skelcrew/shared";
+import type { Attention, Card, CardDetail } from "@skelcrew/shared";
 import type { Core } from "./core/core";
-import { postingCore, runAttention, runQuestion } from "./runner/ending";
-import type { Forge, PullRequest } from "./runner/forge";
+import { postingCore, type RunQuestion, runAttention } from "./runner/ending";
+import { FORGE_TIMEOUT_MS, type Forge, type PullRequest } from "./runner/forge";
 
 /** How often the daemon asks the forge about the pull requests of the cards in PR. */
 export const MERGE_POLL_INTERVAL_MS = 60_000;
@@ -87,6 +99,12 @@ export interface MergePollOptions {
   runnerId: number;
   /** Where what has no card to land on goes; the daemon's stderr, as the sweep's does. */
   warn: (line: string) => void;
+  /**
+   * How long one forge call may take before it counts as no answer. The forge bounds its own
+   * spawn; this is the poll's own guarantee that a tick ends, which is the invariant a hanging
+   * `gh` broke. Defaults to `FORGE_TIMEOUT_MS`.
+   */
+  timeoutMs?: number;
 }
 
 export interface MergePoll {
@@ -110,15 +128,14 @@ function enteredPr(card: CardDetail): number {
 }
 
 /**
- * The branch a run recorded for this card: the last `refs_set` by the `runner` member that
- * named `branch`. Not `refs.branch`, which `crew` can rewrite — see this module's doc, point 2.
- * `set` absent (an event from before 011, which recorded only the merged result) is "unknown",
- * never "branch", so such an event does not answer this.
+ * The branch recorded for this card by a run or by a human: the last `refs_set` naming `branch`
+ * whose actor `binds` accepts. Not `refs.branch`, which `crew` can rewrite — see this module's
+ * doc, point 2. `set` absent (an event from before 011, which recorded only the merged result) is
+ * "unknown", never "branch", so such an event does not answer this.
  */
-function recordedBranch(card: CardDetail, runnerId: number): string | undefined {
+function recordedBranch(card: CardDetail, binds: (actorId: number) => boolean): string | undefined {
   const event = card.activity.findLast(
-    (e) =>
-      e.type === "refs_set" && e.actorId === runnerId && (e.data.set?.includes("branch") ?? false),
+    (e) => e.type === "refs_set" && binds(e.actorId) && (e.data.set?.includes("branch") ?? false),
   );
   return event?.type === "refs_set" ? event.data.refs.branch : undefined;
 }
@@ -132,11 +149,11 @@ function mismatch(
   card: CardDetail,
   pr: PullRequest,
   repoUrl: string,
-  runnerId: number,
+  binds: (actorId: number) => boolean,
 ): string | undefined {
   const reasons: string[] = [];
   if (pr.baseRepo !== repoUrl) reasons.push(`it is in ${pr.baseRepo}, not ${repoUrl}`);
-  const branch = recordedBranch(card, runnerId);
+  const branch = recordedBranch(card, binds);
   if (branch === undefined) {
     reasons.push(
       `its head branch is ${pr.headRefName}, and no run has recorded a branch on this card`,
@@ -148,19 +165,21 @@ function mismatch(
   return `pull request ${pr.url} is merged, but it is not this card's work: ${reasons.join("; ")}`;
 }
 
-export function mergePoll({ core, forge, repoRoot, runnerId, warn }: MergePollOptions): MergePoll {
+export function mergePoll({
+  core,
+  forge,
+  repoRoot,
+  runnerId,
+  warn,
+  timeoutMs = FORGE_TIMEOUT_MS,
+}: MergePollOptions): MergePoll {
   // Everything this module writes to a card goes through 015's escape, so no text it builds can
   // be refused — a refused comment would be a card moved to Done with no reason on its feed.
   const posting = postingCore(core);
-  /**
-   * The one request-raising helper a run has, used here for its rule: never replace a request
-   * this poll did not raise. The question it is handed records nothing, so *every* open request
-   * is someone else's and the raise is refused — the poll has no question of its own to answer.
-   */
+  /** The one request-raising helper a run has, used here for its rule; see `ownRequest`. */
   const attention = runAttention(posting, runnerId);
-  const noQuestionOfItsOwn = runQuestion();
-  /** Said once per process, per cause: the repository's own URL, and a pull request. */
-  const said = { repoUrl: false, pullRequest: false };
+  /** Said once per process, per cause. */
+  const said = { repoUrl: false, pullRequest: false, skipped: false };
   let running = false;
 
   function ownerId(): number {
@@ -169,12 +188,62 @@ export function mergePoll({ core, forge, repoRoot, runnerId, warn }: MergePollOp
     return owner.id;
   }
 
-  /** `gh` could not answer about the repository itself: not a login guess, a repository one. */
+  /** Whether a `refs_set` by this member is a record of the card's branch; doc, point 2. */
+  function binds(actorId: number): boolean {
+    return actorId === runnerId || core.getMember(actorId).kind === "human";
+  }
+
+  /**
+   * The open request the poll may replace: the one it would raise itself, by the runner with this
+   * note. Derived from the card rather than remembered, so a request the poll made and failed to
+   * finish is replaceable while nobody else's ever is. `raised` records nothing for the same
+   * reason — there is nothing between ticks to record it in.
+   */
+  function ownRequest(note: string): RunQuestion {
+    return {
+      raised(): void {},
+      isOpen(request: Attention): boolean {
+        return request.raisedBy === runnerId && request.note === note;
+      },
+    };
+  }
+
+  /**
+   * Awaits the forge, or gives up: the poll's own guarantee that a tick ends. `forge.ts` bounds
+   * its spawn too, and this is the layer whose invariant it is — a hang here held the tick guard
+   * for the life of the process (doc, point 3).
+   */
+  async function bounded<T>(answer: Promise<T | undefined>): Promise<T | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expiry = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), timeoutMs);
+    });
+    try {
+      return await Promise.race([answer, expiry]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * `gh` could not answer about the repository itself. `gh repo view` is every tick's first call,
+   * so this is the line an owner with no `gh` at all sees — which is why it asks about the
+   * install as well as naming what it could not read.
+   */
   function cannotAnswerRepo(): void {
     if (said.repoUrl) return;
     said.repoUrl = true;
     warn(
-      `skelcrew daemon: merge poll: gh could not say what repository ${repoRoot} is; cards stay in PR until it can`,
+      `skelcrew daemon: merge poll: gh could not say what repository ${repoRoot} is; cards stay in PR until it can — is gh installed and logged in?`,
+    );
+  }
+
+  /** A tick this one overlapped, said once: silence is what a hang looked like before. */
+  function skipped(): void {
+    if (said.skipped) return;
+    said.skipped = true;
+    warn(
+      "skelcrew daemon: merge poll: a tick is still in flight; this one is skipped (is gh hanging?)",
     );
   }
 
@@ -216,7 +285,7 @@ export function mergePoll({ core, forge, repoRoot, runnerId, warn }: MergePollOp
   async function visit(listed: Card, repoUrl: string): Promise<void> {
     const url = listed.refs.prUrl;
     if (url === undefined) return;
-    const pr = await forge.pullRequest(repoRoot, url);
+    const pr = await bounded(forge.pullRequest(repoRoot, url));
     if (pr === undefined) {
       cannotAnswerPullRequest(url);
       return;
@@ -228,23 +297,27 @@ export function mergePoll({ core, forge, repoRoot, runnerId, warn }: MergePollOp
       // Closed without merging: a judgement, not a move. Sending it back to Code or archiving
       // it is the owner's call, so the card is handed over with no move attached.
       const note = `pull request ${pr.url} closed without merging`;
+      // The comment is what the once-rule reads, so it comes after a raise that took: over a
+      // refused or failed raise it would suppress the retry forever. A raise that took and a
+      // comment that then failed is the other half — the next tick may replace the poll's own
+      // request (`ownRequest`) and post the comment it owes.
       if (saidSince(card, note)) return;
-      // The raise first, the comment only once it took: the comment is what the once-rule
-      // reads, so a comment over a refused or failed raise would suppress the retry forever.
       if (
-        attention.raise(card.id, { to: ownerId(), note, moves: [] }, noQuestionOfItsOwn) ===
-        undefined
+        attention.raise(card.id, { to: ownerId(), note, moves: [] }, ownRequest(note)) === undefined
       ) {
         return;
       }
       posting.comment(card.id, note, runnerId);
       return;
     }
-    const wrong = mismatch(card, pr, repoUrl, runnerId);
+    const wrong = mismatch(card, pr, repoUrl, binds);
     if (wrong !== undefined) {
       record(card, wrong);
       return;
     }
+    // The time is best-effort: every merged pull request the installed `gh` was asked about
+    // carried one, and whether it can answer `MERGED` with `mergedAt: null` is unverified — so
+    // the comment says what is known and the merge lands either way.
     const at = pr.mergedAt === undefined ? "" : ` at ${pr.mergedAt}`;
     // Through the once-rule as well: a move that keeps failing would otherwise re-say the merge
     // every tick. The move is attempted either way, so a failure is retried, not abandoned.
@@ -256,15 +329,20 @@ export function mergePoll({ core, forge, repoRoot, runnerId, warn }: MergePollOp
   return {
     async tick() {
       // A tick while a tick is in flight is not a second tick: the guard above the once-check,
-      // which reads the card and so cannot see what a concurrent tick has not yet written.
-      if (running) return;
+      // which reads the card and so cannot see what a concurrent tick has not yet written. It is
+      // said, once, because a run of skipped ticks is how a hanging `gh` used to look from
+      // outside — which was nothing at all.
+      if (running) {
+        skipped();
+        return;
+      }
       running = true;
       try {
         // Cards drive this: no unarchived card in PR with a pull request, and the forge is
         // never called at all.
         const cards = core.listCards().filter(watched);
         if (cards.length === 0) return;
-        const repoUrl = await forge.repoUrl(repoRoot);
+        const repoUrl = await bounded(forge.repoUrl(repoRoot));
         if (repoUrl === undefined) {
           cannotAnswerRepo();
           return;

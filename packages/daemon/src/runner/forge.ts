@@ -27,10 +27,21 @@
  * The URL is one argv element, never composed into a shell line, and the core has already
  * validated it as an absolute https URL free of control characters — so it cannot arrive
  * looking like a flag.
+ *
+ * **Every spawn is bounded.** `gh` talks to a network, and review round 2 found the unbounded
+ * version: one `gh` that never returned held the merge poll's one-tick-at-a-time guard for the
+ * life of the process — eight silent ticks, nothing on any card, no warning. On expiry the child
+ * is killed and the call is "cannot answer", which is the path a logged-out `gh` already takes.
  */
 
 /** What `gh pr view` is asked for. Nothing here runs a program or fetches a body. */
 const PR_FIELDS = "state,mergedAt,headRefName,url";
+
+/**
+ * How long one `gh` call may take. Well inside the merge poll's minute, and far outside what a
+ * healthy call needs (the verification runs answered in under two seconds).
+ */
+export const FORGE_TIMEOUT_MS = 30_000;
 
 /** A pull request as the forge reports it. */
 export interface PullRequest {
@@ -117,8 +128,11 @@ export function parseRepoUrl(stdout: string): string | undefined {
   return typeof url === "string" ? url : undefined;
 }
 
-export function createForge(options: { env?: Record<string, string | undefined> } = {}): Forge {
+export function createForge(
+  options: { env?: Record<string, string | undefined>; timeoutMs?: number } = {},
+): Forge {
   const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? FORGE_TIMEOUT_MS;
 
   /** stdout of a `gh` that exited 0, or nothing: every other outcome is "cannot answer". */
   async function view(cwd: string, args: string[]): Promise<string | undefined> {
@@ -136,12 +150,30 @@ export function createForge(options: { env?: Record<string, string | undefined> 
       return undefined;
     }
     // Both pipes are drained, so a `gh` that writes a long error cannot block on one of them.
-    const [stdout, , code] = await Promise.all([
-      new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
-      new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
-      proc.exited,
-    ]);
-    return code === 0 ? stdout : undefined;
+    const answered = (async () => {
+      const [stdout, , code] = await Promise.all([
+        new Response(proc.stdout as ReadableStream<Uint8Array>).text(),
+        new Response(proc.stderr as ReadableStream<Uint8Array>).text(),
+        proc.exited,
+      ]);
+      return code === 0 ? stdout : undefined;
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => {
+        // SIGKILL, not SIGTERM: the child is a read-only query with nothing to clean up, and a
+        // `gh` that ignored the polite signal would put the poll back where review found it.
+        proc.kill("SIGKILL");
+        // And the answer is not waited for after the kill: a grandchild holding the pipe open
+        // would keep the read pending long after the process that mattered is gone.
+        resolve(undefined);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([answered, expired]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   return {

@@ -150,3 +150,53 @@ another merged pull request leaves it in PR" (the same composition already drive
 `merges.test.ts`, here against a real run's `refs_set` — checked by mutation: reverting the check
 to `card.refs.branch` fails it and the two unit cases), and `process.test.ts`'s poll-interval case
 (written after the wiring; checked by the two mutations above).
+
+## Review round 2, and what each finding became
+
+Two Important, five Minor, no Critical; the spec was amended first (`32e873c`, `2b48319`).
+
+- **Important 1 — "`crew` cannot produce a `refs_set` as `runner`" was false.** Review joined the
+  `runner` member over the socket (`skelcrew --as runner refs <id> --branch <other>`) and wrote
+  the event the check reads: names are not credentials, which `allowlist.ts` has recorded since
+  016. `recordedBranch` now takes a `binds(actorId)` predicate — the `runner` member **or any
+  human member** — so the owner's own `skelcrew refs --branch` binds and the hand-driven card
+  lands, which is the amended spec's reason (that human can `mv <id> done` anyway). Every "cannot
+  forge" sentence is gone from `merges.ts`; the doc says what the check binds (a wrong, stale or
+  copied `prUrl`; an agent that keeps the identity it was given) and what it does not. Red first:
+  the owner-recorded branch case gave *`Expected: "done" Received: "pr"`*. The `crew`-recorded
+  case still stays in PR (unchanged), and a `refs_set` with no `set` — 011's "unknown, never
+  nothing" — still says nothing about the branch, driven by a core wrapper that strips `set` the
+  way a pre-011 row would (green first; mutation `?? true` fails it).
+- **Important 2 — a hanging `gh` wedged the poll for the life of the process.** Two layers, each
+  where its invariant is: `forge.ts` bounds every spawn (`FORGE_TIMEOUT_MS`, 30 s, overridable per
+  forge), SIGKILLs the child on expiry and does **not** wait for the pipes afterwards — a
+  grandchild holding one open would keep the read pending; and `mergePoll` bounds each forge call
+  itself (`timeoutMs`), because "a tick ends" is the poll's own guarantee and the hang proved that
+  trusting the dependency to be timely is how this breaks. A timeout is "cannot answer", so it
+  joins the warned-once path. A skipped tick is now said once, too. Red first: both never-answers
+  cases *timed out after 5000ms* — the test hanging is precisely the daemon hanging. The forge's
+  kill is covered by a test that puts a sleeping `gh` of its own making on a one-directory `PATH`
+  (the real `gh` unreachable, no network): the calls return in under a second and neither child
+  lives to write its file. Mutations: without the kill, the file appears and the case fails; the
+  first version of that fixture was broken — `PATH` held only the shim, so its `sleep` was not
+  found and it never hung — which is why the shim calls `/bin/sleep`.
+- **Minor 3** — the in-flight case now asserts what its name claims: the forge was asked once
+  across three overlapping ticks, one comment, and the skip said once. Red first with the guard
+  present but unasserted (*`Expected length: 1 Received length: 0`* for `asked`), and the guard's
+  removal fails it.
+- **Minor 4** — the raise-then-comment order stands, and which request the poll may replace is now
+  derived from the card: `ownRequest(note)` is a `RunQuestion` whose `isOpen` is "by the runner,
+  with this note". Its own unfinished request is replaceable; nobody else's ever is; nothing is
+  remembered between ticks. Red first: a `comment` that throws after a successful raise left the
+  card with a request and no comment forever — *the comment never arrived on the second tick*.
+- **Minor 5** — a merged answer with no `mergedAt` lands the card and reads `pull request <url>
+  merged`. Green first (the branch existed, untested); mutation — always appending ` at
+  ${mergedAt}` — fails it. The doc says the time is best-effort and that `MERGED` with
+  `mergedAt: null` is unverified.
+- **Minor 6** — the repository line now ends "— is gh installed and logged in?", since `gh repo
+  view` is every tick's first call and so the only line an owner with no `gh` sees. Round 1's
+  Minor 7 assertion (`not.toContain("logged in")`) is inverted, for that reason, in the same case.
+
+Carried to MILESTONES by the reviewer, not implemented here: `gh repo view` in a fork or with
+several remotes; `hello` refusing the reserved member names; `mergeCommit` as a sha git could
+verify locally (008c).
