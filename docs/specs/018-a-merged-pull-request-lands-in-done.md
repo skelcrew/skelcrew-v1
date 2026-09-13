@@ -51,12 +51,32 @@ request <url> merged at <time>` — and then a `card_moved` PR → Done whose ac
 attention request is raised; nothing waits on the owner.
 
 **The pull request has to be the card's own.** The daemon believes a merge only when the forge
-says the pull request at the card's `prUrl` is in this repository, its head branch is the card's
-recorded branch, and its state is merged. A `prUrl` pointing anywhere else — another
-repository, another branch, a URL `crew` chose — is not a merge of this card's work, and the
-card stays in PR with a comment saying what did not match. This is the composition 016's
-red-team predicted: `crew` can set refs on any card, and a `prUrl` naming an already-merged pull
-request elsewhere would otherwise walk a card into Done past the owner's merge gate.
+says the pull request at the card's `prUrl` is in this repository, its head branch is **the
+branch the runner recorded for this card**, and its state is merged. A `prUrl` pointing
+anywhere else — another repository, another branch, a URL `crew` chose — is not a merge of this
+card's work, and the card stays in PR with a comment saying what did not match. This is the
+composition 016's red-team predicted: `crew` can set refs on any card, and a `prUrl` naming an
+already-merged pull request elsewhere would otherwise walk a card into Done past the owner's
+merge gate.
+
+The branch compared is not `refs.branch` as it sits on the card, because `crew` can write that
+too — `setRefs` has no actor restriction — and review demonstrated, through the real CLI, that
+one `skelcrew --as crew refs <id> --branch <other> --pr <other's merged url>` walked a card into
+Done with the spec as approved. What `crew` cannot produce is a `refs_set` whose actor is the
+`runner` member: the runner records the card's branch itself at run start (`runner.ts`,
+`setRefs({ branch })` as `runner`). The check reads the branch from the last such event on the
+card — the same activity read the once-rule already performs — and compares the forge's head
+branch to that. What then remains is a pull request from this card's own branch merged under a
+different number, which is the card's own work and is accepted.
+
+**The tick acts on the card as it is now, not as it was.** A tick reads the card, then awaits
+the forge — one `gh` round-trip per card, and for the *n*-th card in the list *n* of them. The
+owner can move a card back to Code inside that window, and a run can start on it. So before the
+comment and the move, the tick re-reads the card and proceeds only if it is still in PR, still
+unarchived, and still carries the `prUrl` the forge was asked about; otherwise it does nothing
+and says nothing. Review demonstrated the alternative: a card sent back to Code mid-await was
+moved **Code → Done** as the owner, releasing the fresh claim mid-run — the owner's own
+decision undone, in the owner's name.
 
 **The daemon polls only while something is in PR.** No unarchived card in PR with a `prUrl`, no
 `gh` call. A card in PR without a `prUrl` — the owner moved it there by hand — is left alone.
@@ -172,11 +192,18 @@ This spec grants the daemon a command and a member's action, so the check applie
 3. **Composed with what `crew` can do.** `crew` can set any card's `prUrl` (016, recorded). Without
    the ownership check, a `prUrl` naming a merged pull request in any repository moves a card to
    Done as the owner. With it, the pull request must be this repository's and its head must be
-   the card's branch; `crew` cannot merge (`gh pr merge` asks — 013) and cannot move the card
-   (016). What remains: `crew` could set `prUrl` to a *different* pull request from the same
-   branch in this repository, if one existed and had merged — which means the card's own work
-   merged, under another number. That is the same outcome, recorded with a different URL, and it
-   is left as it is.
+   the branch **the runner recorded** — not `refs.branch` as `crew` may have rewritten it, since
+   `setRefs` has no actor restriction and review walked a card into Done with two `crew` writes
+   under the spec as approved. `crew` cannot merge (`gh pr merge` asks — 013), cannot move the
+   card (016), and cannot write a `refs_set` as `runner`. What remains: `crew` could set `prUrl`
+   to a *different* pull request from this card's own branch, if one existed and had merged —
+   which means the card's own work merged, under another number. That is the same outcome,
+   recorded with a different URL, and it is left as it is. And what this check is *for*, stated
+   without overclaiming: it binds a wrong, stale or copied `prUrl`, and it binds `crew` acting as
+   `crew`. It does not bind a caller asserting another identity over the socket — `allowlist.ts`
+   records that `skelcrew --as runner`, or no `--as` at all, is the owner, and such a caller can
+   `skelcrew mv <id> done` directly. That is 016's recorded limit, and it is a gate, not a
+   boundary, here as there.
 4. **The enforcer is the core's `moveCard`**, run directly by the tests, plus the daemon's own
    ownership check, which the tests drive with a faked forge returning every mismatch shape.
    `gh`'s real output shape is verified once by the implementer against the installed `gh`
