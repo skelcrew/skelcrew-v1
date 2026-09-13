@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXED_ALLOWLIST, runsUnprompted } from "./allowlist";
-import { loadPlaybooks, PLAYBOOK_PHASES } from "./playbooks";
+import { commandsNamed, filled, instructedCommands, prescribed } from "./playbook-commands";
+import { loadPlaybooks, PLAYBOOK_PHASES, type PlaybookPhase } from "./playbooks";
 
 let dir: string;
 
@@ -53,58 +54,6 @@ test("the Code playbook reads the body for export through --json", () => {
 });
 
 /**
- * The paragraphs a playbook's commands are not read from. Criterion 11 is about the commands a
- * playbook *instructs*, and these two say something else: the paragraph advertising what needs
- * no asking is pinned to `FIXED_ALLOWLIST` entry for entry below, so reading it here would only
- * prove the list matches its own restatement; and the paragraph recording what a subprocess
- * reaches names the five verbs the list withholds, which is the opposite of instructing them.
- * The paragraph on the read-only git verbs stays in: it is checked against the harness's own
- * behaviour rather than against the list it came from, so there is nothing circular about it.
- */
-const NOT_INSTRUCTIONS = [
-  "Pre-allowed, so they run unprompted:",
-  "Those check commands are a subprocess",
-];
-
-/**
- * A prohibition, in the shape the playbook writes one: the bolded **Never …** run itself, and
- * nothing after it. `git commit --no-verify` sits inside such a run — the playbook exists to
- * rule it out, not to run it — so those spans come out before the commands are read.
- *
- * Excluded by its own shape rather than by dropping the paragraph it appears in, because the
- * prohibitions are one bullet list with an instruction among them: "never push another
- * refspec" and "`git push -u origin HEAD` is the form to use" share a bullet, so a
- * whole-paragraph exclusion silently dropped the one push form the playbook instructs. The
- * next instruction to share a paragraph with a prohibition would have gone the same way.
- */
-const PROHIBITION = /\*\*Never [^*]*\*\*/g;
-
-/**
- * Every `skelcrew`, `git` or `gh` command a playbook shows, in a fenced block or in an
- * inline code span. Not a shell parser: it is how the criterion "the playbook's own commands
- * run without asking" is checked command by command against the playbook's own text, so a
- * command added to a playbook later is checked the same way.
- *
- * A playbook writes its arguments as `<id>`-style placeholders, which are not commands — the
- * angle brackets are shell redirections. Each is replaced with a word, so what the criterion is
- * checked against is the command the agent would run rather than the template it reads.
- */
-function commandsIn(playbook: string): string[] {
-  const out: string[] = [];
-  for (const whole of playbook.split("\n\n")) {
-    if (NOT_INSTRUCTIONS.some((marker) => whole.includes(marker))) continue;
-    const paragraph = whole.replaceAll(PROHIBITION, "");
-    for (const span of paragraph.match(/`{1,3}[^`]+`{1,3}/g) ?? []) {
-      for (const line of span.replaceAll("`", "").split("\n")) {
-        const command = line.trim().replaceAll(/<[^<>]*>/g, "PLACEHOLDER");
-        if (/^(skelcrew|git|gh) \S/.test(command)) out.push(command);
-      }
-    }
-  }
-  return out;
-}
-
-/**
  * Criterion 11, and it asks about *asking*, not about the list: a playbook's `git log` runs
  * unprompted through the harness's own read-only check rather than through an entry, since the
  * six read-only git verbs came off the list once `--output` proved a trailing wildcard could
@@ -113,7 +62,7 @@ function commandsIn(playbook: string): string[] {
 test("every command the playbooks run goes unprompted, so none of them stops to ask", () => {
   const playbooks = loadPlaybooks();
   for (const phase of PLAYBOOK_PHASES) {
-    const commands = commandsIn(playbooks[phase]);
+    const commands = instructedCommands(playbooks[phase]);
     expect(commands.length).toBeGreaterThan(0);
     for (const command of commands) {
       expect([phase, command, runsUnprompted("Bash", { command })]).toEqual([phase, command, true]);
@@ -129,7 +78,7 @@ test("every command the playbooks run goes unprompted, so none of them stops to 
  * **forbids** — among the commands asserted to run without asking.
  */
 test("the criterion-11 check reads the playbook's instructions, not its advertisement", () => {
-  const commands = commandsIn(loadPlaybooks().code);
+  const commands = instructedCommands(loadPlaybooks().code);
   expect(commands).not.toContain("git commit --no-verify");
   expect(commands).toContain("skelcrew show PLACEHOLDER");
   expect(commands).toContain("git status");
@@ -139,6 +88,107 @@ test("the criterion-11 check reads the playbook's instructions, not its advertis
   // marker dropped the instruction with it, so an instruction that shares a bullet with a
   // prohibition would stop being checked without anything failing.
   expect(commands).toContain("git push -u origin HEAD");
+});
+
+/**
+ * 017 puts this same list through the harness itself, where every one of these is a run that
+ * either executes or is denied — so what the list holds is now load-bearing twice over, and
+ * each exclusion is named here rather than left to the harvester's prose. Every string below
+ * was run through the pinned harness while 017 was built: each excluded one is denied, and
+ * `skelcrew show <id> --json`, run as written, creates a file called `--json`.
+ */
+test("the instructed commands are the playbook's commands, not its nouns, prose or prohibitions", () => {
+  const spec = instructedCommands(loadPlaybooks().spec);
+  const code = instructedCommands(loadPlaybooks().code);
+  // The heredoc's first line is the command; its body is the spec being written, not commands.
+  expect(spec).toContain("skelcrew body PLACEHOLDER <<'SPEC'");
+  expect(spec).not.toContain("# PLACEHOLDER");
+  expect(spec).not.toContain("…");
+  expect(spec).not.toContain("SPEC");
+  // "every step lands there through the `skelcrew` CLI" is a noun, not a command.
+  expect(code).not.toContain("skelcrew");
+  // The five verbs the fixed list withholds are named to say they are *not* available, and the
+  // harness denies all five. A playbook that starts instructing one must fail here first.
+  for (const verb of ["mv", "claim", "release", "archive", "resolve"]) {
+    expect(code).not.toContain(`skelcrew ${verb}`);
+  }
+  // A placeholder is a shell redirection, so the template is not the command the agent runs.
+  expect(code).toContain("skelcrew show PLACEHOLDER --json");
+  expect(code).not.toContain("skelcrew show <id> --json");
+});
+
+/**
+ * Minor 4 of review round 2, and the whole of what the narrowing is allowed to be. The test above
+ * names members — `skelcrew mv` is dropped, `git status` is kept — and a crafted paragraph
+ * carrying the "Pre-allowed…" marker could take a real instruction out of the check with nothing
+ * failing. This pins the *difference*: every command `commandsNamed` finds that
+ * `instructedCommands` does not yield, per playbook, compared after the same placeholder
+ * substitution so that the two lists are in the same language.
+ *
+ * What is in these lists and why: a heredoc's body and the `…` standing for a spec's contents;
+ * the bare nouns (`skelcrew` in "the `skelcrew` CLI"); the five verbs the fixed list withholds and
+ * `git commit --no-verify`, which the Code playbook names in order to forbid; and the
+ * argument-less forms the advertisement paragraph lists, each of which the check runs anyway as
+ * `FIXED_LIST_REPRESENTATIVES` with a representative argument.
+ */
+const DROPPED: Record<PlaybookPhase, string[]> = {
+  spec: ["# PLACEHOLDER — PLACEHOLDER", "SPEC", "skelcrew", "…"],
+  code: [
+    "gh pr comment",
+    "gh pr create",
+    "gh pr diff",
+    "gh pr view",
+    "gh repo view",
+    "git add",
+    "git commit",
+    "git commit --no-verify",
+    "git push",
+    "skelcrew",
+    "skelcrew archive",
+    "skelcrew attention",
+    "skelcrew body",
+    "skelcrew claim",
+    "skelcrew comment",
+    "skelcrew mv",
+    "skelcrew refs",
+    "skelcrew release",
+    "skelcrew resolve",
+  ],
+};
+
+test("what the instructed list drops from the named list is exactly this, per playbook", () => {
+  const playbooks = loadPlaybooks();
+  for (const phase of PLAYBOOK_PHASES) {
+    const instructed = new Set(instructedCommands(playbooks[phase]));
+    const dropped = [
+      ...new Set(
+        commandsNamed(playbooks[phase])
+          .map(filled)
+          .filter((command) => !instructed.has(command)),
+      ),
+    ].toSorted();
+    expect([phase, dropped]).toEqual([phase, DROPPED[phase]]);
+  }
+});
+
+/**
+ * Dropping a paragraph whole feeds a parser that counts fence lines a text with some of them
+ * missing, and one odd count inverts every later line's in-or-out-of-fence state — so the
+ * instruction below an excluded paragraph would stop being checked, silently, which is the
+ * failure mode this whole spec exists to prevent. The excluded paragraph keeps its fence lines
+ * and loses everything else.
+ */
+test("an excluded paragraph holding a lone fence does not swallow the instructions after it", () => {
+  // The excluded paragraph opens a fence and does not close it: one fence line, an odd count.
+  const playbook = [
+    "Pre-allowed, so they run unprompted: `git add`, as in:\n```\ngit some-advertised-thing",
+    "```",
+    "Then commit it:",
+    "```\ngit commit -m PLACEHOLDER\n```",
+  ].join("\n\n");
+  const commands = instructedCommands(playbook);
+  expect(commands).toContain("git commit -m PLACEHOLDER");
+  expect(commands).not.toContain("git some-advertised-thing");
 });
 
 /** The sentence in `code.md` that tells the agent what needs no asking. */
@@ -238,43 +288,6 @@ function unwrapped(playbook: string): string {
   return playbook.replace(/\s+/g, " ");
 }
 
-/** The verbs a playbook can put in front of an agent. An inline span starting with one is a
- * command; one starting with anything else — a ref name, a flag, a filename — is not. */
-const COMMAND_WORDS = ["skelcrew", "git", "gh", "bun"];
-
-/**
- * The lines inside a playbook's fenced blocks: what it sets out for the agent to run verbatim.
- * A heredoc body is in here too, and is prose rather than a command — no shape asserted
- * against these reaches it, so it needs no separating out.
- */
-function prescribed(playbook: string): string[] {
-  const lines: string[] = [];
-  let inside = false;
-  for (const line of playbook.split("\n")) {
-    if (line.startsWith("```")) {
-      inside = !inside;
-      continue;
-    }
-    if (inside && line.trim().length > 0) lines.push(line);
-  }
-  return lines;
-}
-
-/**
- * Every command a playbook names, fenced or inline. A playbook puts commands in front of the
- * agent in running prose as often as in a block — `git push -u origin HEAD` is named inline as
- * "the form to use" — so a guard over fenced lines alone would miss half of them. An inline
- * span is only read as a command when it starts with a command word, which is what keeps the
- * ref names, flags and rule patterns that also sit in backticks out, and is why the counter-
- * example `--pr "$(gh pr view …)"` needs no exclusion: it starts with a flag.
- */
-function commandsNamed(playbook: string): string[] {
-  const inline = [...playbook.matchAll(/`([^`\n]+)`/g)]
-    .map((match) => match[1] as string)
-    .filter((span) => COMMAND_WORDS.includes(span.split(/[\s(]/)[0] as string));
-  return [...prescribed(playbook), ...inline];
-}
-
 test("the Code playbook records the pull request on every run, reading an existing one back", () => {
   const code = loadPlaybooks().code;
   // The contract checks that *this run* recorded it, so a revision on an existing PR still
@@ -335,6 +348,9 @@ test("no command either playbook names carries a shell operator", () => {
   // A redirection is in neither class: the harness matches its rule against the command with
   // the redirections stripped, which is why the Spec playbook's heredoc is fine and why `<<`
   // is deliberately absent below.
+  //
+  // This stays the fast path — it runs on every `bun run check` and catches the common case —
+  // and `bun run check:harness` (017) is what catches the case it cannot, by asking the harness.
   for (const phase of PLAYBOOK_PHASES) {
     for (const command of commandsNamed(loadPlaybooks()[phase])) {
       expect(command).not.toMatch(/\$\(|`|&&|\|\||\||;/);

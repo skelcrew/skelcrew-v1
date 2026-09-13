@@ -45,9 +45,38 @@ existing version-pin test already signals.
 **A command the playbooks prescribe runs unprompted in the real harness, or the check says
 which one does not.** `bun run check:harness` spawns the pinned harness against a local stub
 that plays the model, emits each prescribed command as a `Bash` tool call, and reads the
-result's `permission_denials`. Every prescribed command must execute — appear as a tool result,
-not as a denial — and the check fails naming any that was denied, with the harness's own
-`decision_reason`.
+result's `permission_denials`. Every instructed command must execute — appear as a tool result,
+not as a denial — and the check fails naming any that was denied, with the reason the harness
+reports for it. (In the pinned SDK the result's `permission_denials` carries the tool, its
+`tool_use_id` and its input, and the reason lives on the `system`/`permission_denied` message
+the stream emits, documented as best-effort; the check pairs the two by `tool_use_id` and says
+"no reason reported" when the message did not arrive. The spec as approved said
+`decision_reason` was on the result; it is not.)
+
+**"Instructed" is narrower than "named", and has to be.** The playbooks name commands they
+*forbid* — `skelcrew mv`, `claim`, `release`, `archive`, `resolve`, `git commit --no-verify` —
+in the paragraphs that forbid them, and the harness denies five of those by design (013's rule
+4). They name bare nouns (`skelcrew`, in "the `skelcrew` CLI") and heredoc bodies. And an
+instruction's `<id>` placeholder is a shell redirection: unsubstituted, `skelcrew show <id>` is
+refused for its target and `skelcrew show <id> --json` **executes**, creating a file named
+`--json`. So the list the check runs is the list the playbook test already checks for
+criterion 11 of 013: commands from the paragraphs that instruct, with a command word and an
+argument, placeholders filled — `instructedCommands()`, defined beside the harvesters — plus
+the fenced `bun run check` the scan contributes and the control. Every exclusion is pinned by a
+test so the narrowing cannot widen silently.
+
+**And every entry of the fixed list itself, with a representative argument.** The playbook's
+"pre-allowed, so they run unprompted" paragraph is excluded from `instructedCommands()` on the
+argument that checking it against a model derived from the same list proves nothing. That
+argument is true of `playbooks.test.ts` and **false of this check**, which asks the binary — and
+the entries a Code run's artefact contract depends on (`git add`, `git commit`, `gh pr create`,
+`gh pr diff`, `gh pr comment`, `gh repo view`) are instructed only in prose, so `instructedCommands()`
+never yields them. The check therefore also runs each `FIXED_ALLOWLIST` `Bash(...)` entry once,
+with a representative argument for a wildcard entry (`git add -A`, `git commit -m "a message"`,
+`gh pr create --title "a title" --body "a body"`) and verbatim for an exact one, so that a green
+run means what it is for: no command the runner pre-allows would ask. The representative
+arguments are one list beside the control, and a fixed-list entry with no representative fails
+the check rather than being skipped.
 
 **The check can fail.** A control command that the harness must ask about — `git push origin
 HEAD:main` — is included and must appear in `permission_denials`. A check that cannot fail is
@@ -56,10 +85,13 @@ decoration; this one proves its own teeth on every run.
 **The options under test are the run's options.** The check builds its SDK options through the
 same function the runner uses, with a real temporary worktree and a target repository whose
 `AGENTS.md` fences `bun run check`, so `allowlistFor`'s fixed list, its anchored `Edit` rule,
-its deny rules and its scanned entry are all what the harness evaluates. Only four things are
+its deny rules and its scanned entry are all what the harness evaluates. Only five things are
 overridden, and they are named: `permissionMode` is `dontAsk`; `env` gains the stub's
 `ANTHROPIC_BASE_URL` and a dummy `ANTHROPIC_API_KEY`; `HOME` is a temporary directory; `PATH`
-begins with a directory of stub executables.
+begins with a directory of stub executables; and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is
+set, which no real run sets — it is the one override that is not a substitution but an
+addition, and it is there because the "nothing leaves the machine" paragraph below asks for it.
+(The spec as approved said four, and was counted wrong by review.)
 
 **Nothing runs and nothing leaves the machine.** The stub model listens on `127.0.0.1` only.
 The stub `PATH` holds executables named for every command word the playbooks use — `git`,
@@ -110,7 +142,7 @@ a real login, which this spec forbids.
 
 Through `claude.ts`'s option builder, called with the same inputs a run gives it — a temporary
 target repository with a fenced `bun run check` in its `AGENTS.md`, a worktree created the way
-`runner.ts` creates one, `allowlistFor`'s output for that worktree — and the four overrides
+`runner.ts` creates one, `allowlistFor`'s output for that worktree — and the five overrides
 above applied after. `canUseTool` is supplied and must never be called: under `dontAsk` a
 prompt is a denial, and a call reaching `canUseTool` is itself a failure of the check, since
 it means the mode was not honoured.
@@ -145,10 +177,14 @@ and must not happen.
    `bun test`, and no test under `packages/` starts a `claude` process.
 2. `bun run check:harness` exists as a root script, runs the check file explicitly, and passes
    against the pinned SDK with the two playbooks as they are.
-3. For every command `commandsNamed()` harvests from both playbooks, the harness executes it —
-   a tool result, not a denial — under the run's own options with the named overrides. A
-   prescribed command the harness denies fails the check, naming the command and the harness's
-   `decision_reason`.
+3. For every command `instructedCommands()` yields from both playbooks — plus one
+   representative command per `FIXED_ALLOWLIST` `Bash(...)` entry, the fenced `bun run check`,
+   and the control — the harness executes it: a tool result that is not an error, not a
+   denial, under the run's own options with the named overrides. A fixed-list entry with no
+   representative fails the check. A command the harness denies fails
+   the check, naming the command and the reason the harness reported (or that none was). What
+   `instructedCommands()` excludes relative to `commandsNamed()` — forbidden verbs, bare
+   nouns, heredoc bodies, unfilled placeholders — is pinned by a test.
 4. `git push origin HEAD:main` appears in `permission_denials` on every run of the check, and
    the check fails if it does not.
 5. The scanned entry is exercised: `bun run check` is fenced in the temporary repository's
@@ -158,8 +194,14 @@ and must not happen.
    `ANTHROPIC_API_KEY`, if set, is not in the harness's environment.
 7. No prescribed command has an effect: every executable on the stub `PATH` exits 0 and writes
    nothing, and the temporary repository is unchanged after the check.
-8. `prescribed()` and `commandsNamed()` are defined once, imported by both the check and
-   `playbooks.test.ts`.
+8. `prescribed()`, `commandsNamed()` and `instructedCommands()` are defined once, in one module
+   outside any test file, and both the check and `playbooks.test.ts` take their command lists
+   from it: no second harvester exists, and `instructedCommands()` yields exactly what the
+   playbook test's own harvester yielded before the move.
+11. `claude.test.ts`'s assertion that exactly one source file imports the SDK becomes an exact
+    two-element list — `claude.ts` and the check — and a second assertion pins that nothing the
+    daemon runs imports the check. This is the one existing assertion the spec changes; it
+    could not stay as written, since the check must import the SDK to spawn the harness.
 9. `CLAUDE.md`'s definition of done names `check:harness` and when to run it, and
    `allowlist.ts`'s maintenance contract names it as what re-verifying now means.
 10. `canUseTool` is never called during the check; a call to it fails the check.

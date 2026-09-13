@@ -37,7 +37,24 @@ test("the driver conforms to the boundary", () => {
   expect(typeof driver.run).toBe("function");
 });
 
-test("the harness SDK is named by exactly one source file, and imported by exactly one", async () => {
+/**
+ * The check's module name, composed rather than written out. Both tests below scan every source
+ * file including this one, and the second matches any *quoted* string naming the module — so a
+ * literal `"…harness-check…"` anywhere in this file would match itself and report this file as an
+ * importer of the check.
+ */
+const CHECK_MODULE = ["harness", "check"].join("-");
+const CHECK_FILE = `packages/daemon/src/runner/${CHECK_MODULE}.ts`;
+
+/**
+ * One driver, and one check that spawns the harness deliberately. 017 added the second: it runs
+ * the pinned binary against a local stub to find out whether a playbook's commands ask, which
+ * needs `query` with a `permissionMode` the builder below hard-codes — so it cannot go through
+ * the driver. Both lists stay exact, so a third importer is a decision someone makes on purpose
+ * rather than a drift. The daemon's own run path is still `claude.ts` alone: `harness-check.ts`
+ * is not imported by anything the daemon runs, and `bun run check` does not execute it.
+ */
+test("the harness SDK is named by exactly three files, and imported at runtime by exactly two", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
   const naming: string[] = [];
@@ -46,15 +63,37 @@ test("the harness SDK is named by exactly one source file, and imported by exact
     const text = readFileSync(join(root, file), "utf8");
     if (!text.includes("@anthropic-ai/")) continue;
     naming.push(file);
-    // A type-only import is erased: the file that pulls the SDK in at runtime is the driver.
+    // A type-only import is erased: the files that pull the SDK in at runtime are these.
     if (!/^import type .* from "@anthropic-ai\//m.test(text)) importing.push(file);
   }
-  expect(importing).toEqual(["packages/daemon/src/runner/claude.ts"]);
+  expect(importing.sort()).toEqual(["packages/daemon/src/runner/claude.ts", CHECK_FILE]);
   expect(naming.sort()).toEqual([
     // This file, for the message literals its translation tests are written over.
     "packages/daemon/src/runner/claude.test.ts",
     "packages/daemon/src/runner/claude.ts",
+    CHECK_FILE,
   ]);
+});
+
+/**
+ * The daemon's own path to the harness is one file, and the check is not on it. **Any quoted
+ * specifier** naming the check counts, with no `import`, `from` or `require` required in front of
+ * it: round 1 matched the `./harness-check` spelling alone, so an import written
+ * `../runner/harness-check` passed; round 2 required `from`, so `await import(…)` and a bare
+ * side-effect import both passed. A module specifier is a quoted string ending in the module's
+ * name, and that is the whole of the test.
+ */
+test("nothing the daemon runs imports the harness check", async () => {
+  const root = fileURLToPath(new URL("../../../../", import.meta.url));
+  const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
+  const specifier = new RegExp(`["'][^"']*${CHECK_MODULE}(\\.ts)?["']`);
+  const importers: string[] = [];
+  for await (const file of sources) {
+    if (file.endsWith(`${CHECK_MODULE}.ts`)) continue;
+    const text = readFileSync(join(root, file), "utf8");
+    if (specifier.test(text)) importers.push(file);
+  }
+  expect(importers).toEqual([`packages/daemon/src/runner/${CHECK_MODULE}.test.ts`]);
 });
 
 /**
@@ -63,7 +102,9 @@ test("the harness SDK is named by exactly one source file, and imported by exact
  * The SDK is pinned exactly in `bun.lock`, which is the real protection — but nothing tied the
  * transcription to that pin, so a bump could move the table underneath the list in silence. It
  * fails here instead, and becomes a decision someone makes on purpose. The assertion lives in
- * this file because this is the one place the SDK is named, per the test above.
+ * this file because this is the one *test* file that names the SDK: the test above pins the naming
+ * list at three files — the driver, the harness check, and this one, for the literals its
+ * translation tests are written over.
  */
 test("the harness the allowlist's tables were transcribed from is the one installed", () => {
   const sdk = dirname(Bun.resolveSync("@anthropic-ai/claude-agent-sdk", import.meta.dir));
