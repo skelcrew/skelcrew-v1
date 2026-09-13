@@ -62,12 +62,25 @@ merge gate.
 The branch compared is not `refs.branch` as it sits on the card, because `crew` can write that
 too — `setRefs` has no actor restriction — and review demonstrated, through the real CLI, that
 one `skelcrew --as crew refs <id> --branch <other> --pr <other's merged url>` walked a card into
-Done with the spec as approved. What `crew` cannot produce is a `refs_set` whose actor is the
-`runner` member: the runner records the card's branch itself at run start (`runner.ts`,
-`setRefs({ branch })` as `runner`). The check reads the branch from the last such event on the
-card — the same activity read the once-rule already performs — and compares the forge's head
-branch to that. What then remains is a pull request from this card's own branch merged under a
-different number, which is the card's own work and is accepted.
+Done with the spec as approved. The runner records the card's branch itself at run start
+(`runner.ts`, `setRefs({ branch })` as `runner`), and the owner may record one by hand. The
+check reads the branch from the last `refs_set` on the card whose actor is the `runner` member
+**or a human member** — the same activity read the once-rule already performs — and compares
+the forge's head branch to that. A human-recorded branch binds because the human who wrote it
+can `skelcrew mv <id> done` anyway, so accepting it costs nothing and keeps the hand-driven
+card (branch and pull request made in a terminal, `skelcrew refs --pr`, moved to PR) able to
+land. What then remains is a pull request from this card's own branch merged under a different
+number, which is the card's own work and is accepted.
+
+What this binds, stated without the overclaim the spec made on its first correction: a wrong,
+stale or copied `prUrl`, and an agent that keeps the identity the runner gave it. It does
+**not** bind a caller that asserts `runner` — the spec as corrected said `crew` "cannot produce
+a `refs_set` as `runner`", and review walked it live: `skelcrew --as runner refs <id> --branch
+<other>` joins the `runner` member, because names are not credentials (`allowlist.ts`, since
+016) and `hello` reserves none. That caller is owner-equivalent by choosing no `--as` at all,
+and 016 records the limit. If a real bind is ever wanted, "`hello` refuses the reserved member
+names" is its own finding, carried to MILESTONES, and it interacts with the deliberate
+`--as crew` join `allowlist.ts` documents.
 
 **The tick acts on the card as it is now, not as it was.** A tick reads the card, then awaits
 the forge — one `gh` round-trip per card, and for the *n*-th card in the list *n* of them. The
@@ -86,8 +99,16 @@ The interval is slow (a minute by default) and configurable the way the run limi
 an attention request to the owner — `pull request <url> closed without merging` — with no move
 attached. Sending it back to Code, or archiving, is the owner's call, and the queue shows it.
 
-**`gh` missing or not logged in is said once and then waited out.** The daemon warns once per
-process (not per tick), the cards stay in PR, and `skelcrew mv <id> done` by hand still works.
+**`gh` that cannot answer is said once and then waited out.** The daemon warns once per process
+per cause (not per tick) — the repository's own URL, or a pull request — the cards stay in PR,
+and `skelcrew mv <id> done` by hand still works. A `gh` that is absent or logged out surfaces on
+the repository line, since that is every tick's first call, and the warning says which it could
+not answer rather than guessing why. **A `gh` that hangs is bounded**: each spawn has a timeout
+after which the child is killed and the call counts as "cannot answer", so a stalled network
+collapses into the warned-once path instead of holding the poll's one-tick-at-a-time guard for
+the life of the process. Review found the unbounded version: one `gh` call, then eight silent
+ticks, no warning, no recovery short of a restart — the last arc of the product stopped turning
+and nothing said so. A tick skipped because one is still in flight is said too, once.
 The daemon holds no credential for the forge: `gh` uses the owner's own login, the way the agent
 already does.
 
@@ -196,16 +217,19 @@ This spec grants the daemon a command and a member's action, so the check applie
    Done as the owner. With it, the pull request must be this repository's and its head must be
    the branch **the runner recorded** — not `refs.branch` as `crew` may have rewritten it, since
    `setRefs` has no actor restriction and review walked a card into Done with two `crew` writes
-   under the spec as approved. `crew` cannot merge (`gh pr merge` asks — 013), cannot move the
-   card (016), and cannot write a `refs_set` as `runner`. What remains: `crew` could set `prUrl`
-   to a *different* pull request from this card's own branch, if one existed and had merged —
-   which means the card's own work merged, under another number. That is the same outcome,
-   recorded with a different URL, and it is left as it is. And what this check is *for*, stated
-   without overclaiming: it binds a wrong, stale or copied `prUrl`, and it binds `crew` acting as
-   `crew`. It does not bind a caller asserting another identity over the socket — `allowlist.ts`
-   records that `skelcrew --as runner`, or no `--as` at all, is the owner, and such a caller can
-   `skelcrew mv <id> done` directly. That is 016's recorded limit, and it is a gate, not a
-   boundary, here as there.
+   under the spec as approved. `crew` cannot merge (`gh pr merge` asks — 013) and cannot move
+   the card (016). What remains: `crew` could set `prUrl` to a *different* pull request from
+   this card's own branch, if one existed and had merged — which means the card's own work
+   merged, under another number. That is the same outcome, recorded with a different URL, and
+   it is left as it is. And what this check is *for*, stated without overclaiming: it binds a
+   wrong, stale or copied `prUrl`, and it binds an agent that keeps the identity it was given.
+   It does not bind a caller asserting another identity over the socket — `allowlist.ts` records
+   that `runner` and `crew` are names, not credentials, so `skelcrew --as runner` *joins* the
+   runner member and can write the `refs_set` this check reads; and no `--as` at all is the
+   owner, who can `skelcrew mv <id> done` directly. That is 016's recorded limit, and it is a
+   gate, not a boundary, here as there. (The spec's first correction said `--as runner` "is the
+   owner" and that `crew` "cannot write a `refs_set` as `runner`"; both were wrong, and review
+   demonstrated the second live.)
 4. **The enforcer is the core's `moveCard`**, run directly by the tests, plus the daemon's own
    ownership check, which the tests drive with a faked forge returning every mismatch shape.
    `gh`'s real output shape is verified once by the implementer against the installed `gh`
