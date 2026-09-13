@@ -79,12 +79,23 @@ merge, and anything on the forge beyond reading the pull request's state are out
 
 ### A forge, beside git
 
-A `Forge` interface in `packages/daemon/src/runner/forge.ts` with one method:
+A `Forge` interface in `packages/daemon/src/runner/forge.ts` with two methods:
 `pullRequest(repoRoot, url)` returning `{ url, state: "open" | "merged" | "closed", mergedAt?,
 headRefName, baseRepo }` or `undefined` when `gh` cannot answer (absent, not logged in, the URL
-not a pull request). Implemented with `Bun.spawn(["gh", "pr", "view", url, "--json", ...])` run
-in `repoRoot`, following `git.ts`'s shape exactly — the same error wrapping, the same "spawn
-failed" distinction. Tests fake it; no test runs `gh`.
+not a pull request); and `repoUrl(repoRoot)` returning the repository's own URL, or `undefined`.
+Both implemented with `Bun.spawn(["gh", ...])` and an argv array, following `git.ts`'s shape
+exactly — the same error wrapping, the same "spawn failed" distinction. Tests fake it; no test
+runs `gh`.
+
+Why two and not the one the spec as approved named: `gh pr view <url>` takes the URL as its
+authority and **ignores the directory it runs in** — verified against the installed `gh`, which
+answered about another repository's pull request from inside this one — and the installed `gh`
+(2.86.0) has **no base-repository field** at all (`baseRepository` is "Unknown JSON field";
+`headRepository.nameWithOwner` comes back empty). So "is this pull request in this repository"
+cannot be read off the pull request. It is read by comparing the canonical `url` `gh` returns for
+the pull request against the repository's own URL from `gh repo view --json url`, both `gh`'s own
+output, asked once per tick and only when a candidate card exists. `baseRepo` is that URL —
+`https://host/owner/repo` — so two hosts with the same slug cannot match.
 
 Why `gh` and not git: a squash merge leaves no ancestry to check, and a deleted remote branch
 is a setting, not a signal. Why a URL and not a number: `prUrl` is what the card carries, and
@@ -92,10 +103,15 @@ is a setting, not a signal. Why a URL and not a number: `prUrl` is what the card
 
 ### A merge tick, beside the sweep
 
-`packages/daemon/src/merges.ts`, in `sweep.ts`'s shape: one `mergeTick(core, forge, repoRoot,
-ownerId, runnerId, warn)` the daemon calls on an interval — `MERGE_POLL_INTERVAL_MS`, sixty
-seconds, overridable by `SKELCREW_MERGE_POLL_SECONDS` the way `SKELCREW_RUN_MINUTES` overrides
-the run limit. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
+`packages/daemon/src/merges.ts`, in `sweep.ts`'s shape but with one difference the spec as
+approved missed: `mergePoll({ core, forge, repoRoot, runnerId, warn })` returns a `tick()` the
+daemon calls on an interval — `MERGE_POLL_INTERVAL_MS`, sixty seconds, overridable by
+`SKELCREW_MERGE_POLL_SECONDS` the way `SKELCREW_RUN_MINUTES` overrides the run limit. A closure
+rather than the free `mergeTick(...)` first written, because "warn once per process" is state
+that lives *between* ticks, and a free function has nowhere to keep it; the closure is also where
+a test drives many ticks and counts the warnings. The owner's id is resolved inside the tick, the
+way `runner.ts` resolves it. The poll runs where the runner runs — off under `SKELCREW_RUNNER=0`
+and without a `repoRoot` — because it spawns a subprocess against the repository. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
 spawning; otherwise ask the forge about each, and:
 
 - merged, and the pull request is this repository's and its head is the card's `refs.branch`:
@@ -164,9 +180,11 @@ This spec grants the daemon a command and a member's action, so the check applie
 4. **The enforcer is the core's `moveCard`**, run directly by the tests, plus the daemon's own
    ownership check, which the tests drive with a faked forge returning every mismatch shape.
    `gh`'s real output shape is verified once by the implementer against the installed `gh`
-   (`gh pr view <a real URL> --json state,mergedAt,headRefName,baseRepository`) and the field
-   names recorded in `forge.ts`; that is the one semantics this spec takes from a tool, and it is
-   pinned by the `gh` version the implementer ran.
+   (`gh pr view <a real URL> --json state,mergedAt,headRefName,url` and `gh repo view --json
+   url`) and the field names recorded in `forge.ts`; that is the one semantics this spec takes
+   from a tool, and it is pinned by the `gh` version the implementer ran. The spec as approved
+   named `baseRepository` here; the installed `gh` has no such field, which is what forced the
+   second method above. `state` is upper-case and `mergedAt` is `null` unless merged.
 5. **What parses the string.** The URL is an argv element to `gh`, never composed into a shell
    line; the comment text the daemon posts is built from the URL and a timestamp and goes through
    `postingCore` (015), so it cannot be refused.
