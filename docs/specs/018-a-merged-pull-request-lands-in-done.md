@@ -153,7 +153,13 @@ that lives *between* ticks, and a free function has nowhere to keep it; the clos
 a test drives many ticks and counts the warnings. The owner's id is resolved inside the tick, the
 way `runner.ts` resolves it. The poll runs where the runner runs — off under `SKELCREW_RUNNER=0`
 and without a `repoRoot` — because it spawns a subprocess against the repository. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
-spawning; otherwise ask the forge about each, and:
+spawning; otherwise ask the forge for the repository's own URL, and for each card compare the
+`prUrl`'s origin (scheme and host) to that URL's origin **before** asking about the pull
+request: a `prUrl` on another host is a mismatch, recorded with the same mismatch comment as
+below, and `gh pr view` is never run against it. Review round 3 established why: `gh pr view
+<url>` sends a request to the host named in the URL, so a card whose `prUrl` names a host `crew`
+chose would otherwise make the daemon contact that host every interval for as long as the card
+sits in PR. For the cards that pass, ask the forge about each, and:
 
 - merged, and the pull request is this repository's and its head is the branch the runner
   recorded for the card (the last `refs_set` by the `runner` member naming `branch` — never
@@ -210,8 +216,13 @@ This spec grants the daemon a command and a member's action, so the check applie
 2. **What `gh pr view` reaches.** Read-only: it returns JSON about a pull request. Its `--json`
    fields are enumerated in the call; no `--web`, no `--comments`, nothing that runs a program.
    The daemon passes the card's `prUrl`, an https URL validated at write time and free of control
-   characters (015), as one argument; `gh` treats it as a URL or rejects it. No shell is involved
-   (`Bun.spawn` with an argv array, as `git.ts`).
+   characters (015), as one argument. No shell is involved (`Bun.spawn` with an argv array, as
+   `git.ts`). But `gh pr view <url>` is not passive about the URL: it sends a request to the host
+   the URL names (review round 3 ran it against `https://example.com/o/r/pull/1` and got `HTTP
+   405` back from `example.com`), and the poll asks again every interval. So the tick compares
+   the `prUrl`'s origin to the repository's own URL first and never runs `gh pr view` against a
+   host that is not this repository's. The spec as approved said `gh` "treats it as a URL or
+   rejects it", which was wrong.
 3. **Composed with what `crew` can do.** `crew` can set any card's `prUrl` (016, recorded). Without
    the ownership check, a `prUrl` naming a merged pull request in any repository moves a card to
    Done as the owner. With it, the pull request must be this repository's and its head must be
@@ -248,8 +259,9 @@ under a different number reading as a merge of the card's work.
 
 ## Acceptance criteria
 
-1. `bun run check` passes. No test spawns `gh`, a real coding agent, or calls a model; the
-   forge is faked.
+1. `bun run check` passes. No test runs the real `gh`, spawns a real coding agent, or calls a
+   model; the forge is faked, and a test that needs a `gh` process puts one of its own making
+   first on `PATH`.
 2. A card in PR with a `prUrl` whose faked forge answer is merged, in this repository, from the
    card's branch, is in Done after one tick, with a comment by `runner` naming the URL and the
    merge time immediately before a `card_moved` PR → Done whose actor is the owner. No attention
