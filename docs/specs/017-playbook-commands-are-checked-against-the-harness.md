@@ -85,10 +85,13 @@ decoration; this one proves its own teeth on every run.
 **The options under test are the run's options.** The check builds its SDK options through the
 same function the runner uses, with a real temporary worktree and a target repository whose
 `AGENTS.md` fences `bun run check`, so `allowlistFor`'s fixed list, its anchored `Edit` rule,
-its deny rules and its scanned entry are all what the harness evaluates. Only four things are
+its deny rules and its scanned entry are all what the harness evaluates. Only five things are
 overridden, and they are named: `permissionMode` is `dontAsk`; `env` gains the stub's
 `ANTHROPIC_BASE_URL` and a dummy `ANTHROPIC_API_KEY`; `HOME` is a temporary directory; `PATH`
-begins with a directory of stub executables.
+begins with a directory of stub executables; and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is
+set, which no real run sets — it is the one override that is not a substitution but an
+addition, and it is there because the "nothing leaves the machine" paragraph below asks for it.
+(The spec as approved said four, and was counted wrong by review.)
 
 **Nothing runs and nothing leaves the machine.** The stub model listens on `127.0.0.1` only.
 The stub `PATH` holds executables named for every command word the playbooks use — `git`,
