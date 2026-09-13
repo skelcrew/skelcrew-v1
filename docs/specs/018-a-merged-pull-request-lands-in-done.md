@@ -155,8 +155,9 @@ way `runner.ts` resolves it. The poll runs where the runner runs — off under `
 and without a `repoRoot` — because it spawns a subprocess against the repository. Each tick: list unarchived cards in `pr` with a `prUrl`; if none, return without
 spawning; otherwise ask the forge for the repository's own URL, and for each card compare the
 `prUrl`'s origin (scheme and host) to that URL's origin **before** asking about the pull
-request: a `prUrl` on another host is a mismatch, recorded with the same mismatch comment as
-below, and `gh pr view` is never run against it. Review round 3 established why: `gh pr view
+request: a `prUrl` on another host is a mismatch, recorded through the same once-rule as the
+mismatches below with a comment saying which host it is on and that the forge was not asked
+(not "is merged, but", since nothing was asked), and `gh pr view` is never run against it. Review round 3 established why: `gh pr view
 <url>` sends a request to the host named in the URL, so a card whose `prUrl` names a host `crew`
 chose would otherwise make the daemon contact that host every interval for as long as the card
 sits in PR. For the cards that pass, ask the forge about each, and:
