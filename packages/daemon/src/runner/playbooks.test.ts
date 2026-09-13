@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXED_ALLOWLIST, runsUnprompted } from "./allowlist";
-import { commandsNamed, instructedCommands, prescribed } from "./playbook-commands";
-import { loadPlaybooks, PLAYBOOK_PHASES } from "./playbooks";
+import { commandsNamed, filled, instructedCommands, prescribed } from "./playbook-commands";
+import { loadPlaybooks, PLAYBOOK_PHASES, type PlaybookPhase } from "./playbooks";
 
 let dir: string;
 
@@ -115,6 +115,60 @@ test("the instructed commands are the playbook's commands, not its nouns, prose 
   // A placeholder is a shell redirection, so the template is not the command the agent runs.
   expect(code).toContain("skelcrew show PLACEHOLDER --json");
   expect(code).not.toContain("skelcrew show <id> --json");
+});
+
+/**
+ * Minor 4 of review round 2, and the whole of what the narrowing is allowed to be. The test above
+ * names members — `skelcrew mv` is dropped, `git status` is kept — and a crafted paragraph
+ * carrying the "Pre-allowed…" marker could take a real instruction out of the check with nothing
+ * failing. This pins the *difference*: every command `commandsNamed` finds that
+ * `instructedCommands` does not yield, per playbook, compared after the same placeholder
+ * substitution so that the two lists are in the same language.
+ *
+ * What is in these lists and why: a heredoc's body and the `…` standing for a spec's contents;
+ * the bare nouns (`skelcrew` in "the `skelcrew` CLI"); the five verbs the fixed list withholds and
+ * `git commit --no-verify`, which the Code playbook names in order to forbid; and the
+ * argument-less forms the advertisement paragraph lists, each of which the check runs anyway as
+ * `FIXED_LIST_REPRESENTATIVES` with a representative argument.
+ */
+const DROPPED: Record<PlaybookPhase, string[]> = {
+  spec: ["# PLACEHOLDER — PLACEHOLDER", "SPEC", "skelcrew", "…"],
+  code: [
+    "gh pr comment",
+    "gh pr create",
+    "gh pr diff",
+    "gh pr view",
+    "gh repo view",
+    "git add",
+    "git commit",
+    "git commit --no-verify",
+    "git push",
+    "skelcrew",
+    "skelcrew archive",
+    "skelcrew attention",
+    "skelcrew body",
+    "skelcrew claim",
+    "skelcrew comment",
+    "skelcrew mv",
+    "skelcrew refs",
+    "skelcrew release",
+    "skelcrew resolve",
+  ],
+};
+
+test("what the instructed list drops from the named list is exactly this, per playbook", () => {
+  const playbooks = loadPlaybooks();
+  for (const phase of PLAYBOOK_PHASES) {
+    const instructed = new Set(instructedCommands(playbooks[phase]));
+    const dropped = [
+      ...new Set(
+        commandsNamed(playbooks[phase])
+          .map(filled)
+          .filter((command) => !instructed.has(command)),
+      ),
+    ].toSorted();
+    expect([phase, dropped]).toEqual([phase, DROPPED[phase]]);
+  }
 });
 
 /**

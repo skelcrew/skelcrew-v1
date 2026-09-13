@@ -280,3 +280,103 @@ seeing only the dummy. `bun run check`: 603 pass, 0 fail.
 One run was instrumented to print `executed` per command, for Minor 3: every allowed command
 reads `executed=true` and the denied control reads `executed=false`, where round 1 read it as
 `true` because the refusal is itself a tool result. The instrumentation was removed.
+
+# Round 3 — review round 2's findings
+
+**APPROVED**, no Critical, no Important, eight Minors — all eight fixed. The spec was amended
+again for Minor 5 (`fa2eb6e`, "overrides five things, not four").
+
+| # | finding | disposition |
+| --- | --- | --- |
+| 1 | SIGINT/SIGTERM orphaned a live `claude` and left a registered worktree; the stub was started outside the `try` | fixed: `RunState`/`letGo`, handlers for both signals, the stub started inside the `try` |
+| 2 | the control was identified by string equality | fixed: `CommandOutcome.control`, tagged where the control is appended; a *prescribed* control is its own problem |
+| 3 | the import pin required `from` | fixed: any quoted specifier naming the module |
+| 4 | named members were pinned, not the difference set | fixed: `DROPPED` per playbook, compared after the same placeholder substitution through the exported `filled` |
+| 5 | "four overrides" is five | fixed, matching the amended spec's wording |
+| 6 | "any header it could arrive in" was a three-item list | fixed: reworded as a tripwire over three named headers, with the containment named |
+| 7 | the maintenance contract miscounted and left `redirectionsIn` unassigned | fixed: model-by-model coverage in `allowlist.ts`, and both sentences name the fixed-list representatives |
+| 8 | `cwd` was the `mkdtempSync` spelling while `editsIn` realpaths it | fixed: the scratch root is `realpathSync`'d, as `runner.ts` does |
+| — | the "fourth reading of entry syntax" justification was a strawman | replaced with the real reasons: independence from the model, and `allowsTool`'s `xargs` widening |
+
+## Red, round 3
+
+| test | red? |
+| --- | --- |
+| a prescribed command that is the control command fails the check on its own account | red: `Expected to contain: "prescribes"  Received: "…is denied by the harness — Bash: dontAsk mode"` |
+| two outcomes tagged as the control fail the check | red: `Expected to contain: "once"  Received: "…is denied by the harness…"` |
+| an interrupt closes the live session and the stub and removes the scratch directory | red: `Expected: true  Received: false` against `letGo` stubbed empty |
+| **an interrupt with nothing yet to let go of does nothing** | **green first**, vacuously — it asserts that the empty case does not throw, and the empty implementation did not throw either. Its partner (the row above) is what gives it meaning. |
+| nothing the daemon runs imports the harness check (round-3 rewrite) | red on demand: with both `import "../runner/harness-check";` and `await import("./harness-check")` planted in `runner.ts`, the round-2 regex passed and this one failed with `+ "packages/daemon/src/runner/runner.ts"`. Both were removed; `runner.ts` is unchanged in the diff. |
+| what the instructed list drops from the named list is exactly this, per playbook | **green first by nature** — it pins existing behaviour. Its teeth were then demonstrated: adding `"gh pr view --json url"` to `NOT_INSTRUCTIONS` (hiding a real instruction, which is exactly the hole Minor 4 names) made *only this test* fail, with `+ "gh pr view --json url --jq .url"` in the dropped set, while every named-member assertion stayed green. Reverted. |
+| the stub records a credential in each of the three headers it reads (renamed from round 2) | unchanged behaviour; the rename and the comment are the fix |
+
+## Minor 1, by hand
+
+`bun packages/daemon/src/runner/harness-check.ts` in the background, signalled 2s in, three times:
+
+```
+SIGTERM exit=143 scratch-dirs-left=0 harness-children=0
+SIGINT  exit=130 scratch-dirs-left=0 harness-children=0
+SIGTERM exit=143 scratch-dirs-left=0 harness-children=0
+```
+
+What the unit test covers is `letGo`: the session closed, the listener refusing connections, the
+directory gone. What only the hand runs cover is the signal plumbing itself, the exit codes, and
+the absence of a `claude` child afterwards.
+
+The grace period is measured, not guessed. At 750ms the directory came back between the removal
+and the process exiting: a killed harness writes its own session transcript under the temporary
+`HOME` as it goes down, and `find` showed exactly that one path recreated
+(`home/.claude/projects/…/<uuid>.jsonl`) — no repository, no worktree. At 2500ms, three runs left
+nothing at all. So the handler ends the session, waits, and *then* removes.
+
+## `bun run check:harness`, round 3
+
+```
+playbooks: spec, code
+commands: 30 (the playbooks' own instructions, one representative per fixed-list entry, and the repository's fenced `bun run check`), plus the control command
+allowlist: pre-allowed from the repository's instructions: bun run check
+stub executables: skelcrew, git, gh, bun
+PATH: <scratch>/bin:<scratch>/data/bin:/usr/bin:/bin:/usr/sbin:/sbin
+HOME: <scratch>/home, holding 0 files
+the harness's environment: ANTHROPIC_API_KEY, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, HOME, PATH, SKELCREW_AS, SKELCREW_DIR, and the stub's ANTHROPIC_BASE_URL, which is a fresh loopback port per session
+ANTHROPIC_API_KEY: the dummy key; the owner's is set here and not passed on
+
+ran     skelcrew attention PLACEHOLDER "PLACEHOLDER"
+ran     skelcrew body PLACEHOLDER <<'SPEC'
+ran     skelcrew show PLACEHOLDER
+ran     git log
+ran     skelcrew comment PLACEHOLDER "PLACEHOLDER"
+ran     gh pr view --json url --jq .url
+ran     skelcrew refs PLACEHOLDER --pr PLACEHOLDER
+ran     skelcrew refs PLACEHOLDER --spec docs/specs/PLACEHOLDER-PLACEHOLDER.md
+ran     git log PLACEHOLDER..PLACEHOLDER
+ran     git status
+ran     git diff
+ran     git show
+ran     git merge-base
+ran     git rev-parse
+ran     git push -u origin HEAD
+ran     skelcrew show PLACEHOLDER --json
+ran     skelcrew show
+ran     skelcrew show 1
+ran     skelcrew comment 1 "a comment"
+ran     skelcrew body 1 --file a-spec.md
+ran     skelcrew refs 1 --pr https://example.invalid/pull/1
+ran     skelcrew attention 1 "a question"
+ran     git add -A
+ran     git commit -m "a message"
+ran     git push
+ran     gh pr create --title "a title" --body "a body"
+ran     gh pr diff --name-only
+ran     gh pr comment 1 --body "a comment"
+ran     gh repo view --json defaultBranchRef
+ran     bun run check
+DENIED  git push origin HEAD:main — Permission to use Bash has been denied because Claude Code is running in don't ask mode
+
+every one of the 30 commands under test runs unprompted in the harness, `git push origin HEAD:main` is denied, and the repository is unchanged
+```
+
+Exit 0, with `ANTHROPIC_API_KEY=sk-ant-owner-sentinel` in the calling environment. `PATH` and
+`HOME` now read `/private/var/…` rather than `/var/…`, which is Minor 8's `realpathSync` visible
+in the output. `bun run check`: 608 pass, 0 fail.

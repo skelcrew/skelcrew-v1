@@ -1,7 +1,9 @@
 /**
- * `bun run check:harness`: every command the playbooks instruct, put through the harness that
- * runs them — the pinned binary itself, not `allowlist.ts`'s model of it — to answer the one
- * question a model cannot be trusted with: does this command stop to ask?
+ * `bun run check:harness`: every command the playbooks instruct, one representative command per
+ * `Bash(...)` entry of the fixed allowlist, and the fenced command a repository's own instructions
+ * contribute — each put through the harness that runs them, the pinned binary itself rather than
+ * `allowlist.ts`'s model of it, to answer the one question a model cannot be trusted with: does
+ * this command stop to ask?
  *
  * Review round 1 of 014 found the Code playbook prescribing a command the harness asks about
  * outright, and nothing in the repository could have caught it: the model in `allowlist.ts` is
@@ -16,8 +18,14 @@
  * command word lands on a stub executable that exits 0 and prints nothing: what is under test
  * is whether a command *would ask*, never what it would do.
  *
- * Not part of `bun run check` — the trigger is a playbook change or the SDK version pin
- * failing — and not collected by `bun test`, which is what the file name is for.
+ * Not part of `bun run check` — the trigger is a change to a playbook or to the fixed list, or the
+ * SDK version pin failing — and not collected by `bun test`, which is what the file name is for.
+ *
+ * **An interrupt is a path this has to handle, not an accident.** `SIGINT` and `SIGTERM` end the
+ * live session, wait for the harness to go down, and remove the scratch directory — which holds
+ * the temporary repository, its registered worktree, `HOME` and the stub `PATH`. Without that, a
+ * Ctrl-C left a `claude` running and a registered worktree in a temporary directory nobody would
+ * look in again.
  *
  * The SDK warns on stderr once per session that `canUseTool` will not be invoked for the bare
  * entries on the list (`Read`, `Glob`, `Grep`, `Agent`, `TodoWrite`) because a bare name
@@ -25,7 +33,7 @@
  * and it is left on the output: silencing the harness's own warnings in the one check that
  * exists to hear them would be the wrong trade.
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -85,10 +93,18 @@ export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
 
 /**
  * The fixed list's `Bash(...)` entries that no representative covers, so an entry added to the
- * list without one fails the check instead of going unchecked. This reads an entry's own shape —
- * a trailing ` *` is a prefix, anything else is the whole command — rather than asking
- * `allowsTool`, because the question is which entry a command stands for, not whether some entry
- * permits it: a representative covered only by a *different* entry would leave this one unrun.
+ * list without one fails the check instead of going unchecked. It reads an entry's own shape — a
+ * trailing ` *` is a prefix, anything else is the whole command — rather than asking `allowsTool`,
+ * for two reasons, neither of them that the model is wrong here (review round 2 ran `allowsTool`
+ * per entry over all 196 entry–representative pairs and found it agreeing with this exactly):
+ *
+ * - **Independence.** This check exists because a model of the harness cannot answer "would this
+ *   ask". Using that model to decide *which commands to ask the harness about* would put it back
+ *   in the one place the answer comes from.
+ * - **`allowsTool` is wider than "stands for".** It reads a wildcard rule as covering
+ *   `xargs <that command>` too, as the harness does, so `xargs git add -A` would count as
+ *   covering `Bash(git add *)` — and a representative covered only by a *different* entry would
+ *   count as well, since `allowsTool` asks the whole list rather than one rule.
  */
 export function unrepresentedEntries(
   representatives: readonly string[] = FIXED_LIST_REPRESENTATIVES,
@@ -107,6 +123,29 @@ export function unrepresentedEntries(
   );
 }
 
+/** What a run of the check is holding at any moment, and so what an interrupt has to let go of. */
+export interface RunState {
+  /** Ends the session that is running now and closes its stub; absent between commands. */
+  interrupt?: () => void;
+  /** The directory holding the temporary repository, its worktree, `HOME` and the stub `PATH`. */
+  scratch?: string;
+}
+
+/**
+ * Lets go of everything a run is holding, in the order that matters: the session first, so the
+ * spawned harness is asked to stop before the directory it is working in disappears, then the
+ * scratch directory — which is where the temporary repository's worktree registration lives too,
+ * so removing it leaves no worktree registered anywhere.
+ */
+export function letGo(state: RunState): void {
+  state.interrupt?.();
+  state.interrupt = undefined;
+  if (state.scratch !== undefined) {
+    rmSync(state.scratch, { recursive: true, force: true });
+    state.scratch = undefined;
+  }
+}
+
 /** The key the harness is given. Not a credential — the stub accepts anything. */
 export const STUB_API_KEY = "skelcrew-harness-check-not-a-real-key";
 
@@ -115,6 +154,14 @@ const SYSTEM_PATH = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(delimiter);
 
 /** How long one session may take before the check gives up on it. */
 const SESSION_TIMEOUT_MS = 120_000;
+
+/**
+ * How long an interrupt gives the harness to go down before the directory under it is removed.
+ * Measured rather than guessed: a killed harness writes its own session transcript under the
+ * temporary `HOME` as it exits, and at 750ms the removal raced it and left that tree behind. At
+ * this value, repeated interrupts leave nothing at all.
+ */
+const INTERRUPT_GRACE_MS = 2500;
 
 /** The stub's one tool call, named so its result can be told from any other tool's. */
 const TOOL_USE_ID = "toolu_harness_check";
@@ -127,9 +174,12 @@ export interface StubRequest {
 }
 
 /**
- * The headers a credential could arrive in. The pinned binary sends `x-api-key` and nothing
- * else — a full run was logged to check — so the other two are defence against a future one
- * authenticating some other way and this check not noticing.
+ * Three headers a credential could arrive in: the one the pinned binary uses — `x-api-key`, and
+ * nothing else, from a logged full run — and the two obvious proxies. **Not an exhaustive list**,
+ * and not where the containment lives: what keeps the owner's login out of reach is the
+ * environment the harness is given (no `ANTHROPIC_*` but the dummy), the empty `HOME` and
+ * `settingSources: []`. This is a tripwire on top of that, so a future binary that authenticates
+ * some other way is *likely* to be noticed rather than certain to be.
  */
 const CREDENTIAL_HEADERS = ["x-api-key", "authorization", "proxy-authorization"];
 
@@ -277,6 +327,13 @@ export function writeStubExecutables(dir: string, commands: readonly string[]): 
 export interface CommandOutcome {
   command: string;
   /**
+   * This is the control session, tagged where the control is appended — not inferred from the
+   * command's text. A playbook that prescribed `git push origin HEAD:main` would otherwise have
+   * its denial read as the control's, and the run would pass on the strength of the one denial
+   * the check exists to require.
+   */
+  control: boolean;
+  /**
    * The command's own tool call came back as a result that is not an error: the harness let it
    * run, and it ran. A denial is a tool result too, so this is not "a result arrived".
    */
@@ -304,7 +361,8 @@ export function problemsIn(
   representatives: readonly string[] = FIXED_LIST_REPRESENTATIVES,
 ): string[] {
   const problems: string[] = [];
-  const control = outcomes.find((outcome) => outcome.command === CONTROL_COMMAND);
+  const controls = outcomes.filter((outcome) => outcome.control);
+  const control = controls[0];
   for (const outcome of outcomes) {
     const at = `\`${outcome.command}\``;
     if (outcome.requests === 0) {
@@ -321,7 +379,16 @@ export function problemsIn(
       problems.push(`${at}: the harness presented ${foreign} credential(s) that are not the dummy`);
       continue;
     }
-    if (outcome === control) continue;
+    if (outcome.control) continue;
+    // A prescribed command that *is* the control is a defect in the playbooks, not a control
+    // session: it would stop an unattended run on the owner's own gate. Named as itself, before
+    // the denial branch, because "this asks" is the ordinary reading and this is the sharper one.
+    if (outcome.command === CONTROL_COMMAND) {
+      problems.push(
+        `${at}: a playbook prescribes the control command, which must ask — an unattended run stops here`,
+      );
+      continue;
+    }
     if (outcome.denials.length > 0) {
       const reasons = outcome.denials.map((denial) => `${denial.tool}: ${denial.reason}`);
       problems.push(`${at} is denied by the harness — ${reasons.join("; ")}`);
@@ -337,7 +404,11 @@ export function problemsIn(
       problems.push(`\`${command}\` is a representative of the fixed list that this run never ran`);
     }
   }
-  if (control === undefined) {
+  if (controls.length > 1) {
+    problems.push(
+      `${controls.length} sessions are tagged as the control: it is appended once, so this run is not the one it describes`,
+    );
+  } else if (control === undefined) {
     problems.push(
       `the control command \`${CONTROL_COMMAND}\` was not run: the check proves nothing`,
     );
@@ -391,64 +462,89 @@ interface RunContext {
 }
 
 /**
- * One harness session for one command, through the run's own option builder. Four things are
+ * One harness session for one command, through the run's own option builder. Five things are
  * overridden and no more, exactly as 017 names them: `permissionMode` is `dontAsk`, `env` gains
  * the stub's `ANTHROPIC_BASE_URL` and a dummy `ANTHROPIC_API_KEY`, `HOME` is a temporary
- * directory and `PATH` begins with the stub executables — the last three are in `context.env`,
- * built once by `main`. Everything else is what a real run is given.
+ * directory, `PATH` begins with the stub executables, and
+ * `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set — which no real run sets, and is the one
+ * override that adds rather than substitutes. The last four are in `context.env`, built once by
+ * `main`. Everything else is what a real run is given.
+ *
+ * While the session is live, `state.interrupt` is what ends it — and it is cleared when the
+ * session is over, so an interrupt between commands finds no session to end rather than a stale
+ * one.
  */
-async function runCommand(command: string, context: RunContext): Promise<CommandOutcome> {
-  const stub = startStubModel(command);
+async function runCommand(
+  command: string,
+  isControl: boolean,
+  context: RunContext,
+  state: RunState,
+): Promise<CommandOutcome> {
   let canUseToolCalls = 0;
   let executed = false;
   const reasons: Reasons = new Map();
   const denials: CommandOutcome["denials"] = [];
-  const options: AgentRunOptions = {
-    cwd: context.cwd,
-    env: { ...context.env, ANTHROPIC_BASE_URL: stub.url },
-    systemPrompt: "Run the command you are given.",
-    allowedTools: context.allowedTools,
-    disallowedTools: context.disallowedTools,
-    canUseTool: async () => {
-      canUseToolCalls += 1;
-      return { behavior: "deny", message: "canUseTool must not be reached under dontAsk" };
-    },
-    // The driver's three, which the option builder does not read: the prompt is passed to
-    // `query` below, and nothing here is logged or aborted from outside.
-    input: (async function* () {})(),
-    log: () => {},
-    signal: new AbortController().signal,
-  };
-  const { sdkOptions, abortController } = buildSdkOptions(options);
-  const session = query({
-    prompt: onePrompt(),
-    options: { ...sdkOptions, permissionMode: "dontAsk" },
-  });
-  const timer = setTimeout(() => {
-    abortController.abort();
-    session.close();
-  }, SESSION_TIMEOUT_MS);
+  // Started immediately before the `try` whose `finally` stops it — so nothing is left listening
+  // if anything below throws, `query` included. (Inside the `try` it would need a nullable
+  // binding for no gain: `startStubModel` stops its own server on the one path it can fail.)
+  const stub = startStubModel(command);
   try {
-    for await (const message of session as AsyncIterable<SDKMessage>) {
-      if (message.type === "system" && message.subtype === "permission_denied") {
-        reasons.set(message.tool_use_id, message.decision_reason ?? message.message);
-      }
-      if (ranTheCommand(message, TOOL_USE_ID)) executed = true;
-      if (message.type === "result") {
-        for (const denial of message.permission_denials) {
-          denials.push({ tool: denial.tool_name, reason: reasonFor(reasons, denial.tool_use_id) });
+    const options: AgentRunOptions = {
+      cwd: context.cwd,
+      env: { ...context.env, ANTHROPIC_BASE_URL: stub.url },
+      systemPrompt: "Run the command you are given.",
+      allowedTools: context.allowedTools,
+      disallowedTools: context.disallowedTools,
+      canUseTool: async () => {
+        canUseToolCalls += 1;
+        return { behavior: "deny", message: "canUseTool must not be reached under dontAsk" };
+      },
+      // The driver's three, which the option builder does not read: the prompt is passed to
+      // `query` below, and nothing here is logged or aborted from outside.
+      input: (async function* () {})(),
+      log: () => {},
+      signal: new AbortController().signal,
+    };
+    const { sdkOptions, abortController } = buildSdkOptions(options);
+    const session = query({
+      prompt: onePrompt(),
+      options: { ...sdkOptions, permissionMode: "dontAsk" },
+    });
+    const end = (): void => {
+      abortController.abort();
+      session.close();
+      stub.stop();
+    };
+    state.interrupt = end;
+    const timer = setTimeout(end, SESSION_TIMEOUT_MS);
+    try {
+      for await (const message of session as AsyncIterable<SDKMessage>) {
+        if (message.type === "system" && message.subtype === "permission_denied") {
+          reasons.set(message.tool_use_id, message.decision_reason ?? message.message);
         }
-        break;
+        if (ranTheCommand(message, TOOL_USE_ID)) executed = true;
+        if (message.type === "result") {
+          for (const denial of message.permission_denials) {
+            denials.push({
+              tool: denial.tool_name,
+              reason: reasonFor(reasons, denial.tool_use_id),
+            });
+          }
+          break;
+        }
       }
+    } finally {
+      clearTimeout(timer);
+      session.close();
     }
   } finally {
-    clearTimeout(timer);
-    session.close();
+    state.interrupt = undefined;
     stub.stop();
   }
   const credentials = [...new Set(stub.requests.flatMap((request) => request.credentials))];
   return {
     command,
+    control: isControl,
     executed,
     denials,
     requests: stub.requests.length,
@@ -495,9 +591,18 @@ async function main(): Promise<number> {
       SCANNED_COMMAND,
     ]),
   ];
-  const commands = [...prescribedCommands, CONTROL_COMMAND];
+  // The control is appended, and tagged here rather than recognised by its text later: a playbook
+  // that prescribed it would otherwise have its denial counted as the control's own.
+  const commands: Array<{ command: string; control: boolean }> = [
+    ...prescribedCommands.map((command) => ({ command, control: false })),
+    { command: CONTROL_COMMAND, control: true },
+  ];
 
-  const scratch = mkdtempSync(join(tmpdir(), "skelcrew-harness-check-"));
+  // Resolved, the way `runner.ts` resolves its worktrees directory: `editsIn` spells the anchor
+  // rule with the path's real name, and a `cwd` spelled the other way would have the harness
+  // judging a *different* text against that rule. Bash rules do not read `cwd` today, so this is
+  // ahead of the need — the `Write`-emitting stub the spec names as the next step would meet it.
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), "skelcrew-harness-check-")));
   const repoRoot = join(scratch, "repo");
   const worktree = join(scratch, "worktree");
   const home = join(scratch, "home");
@@ -505,17 +610,44 @@ async function main(): Promise<number> {
   const binDir = join(scratch, "bin");
   for (const dir of [repoRoot, home, dataDir]) mkdirSync(dir, { recursive: true });
 
+  // What an interrupt has to let go of, updated as the run proceeds. Without this, a SIGTERM
+  // mid-check left the spawned harness alive, the stub listening and a registered git worktree in
+  // a scratch directory nobody would look in again.
+  const state: RunState = { scratch };
+  const interrupted = (signal: string): void => {
+    console.log(`\n${signal}: ending the live session and removing ${scratch}`);
+    // The session first and the directory *after a grace period*, not together: a harness killed
+    // with the session still writes its own transcript under the temporary `HOME` as it goes
+    // down, and a removal that raced it left that tree behind — observed, by hand, before this
+    // was split in two.
+    state.interrupt?.();
+    state.interrupt = undefined;
+    setTimeout(() => {
+      letGo(state);
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    }, INTERRUPT_GRACE_MS);
+  };
+  const onInterrupt = new Map<string, () => void>(
+    ["SIGINT", "SIGTERM"].map((signal) => [signal, () => interrupted(signal)]),
+  );
+  for (const [signal, handler] of onInterrupt) process.on(signal, handler);
+
   try {
     await temporaryRepository(repoRoot);
     await git(repoRoot, "branch", "card-1", "main");
     await git(repoRoot, "worktree", "add", worktree, "card-1");
     const allowlist = await allowlistFor(createGit(), repoRoot, "main", worktree);
-    const words = writeStubExecutables(binDir, commands);
+    const words = writeStubExecutables(
+      binDir,
+      commands.map((each) => each.command),
+    );
 
-    // The run's own environment, with the three overrides that are environment: `HOME` is this
-    // temporary directory, `PATH` begins with the stub executables, and the harness is pointed
-    // at the stub with a dummy key. The owner's environment contributes nothing — `env` replaces
-    // `process.env` for the spawned harness rather than extending it.
+    // The run's own environment, with the four overrides that are environment: `HOME` is this
+    // temporary directory, `PATH` begins with the stub executables, the harness is pointed at the
+    // stub with a dummy key, and non-essential traffic is off — the last of those is the one
+    // override no real run makes, and it is here because "nothing leaves the machine" asks for it.
+    // The owner's environment contributes nothing — `env` replaces `process.env` for the spawned
+    // harness rather than extending it.
     const env = agentEnvironment({ PATH: SYSTEM_PATH, HOME: home }, dataDir, "crew");
     env.PATH = `${binDir}${delimiter}${env.PATH}`;
     env.ANTHROPIC_API_KEY = STUB_API_KEY;
@@ -543,13 +675,13 @@ async function main(): Promise<number> {
     console.log("");
 
     const outcomes: CommandOutcome[] = [];
-    for (const command of commands) {
-      const outcome = await runCommand(command, {
-        cwd: worktree,
-        env,
-        allowedTools: allowlist.tools,
-        disallowedTools: allowlist.denied,
-      });
+    for (const { command, control } of commands) {
+      const outcome = await runCommand(
+        command,
+        control,
+        { cwd: worktree, env, allowedTools: allowlist.tools, disallowedTools: allowlist.denied },
+        state,
+      );
       outcomes.push(outcome);
       // The harness's own words for a refusal, on the line that reports it: a denial with no
       // reason behind it would otherwise look the same as one the harness explained.
@@ -579,7 +711,8 @@ async function main(): Promise<number> {
     for (const problem of problems) console.log(`FAIL ${problem}`);
     return 1;
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    for (const [signal, handler] of onInterrupt) process.off(signal, handler);
+    letGo(state);
   }
 }
 

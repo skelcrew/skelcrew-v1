@@ -4,7 +4,7 @@
  * spawns the harness — the check itself is what does that, and `bun test` does not run it.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIXED_ALLOWLIST } from "./allowlist";
@@ -12,7 +12,9 @@ import {
   CONTROL_COMMAND,
   type CommandOutcome,
   FIXED_LIST_REPRESENTATIVES,
+  letGo,
   problemsIn,
+  type RunState,
   ranTheCommand,
   STUB_API_KEY,
   startStubModel,
@@ -116,12 +118,13 @@ test("the stub records every request it saw, with the credentials it was given",
 });
 
 /**
- * Every header a credential could arrive in, not just the one the pinned binary uses. The
- * binary sends `x-api-key` and nothing else — a full run was logged to check — so this is
- * defence against a future one authenticating some other way and the check not noticing.
- * `Bearer ` is stripped, because a token presented that way is still the token.
+ * Three headers, not every header: the one the pinned binary uses (`x-api-key`, and nothing else,
+ * from a logged full run) and the two obvious proxies. A tripwire rather than the containment —
+ * that is the environment, the empty `HOME` and `settingSources: []` — so a future binary
+ * authenticating some other way is likely to be noticed, not certain to be. `Bearer ` is stripped,
+ * because a token presented that way is still the token.
  */
-test("the stub records a credential in any of the three headers it could arrive in", async () => {
+test("the stub records a credential in each of the three headers it reads", async () => {
   const stub = startStubModel("git status");
   try {
     await fetch(`${stub.url}/v1/messages`, {
@@ -199,6 +202,44 @@ test("every command word gets an executable that exits 0 and writes nothing", ()
 });
 
 /**
+ * Minor 1 of review round 2. A SIGTERM mid-check exited 143 and left three things behind: the
+ * spawned `claude`, the stub's listener, and a scratch directory holding a registered git
+ * worktree. What a signal handler has to let go of is this, and it is a function so that it can
+ * be called here rather than only by a signal: the handler's own plumbing
+ * (`process.on("SIGTERM", …)`) is verified by hand, and the record says so.
+ */
+test("an interrupt closes the live session and the stub and removes the scratch directory", async () => {
+  const stub = startStubModel("git status");
+  const scratch = join(dir, "scratch");
+  mkdirSync(join(scratch, "worktree"), { recursive: true });
+  writeFileSync(join(scratch, "worktree", ".git"), "gitdir: elsewhere\n");
+  let sessionClosed = false;
+  const state: RunState = {
+    scratch,
+    interrupt: () => {
+      sessionClosed = true;
+      stub.stop();
+    },
+  };
+
+  letGo(state);
+
+  expect(sessionClosed).toBe(true);
+  expect(existsSync(scratch)).toBe(false);
+  const answered = await fetch(stub.url, { method: "HEAD", signal: AbortSignal.timeout(2000) })
+    .then(() => "answered")
+    .catch(() => "refused");
+  expect(answered).toBe("refused");
+});
+
+test("an interrupt with nothing yet to let go of does nothing", () => {
+  const state: RunState = {};
+  expect(() => {
+    letGo(state);
+  }).not.toThrow();
+});
+
+/**
  * Criterion 3's "a tool result that is not an error". Round 1 read any tool result as the
  * command having run, and a *denied* call produces one too — the refusal, marked as an error —
  * so the control command read as executed and denied at once.
@@ -233,6 +274,7 @@ test("another tool call's result is not this command running", () => {
 
 const clean = (command: string): CommandOutcome => ({
   command,
+  control: false,
   executed: true,
   denials: [],
   requests: 2,
@@ -242,6 +284,7 @@ const clean = (command: string): CommandOutcome => ({
 
 const control: CommandOutcome = {
   command: CONTROL_COMMAND,
+  control: true,
   executed: false,
   denials: [{ tool: "Bash", reason: "dontAsk mode" }],
   requests: 2,
@@ -311,6 +354,32 @@ test("a prescribed command the harness denied fails the check, naming it and the
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("skelcrew mv PLACEHOLDER");
   expect(problems[0]).toContain("Permission to use Bash has been denied");
+});
+
+/**
+ * Minor 2 of review round 2. The control used to be whichever outcome *equalled*
+ * `CONTROL_COMMAND`, so a playbook prescribing `git push origin HEAD:main` had its denial read
+ * as the control's own and the run passed — the one command whose denial the check is built to
+ * tolerate, tolerated in the one place it must not be. The control is tagged where it is
+ * appended, and a prescribed command that is the control is a problem of its own.
+ */
+test("a prescribed command that is the control command fails the check on its own account", () => {
+  const harvested: CommandOutcome = {
+    ...clean(CONTROL_COMMAND),
+    control: false,
+    executed: false,
+    denials: [{ tool: "Bash", reason: "dontAsk mode" }],
+  };
+  const problems = problemsIn(runWith(harvested));
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain(CONTROL_COMMAND);
+  expect(problems[0]).toContain("prescribes");
+});
+
+test("two outcomes tagged as the control fail the check", () => {
+  const problems = problemsIn([...runWith(), { ...control }]);
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain("once");
 });
 
 test("a control command the harness did not deny fails the check", () => {

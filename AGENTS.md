@@ -213,9 +213,11 @@ which runs, in order: Biome's lint and format check (`bun run lint`, i.e. `biome
 writes files; `bun run fix` applies Biome's formatting and safe fixes.
 
 `bun run check:harness` sits beside it rather than inside it, because it spawns the pinned
-coding agent: it puts every command the playbooks instruct through the harness's own permission
-evaluation, against a local stub that plays the model, and fails naming any that would stop to
-ask. Run it after changing a playbook, or when `claude.test.ts`'s SDK version pin fails.
+coding agent: it puts every command the playbooks instruct, and one representative command per
+`Bash(...)` entry of the runner's fixed allowlist, through the harness's own permission
+evaluation — against a local stub that plays the model — and fails naming any that would stop to
+ask. Run it after changing a playbook or that list, and when `claude.test.ts`'s SDK version pin
+fails, which is what a bump of the harness looks like from here.
 
 - Red, then green. Write the failing test first, run it, and confirm it fails for the
   intended reason — an import error or fixture error is a broken test, not red. Then write

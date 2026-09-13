@@ -38,6 +38,15 @@ test("the driver conforms to the boundary", () => {
 });
 
 /**
+ * The check's module name, composed rather than written out. Both tests below scan every source
+ * file including this one, and the second matches any *quoted* string naming the module — so a
+ * literal `"…harness-check…"` anywhere in this file would match itself and report this file as an
+ * importer of the check.
+ */
+const CHECK_MODULE = ["harness", "check"].join("-");
+const CHECK_FILE = `packages/daemon/src/runner/${CHECK_MODULE}.ts`;
+
+/**
  * One driver, and one check that spawns the harness deliberately. 017 added the second: it runs
  * the pinned binary against a local stub to find out whether a playbook's commands ask, which
  * needs `query` with a `permissionMode` the builder below hard-codes — so it cannot go through
@@ -57,34 +66,34 @@ test("the harness SDK is named by exactly one source file, and imported by exact
     // A type-only import is erased: the files that pull the SDK in at runtime are these.
     if (!/^import type .* from "@anthropic-ai\//m.test(text)) importing.push(file);
   }
-  expect(importing.sort()).toEqual([
-    "packages/daemon/src/runner/claude.ts",
-    "packages/daemon/src/runner/harness-check.ts",
-  ]);
+  expect(importing.sort()).toEqual(["packages/daemon/src/runner/claude.ts", CHECK_FILE]);
   expect(naming.sort()).toEqual([
     // This file, for the message literals its translation tests are written over.
     "packages/daemon/src/runner/claude.test.ts",
     "packages/daemon/src/runner/claude.ts",
-    "packages/daemon/src/runner/harness-check.ts",
+    CHECK_FILE,
   ]);
 });
 
 /**
- * The daemon's own path to the harness is one file, and the check is not on it. Any specifier
- * ending in the check's name counts: round 1 matched the `./harness-check` spelling alone, and
- * an import of the same file written `../runner/harness-check` from `runner.ts` walked straight
- * past it. (Written without the import keyword in front of it, because this file is scanned too.)
+ * The daemon's own path to the harness is one file, and the check is not on it. **Any quoted
+ * specifier** naming the check counts, with no `import`, `from` or `require` required in front of
+ * it: round 1 matched the `./harness-check` spelling alone, so an import written
+ * `../runner/harness-check` passed; round 2 required `from`, so `await import(…)` and a bare
+ * side-effect import both passed. A module specifier is a quoted string ending in the module's
+ * name, and that is the whole of the test.
  */
 test("nothing the daemon runs imports the harness check", async () => {
   const root = fileURLToPath(new URL("../../../../", import.meta.url));
   const sources = new Bun.Glob("packages/*/src/**/*.ts").scan({ cwd: root });
+  const specifier = new RegExp(`["'][^"']*${CHECK_MODULE}(\\.ts)?["']`);
   const importers: string[] = [];
   for await (const file of sources) {
-    if (file.endsWith("harness-check.ts")) continue;
+    if (file.endsWith(`${CHECK_MODULE}.ts`)) continue;
     const text = readFileSync(join(root, file), "utf8");
-    if (/\bfrom\s+["'][^"']*harness-check(\.ts)?["']/.test(text)) importers.push(file);
+    if (specifier.test(text)) importers.push(file);
   }
-  expect(importers).toEqual(["packages/daemon/src/runner/harness-check.test.ts"]);
+  expect(importers).toEqual([`packages/daemon/src/runner/${CHECK_MODULE}.test.ts`]);
 });
 
 /**

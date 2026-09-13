@@ -74,6 +74,16 @@ const PROHIBITION = /\*\*Never [^*]*\*\*/g;
 const INSTRUCTION = new RegExp(`^(?:${COMMAND_WORDS.join("|")}) \\S`);
 
 /**
+ * A playbook's `<id>`-style placeholders replaced with a word, which is what makes a template
+ * into the command an agent would run. Exported so that what `instructedCommands` *drops*
+ * relative to `commandsNamed` can be compared like with like, rather than by a second copy of
+ * this rule in a test.
+ */
+export function filled(command: string): string {
+  return command.trim().replaceAll(/<[^<>]*>/g, "PLACEHOLDER");
+}
+
+/**
  * An excluded paragraph with its fence lines kept and everything else gone. Removing the
  * paragraph whole would hand `prescribed`'s fence counter a text with fence lines missing, and
  * one odd count inverts every later line's in-or-out state — so an instruction *below* an
@@ -115,7 +125,7 @@ export function instructedCommands(playbook: string): string[] {
     .join("\n\n");
   const commands: string[] = [];
   for (const named of commandsNamed(instructions)) {
-    const command = named.trim().replaceAll(/<[^<>]*>/g, "PLACEHOLDER");
+    const command = filled(named);
     if (INSTRUCTION.test(command)) commands.push(command);
   }
   return commands;

@@ -738,18 +738,31 @@ export function allowsTool(
  * **What to do when one fires.** Exactly one of three, and the third is a decision someone makes
  * on purpose:
  *
- * 1. **Re-verify**, and for two of these that now means **running `bun run check:harness`**
- *    (017). It puts every command the playbooks instruct through the new binary itself and says
- *    which ones would ask, so it answers directly what `SAFE_GIT_FLAGS` and the operator set are
- *    modelled *for*: whether the playbooks' `git status`, `git log`, `git diff`, `git show`,
- *    `git merge-base` and `git rev-parse` still run unprompted, and whether any command a
- *    playbook names is refused. It is not a re-derivation — it re-checks the conclusions that
- *    matter, not the tables — so where it passes, a drifted table is no longer load-bearing for
- *    the commands the playbooks run, and a note under (3) is enough. Extraction by hand stays
- *    the method for `splitEntries` and `filePaths`, which nothing spawns, and it is what the
- *    check sends you back to when it *fails*: extract the named function from the new binary the
- *    way each doc comment says it was extracted, diff it against the transcription, update both
- *    the model and its divergence record, and move the version here.
+ * 1. **Re-verify**, and start by **running `bun run check:harness`** (017). It puts every command
+ *    the playbooks instruct, **one representative command per `Bash(...)` entry of
+ *    `FIXED_ALLOWLIST`**, and the fenced command a target repository's instructions contribute,
+ *    through the new binary itself, and says which of them would ask. What that covers, model by
+ *    model:
+ *
+ *    - `SAFE_GIT_FLAGS` — **covered for what it is modelled for**: whether the playbooks'
+ *      `git status`, `git log`, `git diff`, `git show`, `git merge-base` and `git rev-parse` still
+ *      run unprompted through the harness's own read-only tier. Not the table itself.
+ *    - the operator set in `playbooks.test.ts` (transcribed from this file's prose rather than
+ *      from the binary, so a fifth thing that ages) — **covered**: the harness itself now answers
+ *      whether a playbook's commands ask, which is what that test approximates.
+ *    - `redirectionsIn` — **covered only for the one shape the playbooks instruct**, the Spec
+ *      playbook's `skelcrew body <id> <<'SPEC'` heredoc. Every other redirection it models,
+ *      `>` above all, is exercised by no command the check runs; those stay by-hand.
+ *    - `splitEntries` and `filePaths` — **not covered at all**: nothing the check runs is an entry
+ *      with a `)` in it or a file tool's path, and a stub emitting `Write` calls is a separate
+ *      spec. By hand.
+ *
+ *    It is not a re-derivation — it re-checks conclusions, not tables — so where it passes, a
+ *    drifted table is no longer load-bearing for the commands the playbooks and the list allow,
+ *    and a note under (3) is enough. Where it *fails*, and for everything above it does not cover,
+ *    the by-hand method is the one: extract the named function from the new binary the way each
+ *    doc comment says it was extracted, diff it against the transcription, update both the model
+ *    and its divergence record, and move the version here.
  * 2. **Delete the model and the assertions that rest on it**, accepting the loss of coverage and
  *    saying so where the criterion is listed. A missing assertion that is written down beats a
  *    present one that lies.
