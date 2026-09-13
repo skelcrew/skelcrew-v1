@@ -1,6 +1,8 @@
 import { findRepoRoot, VERSION } from "@skelcrew/shared";
 import { openCore } from "./core/core";
+import { mergePoll, mergePollIntervalFromEnv } from "./merges";
 import type { AgentDriver } from "./runner/agent";
+import { createForge } from "./runner/forge";
 import { createGit } from "./runner/git";
 import { selectAgent } from "./runner/none";
 import { loadPlaybooks, type Playbooks } from "./runner/playbooks";
@@ -24,12 +26,15 @@ if (dir === undefined) {
   process.exit(1);
 }
 
-// A typo in the agent selection or the run limit stops the daemon; it does not pick a default.
+// A typo in the agent selection, the run limit or the poll interval stops the daemon; it does
+// not pick a default.
 let agentKind: ReturnType<typeof selectAgent>;
 let runLimitMs: number;
+let mergePollMs: number;
 try {
   agentKind = selectAgent(process.env);
   runLimitMs = runLimitFromEnv(process.env);
+  mergePollMs = mergePollIntervalFromEnv(process.env);
 } catch (error) {
   stop(error);
 }
@@ -67,29 +72,44 @@ console.log(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
 // The execution half: off with SKELCREW_RUNNER=0, and off when there is no repository to
 // add worktrees to (a data directory given by SKELCREW_DIR outside any checkout).
 let runner: Runner | undefined;
+// The merge poll sits here rather than beside the sweep because it spawns `gh` against the
+// repository: it belongs to the half that runs subprocesses, and a state-only daemon spawns
+// nothing. It ticks only while a card is in PR with a pull request on it — no such card, no
+// `gh` call — so the timer costs a database read a minute and nothing else.
+let merges: ReturnType<typeof setInterval> | undefined;
 if (process.env.SKELCREW_RUNNER !== "0") {
   const repoRoot = findRepoRoot(process.cwd());
   if (repoRoot === undefined) {
     console.error("skelcrew daemon: runner disabled: not inside a git repository");
   } else {
+    // Two members, because the mechanism is that the claim's holder and the agent's identity
+    // differ: the runner claims as itself and the agent it spawns speaks as the crew.
+    const member = core.ensureMember(RUNNER_MEMBER_NAME, "agent");
     runner = startRunner({
       core,
       dataDir: dir,
       repoRoot,
       git: createGit(),
-      // Two members, because the mechanism is that the claim's holder and the agent's identity
-      // differ: the runner claims as itself and the agent it spawns speaks as the crew.
-      member: core.ensureMember(RUNNER_MEMBER_NAME, "agent"),
+      member,
       crew: core.ensureMember(CREW_MEMBER_NAME, "agent"),
       warn: (line) => console.error(line),
       runLimitMs,
       ...(agent === undefined ? {} : { agent }),
     });
+    const poll = mergePoll({
+      core,
+      forge: createForge(),
+      repoRoot,
+      runnerId: member.id,
+      warn: (line) => console.error(line),
+    });
+    merges = setInterval(() => void poll.tick(), mergePollMs);
   }
 }
 
 async function shutdown(): Promise<void> {
   clearInterval(sweeper);
+  if (merges !== undefined) clearInterval(merges);
   await runner?.stop();
   server.stop();
   core.close();

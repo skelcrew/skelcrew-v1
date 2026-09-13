@@ -89,12 +89,15 @@ function spawnDaemon(options: {
   dataDir?: string;
   runner?: boolean;
   agent?: string;
+  mergePollSeconds?: string;
 }): Daemon {
   const env: Record<string, string | undefined> = { ...process.env, ...GIT_ENV };
   delete env.SKELCREW_DIR;
   if (options.dataDir) env.SKELCREW_DIR = options.dataDir;
   env.SKELCREW_RUNNER = options.runner ? "1" : "0";
   env.SKELCREW_AGENT = options.agent ?? "none";
+  if (options.mergePollSeconds === undefined) delete env.SKELCREW_MERGE_POLL_SECONDS;
+  else env.SKELCREW_MERGE_POLL_SECONDS = options.mergePollSeconds;
   const proc = Bun.spawn([process.execPath, MAIN], {
     cwd: options.cwd,
     env,
@@ -407,6 +410,22 @@ test("with SKELCREW_DIR set but no repository around the cwd, the daemon serves 
   expect(await stopped(daemon, "SIGTERM")).toBe(0);
   expect(await daemon.stderr()).toContain("runner");
   expect(await daemon.stderr()).toContain("not inside a git repository");
+});
+
+// --- the merge poll's interval (018) ---
+
+test("a SKELCREW_MERGE_POLL_SECONDS that is not seconds stops the daemon before it creates anything", async () => {
+  const daemon = spawnDaemon({
+    cwd: dir,
+    dataDir: join(dir, "data"),
+    mergePollSeconds: "every minute",
+  });
+  expect(await daemon.proc.exited).toBe(1);
+  expect(await daemon.stderr()).toContain(
+    'SKELCREW_MERGE_POLL_SECONDS must be a positive number of seconds, not "every minute"',
+  );
+  expect(await daemon.stdout()).toBe("");
+  expect(existsSync(join(dir, "data"))).toBe(false);
 });
 
 // --- the driver selection (012) ---

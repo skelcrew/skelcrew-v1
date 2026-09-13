@@ -9,7 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Activity, type Member, type Phase, worktreesDir } from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
+import { mergePoll } from "../merges";
 import type { AgentDriver, AgentEvent, AgentRunOptions } from "./agent";
+import type { Forge } from "./forge";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
 import { type Runner, startRunner } from "./runner";
@@ -26,6 +28,8 @@ const GIT_ENV: Record<string, string | undefined> = {
 };
 
 const PR_URL = "https://example.invalid/skelcrew/pull/1";
+/** The repository `PR_URL` lives in, as the faked forge of the merge test below reports it. */
+const REPO_URL = "https://example.invalid/skelcrew";
 
 let tmp: string;
 let repo: string;
@@ -442,6 +446,76 @@ test("a revision run that records the same PR but commits nothing fails: the bra
   expect(card.attention?.moves).toEqual([]);
   expect(card.phase).toBe("code");
   expect(comments(1).at(-1)).not.toContain("ready for review");
+});
+
+// --- the owner's merge lands the card in Done ---
+
+/**
+ * 018's criterion 8, end to end: the merge poll's move as the owner composed with the runner,
+ * and the send-back loop still turning from one phase further on. The forge is faked here as
+ * the driver is — nothing in this file spawns `gh` or a coding agent.
+ */
+test("a merged pull request lands the card in Done; the owner can still send it back to Code", async () => {
+  await initRepo();
+  let run = 0;
+  start({
+    driver: fakeDriver(async function* (options) {
+      run += 1;
+      await commitIn(options.cwd, `feature-${run}.ts`);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Merge me", "code");
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+
+  // The owner approves into PR, and merges on the forge.
+  core.moveCard(1, "pr", owner.id);
+  const asked: string[] = [];
+  const forge: Forge = {
+    async pullRequest(_repoRoot, url) {
+      asked.push(url);
+      return {
+        url,
+        state: "merged",
+        mergedAt: "2026-09-09T08:44:11Z",
+        headRefName: core.getCard(1).refs.branch as string,
+        baseRepo: REPO_URL,
+      };
+    },
+    async repoUrl() {
+      return REPO_URL;
+    },
+  };
+  const poller = mergePoll({
+    core,
+    forge,
+    repoRoot: repo,
+    runnerId: runnerMember.id,
+    warn: (line) => warnings.push(line),
+  });
+  await poller.tick();
+
+  expect(core.getCard(1).phase).toBe("done");
+  expect(asked).toEqual([PR_URL]);
+  const landed = core.getCard(1).activity.slice(-2);
+  expect(landed[0]).toMatchObject({ type: "comment", actorId: runnerMember.id });
+  expect(landed[1]).toMatchObject({ type: "card_moved", actorId: owner.id });
+
+  // Send-back from Done still works, and re-dispatches with history intact.
+  const again = untilEvent(ended(1));
+  core.moveCard(1, "code", owner.id);
+  await again;
+
+  expect(run).toBe(2);
+  expect(core.getCard(1).phase).toBe("code");
+  expect(core.getCard(1).refs.commits).toHaveLength(2);
+
+  // And the daemon does not move it back: a card outside PR is not asked about.
+  await poller.tick();
+  expect(asked).toEqual([PR_URL]);
+  expect(core.getCard(1).phase).toBe("code");
+  expect(warnings).toEqual([]);
 });
 
 // --- a tag that shadows a branch name ---
