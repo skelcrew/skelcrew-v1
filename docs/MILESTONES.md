@@ -27,8 +27,10 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 11 | 014 A phase ends in a verified artefact | landed, PR #12 |
 | 12 | 016 The gate is the daemon's, not the allowlist's | landed, PR #13 |
 | 13 | 015 Control characters can't repaint the record | landed, PR #14 — two Criticals were regressions the spec itself introduced |
-| 14 | 017 A playbook's commands are checked against the harness that runs them | planned |
-| 15 | 008 The full loop | planned — rewritten after 014; split into 008a–c below |
+| 14 | 017 A playbook's commands are checked against the harness that runs them | landed, PR #15 |
+| 15 | 018 A merged pull request lands the card in Done (008a) | specified |
+| 16 | 008b The review loop inside Code, with a budget the runner enforces | planned |
+| 17 | 008c When the default branch moves | planned, deferred until needed |
 | | 005 | dropped |
 
 ## Background
