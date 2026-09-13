@@ -102,7 +102,9 @@ test("nothing the daemon runs imports the harness check", async () => {
  * The SDK is pinned exactly in `bun.lock`, which is the real protection — but nothing tied the
  * transcription to that pin, so a bump could move the table underneath the list in silence. It
  * fails here instead, and becomes a decision someone makes on purpose. The assertion lives in
- * this file because this is the one place the SDK is named, per the test above.
+ * this file because this is the one *test* file that names the SDK: the test above pins the naming
+ * list at three files — the driver, the harness check, and this one, for the literals its
+ * translation tests are written over.
  */
 test("the harness the allowlist's tables were transcribed from is the one installed", () => {
   const sdk = dirname(Bun.resolveSync("@anthropic-ai/claude-agent-sdk", import.meta.dir));

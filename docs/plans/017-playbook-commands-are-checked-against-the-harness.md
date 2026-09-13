@@ -185,7 +185,8 @@ Round 1, in `playbooks.test.ts` (against `instructedCommands` stubbed to `[]`):
 | the instructed commands are the playbook's commands, not its nouns, prose or prohibitions | red: `Expected to contain: "skelcrew body PLACEHOLDER <<'SPEC'"  Received: []` |
 
 Round 1, in `harness-check.test.ts` (against a skeleton whose stub answered 500, whose `PATH`
-builder wrote nothing and whose `problemsIn` returned `[]`) — 10 of 12 red:
+builder wrote nothing and whose `problemsIn` returned `[]`) — 11 of the 13 rows below red, 2 green
+first:
 
 | test | red? |
 | --- | --- |
@@ -284,7 +285,9 @@ reads `executed=true` and the denied control reads `executed=false`, where round
 # Round 3 — review round 2's findings
 
 **APPROVED**, no Critical, no Important, eight Minors — all eight fixed. The spec was amended
-again for Minor 5 (`fa2eb6e`, "overrides five things, not four").
+again for Minor 5, twice: `fa2eb6e` corrected the count in *Desired behavior* and `1c4f425` the
+second count of the same thing in *Implementation approach*, which the first correction missed.
+Four amendments in all (`577053f`, `d7a5933`, `fa2eb6e`, `1c4f425`).
 
 | # | finding | disposition |
 | --- | --- | --- |
@@ -380,3 +383,54 @@ every one of the 30 commands under test runs unprompted in the harness, `git pus
 Exit 0, with `ANTHROPIC_API_KEY=sk-ant-owner-sentinel` in the calling environment. `PATH` and
 `HOME` now read `/private/var/…` rather than `/var/…`, which is Minor 8's `realpathSync` visible
 in the output. `bun run check`: 608 pass, 0 fail.
+
+# Verification — FAILED on prose, all eleven criteria passing
+
+The independent verification found **every one of the eleven acceptance criteria satisfied by
+execution**, and failed the round on a comment that was not true. What it established, and how:
+
+- **Criterion 1** by sampling for the SDK's native binary across a whole `bun test` run: none,
+  against 172 samples during `check:harness` — the same sampler, so the negative is not blind.
+- **Criteria 2–7 and 10** by running `bun run check:harness`, three times, stable at about 4.4 s:
+  30 commands executed, the control denied, the repository unchanged, `canUseTool` never reached.
+  It broke the check both ways in a scratch copy — a fenced `gh repo delete` in a playbook → FAIL
+  naming it; the control removed → FAIL saying the check proves nothing — planted a side-effect
+  file and saw criterion 7 catch it, and confirmed the missing-binary failure is named rather than
+  silent.
+- **Criterion 6** by `ps eww` on a spawned `claude` child: exactly eight environment variables, no
+  owner credential among them; and by sampling `lsof` across a run: no non-loopback socket.
+- **Minor 1**, the interrupt path, by `SIGINT` mid-run: exit 130, the grace observed at 2527 ms,
+  the scratch directory gone and the `claude` child dead afterwards.
+- **Criterion 8 and the harvesters** by rebuilding every red-first row from `git archive` at each
+  stage, and by checking `instructedCommands()` against the `commandsIn` it replaced as a
+  multiset.
+- **`unrepresentedEntries`** by running per-entry `allowsTool` over all 196 entry–representative
+  pairs: zero disagreements with the hand-rolled `covers`.
+- And it established that the fast operator test in `playbooks.test.ts` and the harness genuinely
+  differ — `git add -A && git commit -m "a message"` is rejected by the fast test and *allowed* by
+  the harness — so keeping both guards is right rather than redundant.
+
+## What this round corrected
+
+- **The false claim.** `unrepresentedEntries`'s comment said `allowsTool` "reads a wildcard rule as
+  covering `xargs <that command>` too … so `xargs git add -A` would count as covering
+  `Bash(git add *)`". Executed here, on the same code: `allowsTool("Bash", {command: "xargs git add
+  -A"}, …)` is **`false`** against `FIXED_ALLOWLIST` and against `["Bash(git add *)"]` alone. The
+  widening is the *harness's*, and `allowlist.ts` records it as a divergence in exactly the
+  opposite direction ("allows `xargs git add` **there** and asks **here**") — so the comment
+  attributed the harness's behaviour to the model, in the sentence whose job is to say why the
+  model is kept out of the decision. Rewritten: the reasons are independence and the fact that
+  `allowsTool` answers a different question (whole-list permission, not which entry a command
+  stands for — `gh pr view --json url --jq .url` is `false` against `["Bash(gh pr create *)"]` and
+  `true` against the full list, both executed). The `xargs` widening is kept only where it is true:
+  as a reason the harness would be no better an oracle for "stands for" either.
+- **This record.** It named three spec amendments; there are four (`1c4f425` added). "10 of 12 red"
+  did not match its own 13-row table; it now says 11 red, 2 green first.
+- **`claude.ts`'s header** said the check is imported by nothing; its own unit test imports it, and
+  what the test pins is that nothing *the daemon runs* does. Corrected to that.
+- **The version-pin comment** in `claude.test.ts` said that file "is the one place the SDK is
+  named"; the naming list it sits beside has three entries. It now says what it is: the one test
+  file that names the SDK, with the list pinned at three.
+
+Nothing in this round changed behaviour: comments and this record only. `bun run check` 608 pass,
+`bun run check:harness` exit 0.

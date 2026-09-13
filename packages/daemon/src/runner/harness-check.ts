@@ -98,13 +98,22 @@ export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
  * for two reasons, neither of them that the model is wrong here (review round 2 ran `allowsTool`
  * per entry over all 196 entry–representative pairs and found it agreeing with this exactly):
  *
- * - **Independence.** This check exists because a model of the harness cannot answer "would this
- *   ask". Using that model to decide *which commands to ask the harness about* would put it back
- *   in the one place the answer comes from.
- * - **`allowsTool` is wider than "stands for".** It reads a wildcard rule as covering
- *   `xargs <that command>` too, as the harness does, so `xargs git add -A` would count as
- *   covering `Bash(git add *)` — and a representative covered only by a *different* entry would
- *   count as well, since `allowsTool` asks the whole list rather than one rule.
+ * - **Independence.** This check exists because a model of the harness cannot be trusted to answer
+ *   "would this ask". Using that same model to decide *which commands to ask the harness about*
+ *   would put it back in the one place the answer is supposed to come from.
+ * - **`allowsTool` answers a different question.** It asks whether the *whole list* permits a
+ *   command, not which entry it stands for: `gh pr view --json url --jq .url` is `false` against
+ *   `["Bash(gh pr create *)"]` and `true` against `FIXED_ALLOWLIST`, so per-entry coverage read
+ *   off the full list would call every entry covered as soon as any one of them was — and an
+ *   entry would silently lose its representative. (Both runs executed.)
+ *
+ * What this does *not* claim is that the model widens an entry: `allowsTool("Bash", {command:
+ * "xargs git add -A"})` is `false`, against the fixed list and against `["Bash(git add *)"]` alone.
+ * The widening is the **harness's**, which retries a wildcard pattern with `xargs ` in front of it
+ * — see the divergence recorded at `entryMatches` in `allowlist.ts` — which is a reason the
+ * harness would be no better an oracle for "stands for" than the model is: it would call
+ * `xargs git add -A` a representative of `Bash(git add *)`, and this list is meant to hold the
+ * command a playbook's agent would actually write.
  */
 export function unrepresentedEntries(
   representatives: readonly string[] = FIXED_LIST_REPRESENTATIVES,
