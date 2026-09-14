@@ -7,7 +7,13 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Activity, COMMENT_MAX_BYTES, type Member, worktreesDir } from "@skelcrew/shared";
+import {
+  type Activity,
+  COMMENT_MAX_BYTES,
+  type Member,
+  type Phase,
+  worktreesDir,
+} from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
 import type { AgentDriver, AgentEvent, AgentRunOptions, ToolDecision } from "./agent";
 import {
@@ -193,19 +199,20 @@ function logPathFrom(comment: string): string {
 }
 
 /**
- * The list a run working in `cwd` is spawned with: the fixed list, the one file-tool entry
- * anchored at its own worktree, the two entries composed from the base branch's name (020), and
- * then whatever the repository's instructions added.
+ * The list a **Spec** run working in `cwd` is spawned with: the fixed list, the one file-tool
+ * entry anchored at its own worktree, and then whatever the repository's instructions added.
+ * Not the two entries composed from the base branch's name (020): those are a Code run's, and
+ * every run in this file is a Spec run.
  */
 function spawnedWith(cwd: string, ...scanned: string[]): string[] {
-  return [...FIXED_ALLOWLIST, editsIn(cwd), ...baseBranchGrants("main"), ...scanned];
+  return [...FIXED_ALLOWLIST, editsIn(cwd), ...scanned];
 }
 
-/** Files a card as the owner, moves it into spec, and waits for the run to end. */
-async function runCard(title: string): Promise<number> {
+/** Files a card as the owner, moves it into `phase`, and waits for the run there to end. */
+async function runCard(title: string, phase: Phase = "spec"): Promise<number> {
   const card = core.createCard({ title }, owner.id);
   const done = untilEvent(released(card.id));
-  core.moveCard(card.id, "spec", owner.id);
+  core.moveCard(card.id, phase, owner.id);
   await done;
   return card.id;
 }
@@ -270,6 +277,11 @@ test("a Spec run: the log path, the turn, the batched tools, and the handoff, in
   expect(options.cwd).toBe(path);
   expect(options.systemPrompt).toBe(playbooks.spec);
   expect(options.allowedTools).toEqual(spawnedWith(path));
+  // 020, review round 1: the two base-branch entries are a Code run's. A Spec run has no
+  // conflict to fix and its playbook instructs neither command, so it gets neither entry.
+  for (const entry of baseBranchGrants("main")) {
+    expect(options.allowedTools).not.toContain(entry);
+  }
   expect(options.disallowedTools).toEqual(deniedTools(path));
   expect(options.env).toEqual(
     agentEnvironment({ PATH: "/usr/bin", HOME: join(tmp, "home") }, dataDir, crewMember.name),
@@ -1295,6 +1307,9 @@ test("the run-start comment says when the scan had no base to read, and names th
  * 020, criterion 9. A branch name may hold a `)`, which closes a `Bash(...)` rule early — so the
  * two entries that let a fix run bring its base in are left off, and the run-start comment says
  * so rather than leaving the owner to wonder why the agent asked. Loud and closed.
+ *
+ * A **Code** run, because the entries are a Code run's: review round 1 found them on every
+ * non-review run, and the clause that stands in for them belongs where they would have been.
  */
 test("a base branch that cannot be written into a rule is said on the card, and grants nothing", async () => {
   await sh(repo, "init", "-q", "-b", "main)");
@@ -1308,7 +1323,7 @@ test("a base branch that cannot be written into a rule is said on the card, and 
       yield { type: "result", ok: true };
     }),
   });
-  const id = await runCard("A base nobody can write into a rule");
+  const id = await runCard("A base nobody can write into a rule", "code");
 
   expect(comments(id)[0]).toContain(
     'base branch "main)" cannot be written into a rule: git fetch and git merge will ask',

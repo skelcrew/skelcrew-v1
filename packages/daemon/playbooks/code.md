@@ -211,10 +211,19 @@ git fetch origin <base>
 git merge --no-edit refs/remotes/origin/<base>
 ```
 
-Then resolve every conflict the merge reports, stage the resolved files with git add, commit the
-merge with git commit, push with git push, and record the pull request again — §4 asks that of
-every run, and the pull request here is the one that is already open on this branch, so read its
-URL back and record the same value.
+Then resolve every conflict the merge reports, stage the resolved files with git add, conclude the
+merge with `git commit --no-edit` — the message the merge prepared; without `--no-edit` git opens
+an editor and an unattended run hangs there — push with git push, and record the pull request again
+— §4 asks that of every run, and the pull request here is the one that is already open on this
+branch, so read its URL back and record the same value.
+
+**Name the merge commit on the card.** The review that follows this run diffs this branch against
+the *local* base branch, and nothing fetches that ref — so it still points where it did before the
+owner merged anything, and every commit that came in with your merge appears in that diff and in
+the commits recorded on this card. The reviewer reads the card before it reads the diff, so post
+`skelcrew comment <id> "<text>"` giving the merge commit's sha and saying that what came in with
+it is not this card's work. If the review asks for changes to code you only merged in, say so on
+the card the same way rather than changing it.
 
 **Never rebase this branch.** A rebase needs a force-push, which asks and which you never do; the
 merge commit *is* the fix, and it is what moves the branch for §4's first condition.

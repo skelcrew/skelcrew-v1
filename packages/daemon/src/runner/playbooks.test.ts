@@ -440,6 +440,25 @@ test("the Code playbook tells a conflicted run to merge its base in, and never t
   expect(unwrapped(code)).toContain(
     "**Never rebase this branch.** A rebase needs a force-push, which asks",
   );
+  // Review round 1 ran a bare `git commit` to conclude a conflicted merge with no editor
+  // configured and stdin on /dev/null: git launched vim and hung until it was killed. The
+  // merge's own prepared message is what `--no-edit` takes, so nothing waits on an editor.
+  expect(unwrapped(code)).toContain("conclude the merge with `git commit --no-edit`");
+  expect(instructedCommands(code)).toContain("git commit --no-edit");
+});
+
+/**
+ * 020, review round 1. The runner measures every run against the *local* base branch, which no
+ * run fetches, while the fix run merges the remote-tracking one — so the review after a fix run
+ * diffs in commits the owner merged for some other card, and 014 records their shas on this
+ * card too. The fix for that is its own spec (MILESTONES); what this run can do is tell the
+ * reviewer, which reads the card before the diff, which commit brought them in.
+ */
+test("the Code playbook tells a fix run to name the merge commit on the card", () => {
+  const code = unwrapped(loadPlaybooks().code);
+  expect(code).toContain("**Name the merge commit on the card.**");
+  expect(code).toContain("diffs this branch against the *local* base branch");
+  expect(code).toContain("is not this card's work");
 });
 
 test("the Code playbook makes qualifying both branch names a rule, not an example", () => {

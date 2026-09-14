@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   allowlistFor,
   allowsTool,
+  baseBranchGrants,
   deniedTools,
   editsIn,
   FIXED_ALLOWLIST,
@@ -884,6 +885,25 @@ test("a Code run may fetch and merge its own base branch without asking", async 
 });
 
 /**
+ * Criterion 9, the other half, found by review round 1: the two entries are a **Code** run's
+ * alone. A Spec run shares the Code list, but it has no conflict to fix and nothing on its
+ * playbook runs either command, so it gets neither entry — and, having asked for neither, it
+ * says nothing about the base branch in its run-start comment either.
+ */
+test("a Spec run gets neither entry, whatever its base branch is named", async () => {
+  const spec = await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), "spec");
+  for (const entry of baseBranchGrants(DEFAULT_BRANCH)) expect(spec.tools).not.toContain(entry);
+  for (const command of [
+    `git fetch origin ${DEFAULT_BRANCH}`,
+    `git merge --no-edit refs/remotes/origin/${DEFAULT_BRANCH}`,
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, spec.tools)]).toEqual([command, false]);
+  }
+  const unwritable = await allowlistFor(git, repo, "main)", worktree(), "spec");
+  expect(unwritable.scanned).not.toContain("cannot be written into a rule");
+});
+
+/**
  * Exact means exact: the entries carry no wildcard, so nothing but those two command lines is
  * covered by them. `git fetch` chooses no refspec and reaches no `--upload-pack`; `git merge`
  * names no strategy, which `-s <name>` would turn into running `git-merge-<name>` from `PATH`.
@@ -919,6 +939,10 @@ test("the record says the two entries are a gate, what defeats it, and what they
   expect(record).toContain("gate, not a boundary");
   expect(record).toContain("subprocess");
   expect(record).toContain("no wildcard");
+  // And the limit review round 1 measured, recorded beside the grant that causes it: the run
+  // merges the remote-tracking base while every run is measured against the local one.
+  expect(record).toContain("the next review's diff is wide");
+  expect(record).toContain("carried to MILESTONES");
   // And the sentence about the ref the scan reads says what is now true of it.
   const scanRef = source.slice(source.indexOf("**The files are read from a commit"));
   const paragraph = scanRef.slice(0, scanRef.indexOf("*/")).replace(/\s+\*\s+/g, " ");

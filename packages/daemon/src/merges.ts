@@ -101,6 +101,14 @@
  * standing, because the core refuses a non-human actor resolving a request addressed to the
  * owner — so the card says what changed and the owner still decides.
  *
+ * **A limit, measured by review round 1 and recorded rather than fixed** (020's Open list): a
+ * conflict that clears and then comes back is not said a second time. The once-rule is keyed to
+ * the conflict note since the card entered PR, so in the sequence conflict → clears → conflicts
+ * again the card's last word from the runner is "no longer conflicts" while the open request it
+ * stands under still says the pull request conflicts. The owner's queue is right — the request
+ * carries the conflict and the move to Code — and only the feed's last line is stale. Keying the
+ * rule to the transition rather than to the note would fix it, and is not done here.
+ *
  * Which branch name the note uses is the pull request's `baseRefName`, because that is what the
  * forge merged it against. The grant in `allowlist.ts` uses the *runner's* default branch,
  * because that is what the runner knows before any forge is asked. In a repository where the two

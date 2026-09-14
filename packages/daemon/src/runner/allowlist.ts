@@ -1161,6 +1161,19 @@ const LINE_WORD = /^[A-Za-z0-9._/@+:=-]+$/;
  * `LINE_CHARS` — the same allowlist a scanned line goes through, for the same reason — and when
  * it is not, this returns nothing, `allowlistFor` says so in the run-start comment, and the two
  * commands ask like anything else. Failing loudly and closed is the only safe direction here.
+ *
+ * **A limit this grant causes, measured by 020's review round 1 and not fixed here: after a fix
+ * run merges the base in, the next review's diff is wide.** The merge takes
+ * `refs/remotes/origin/<base>`, while every run is measured against the *local* `refs/heads/<base>`,
+ * which `git.ts` never fetches — so `git diff refs/heads/<base>...refs/heads/<branch>` afterwards
+ * carries every commit the owner merged for the other card, and 014's commit range records those
+ * shas on the card as well. The reviewer may then request changes on code that is not this card's,
+ * the loop ends at its budget, and the owner accepts from the pull request, whose diff on the
+ * forge is right. What holds the line meanwhile is the card: `code.md` §6 tells the fix run to
+ * name its merge commit in a comment, and the reviewer reads the card first. The real fix is to
+ * measure a run against the newer of the local and remote-tracking base, which changes 014's
+ * contract and 019's review playbook together — carried to MILESTONES, and recorded in the spec's
+ * Open list.
  */
 export function baseBranchGrants(defaultBranch: string): string[] {
   if (!LINE_WORD.test(defaultBranch)) return [];
@@ -1266,11 +1279,13 @@ export async function allowlistFor(
   const tools = review ? [...REVIEW_ALLOWLIST] : [...FIXED_ALLOWLIST, editsIn(worktreePath)];
   const denied = review ? [...REVIEW_DENIED_TOOLS] : deniedTools(worktreePath);
   // The two commands a fix run brings its base in with (020), composed from the base branch's
-  // name — a Code run's, since a review run writes nothing. A name no rule can hold adds
-  // nothing and says so, which is the clause below.
-  const grants = review ? [] : baseBranchGrants(defaultBranch);
+  // name — a **Code** run's alone: a review run writes nothing, and a Spec run, which shares
+  // this list, has no conflict to fix and instructs neither command. A name no rule can hold
+  // adds nothing and says so, which is the clause below.
+  const fix = kind === "code";
+  const grants = fix ? baseBranchGrants(defaultBranch) : [];
   tools.push(...grants);
-  const clauses = !review && grants.length === 0 ? [unwritableBase(defaultBranch)] : [];
+  const clauses = fix && grants.length === 0 ? [unwritableBase(defaultBranch)] : [];
   /** The run-start comment's clauses, in order: the base branch, then what the scan did. */
   const said = (scan: string): string => [...clauses, scan].join("; ");
   // Read from the Code list for both kinds, and deliberately: the review list narrows no git
