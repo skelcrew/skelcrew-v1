@@ -154,6 +154,18 @@ Critical/Important/Minor, and end with exactly one `skelcrew review` call. It sa
 `approved` requires no Critical and no Important findings, and that the reviewer's session ending
 without that call is a failed run.
 
+The findings go on that command line, and a command line is parsed by a shell before the
+harness sees it. Review round 2 ran the playbook's own form against the pinned harness: a
+backtick or a `$(` inside a double-quoted argument is a command substitution, and the harness
+stops to ask about it outright, so a finding written as `` `runner.ts:480` `` turns the one
+required call into a permission question nobody answers overnight. So the playbook prescribes
+the findings **single-quoted**, says to write locations as `path:line` with no backticks, and
+says not to use an apostrophe inside the findings (write "does not", not "doesn't"), because an
+apostrophe ends a single-quoted string. `code.md` carries the same kind of warning for its one
+required call. 017's harness check covers this form: the review list's representative for
+`skelcrew review` carries a backtick inside single quotes, so the check fails if the harness
+ever starts asking about that. (Added by the orchestrator after review round 2.)
+
 `Playbooks` in `playbooks.ts` becomes `Record<"spec" | "code" | "review", string>` and
 `loadPlaybooks` reads all three. `PLAYBOOK_PHASES` stays the two claimable phases: review is a
 run kind inside Code, not a phase, which is the settled architecture ("review cycles happen
@@ -194,6 +206,20 @@ own (`raiseNext` refuses over a foreign request) and would block until its time 
 round 1 found the loop starting the review anyway, which criterion 3 read as allowed and
 *Desired behavior* did not; the orchestrator settled it on *Desired behavior* and added this
 paragraph. Criterion 10's case, a question the reviewer itself leaves open, is unchanged.
+
+The same rule binds the review → fix transition, for the same reason: a review run that
+raises its own `skelcrew attention` question and records `changes_requested` ends the loop
+there. The card gets the ending 014 gives a run with a question standing (the comment says
+what landed, no move is offered, the claim is released `blocked`), and no fix run starts.
+Answering the question makes the card ready, and the next claim begins a new loop. Review round 2
+found the loop starting the fix run under the reviewer's question; the first version of this
+paragraph named only the Code → review transition, and the orchestrator added this one.
+
+What the guard reads is any open request that is not the run's *own* permission question. The
+run's own question is excluded on purpose: an ending replaces it (013), so a met contract under
+it hands the card on with the offer, and widening the guard would let a run that triggered a
+permission question and then finished skip the review. Whether the harness can end a session
+with an ask still outstanding is unverified; `runner.ts` records the exclusion and the reason.
 
 `runPlaybook` in `run.ts` returns the contract's outcome to the caller when the contract is met,
 rather than ending the card itself. Every other outcome — an unmet contract, a time limit, the
