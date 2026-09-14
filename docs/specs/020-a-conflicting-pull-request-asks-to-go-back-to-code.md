@@ -92,8 +92,12 @@ recorded, and the run ends in the review loop 019 builds, or, before 019 lands, 
 
 **A base name that cannot be written into a rule is not written.** A branch name may contain
 `)`, and a `)` inside a `Bash(...)` entry ends the rule early. When the default branch's name is
-not made only of the characters the allowlist already permits in a scanned line, the two entries
-are left off, the run-start comment says so, and the two commands ask like anything else.
+not made only of the characters the allowlist already permits in a scanned line, **or begins
+with `-`**, the two entries are left off, the run-start comment says so, and the two commands ask
+like anything else. The second condition is review round 2's: a name shaped like an option
+(`--upload-pack=/tmp/evil` is a valid ref name, and `origin/HEAD` can point at it) would put an
+option into the entry, and `git fetch origin --upload-pack=…` runs a program. A name git itself
+would refuse to check out is not a name a rule may be written for.
 
 ## Implementation approach
 
@@ -137,7 +141,9 @@ take the exception.
 
 `allowlist.ts`: `allowlistFor` already receives the default branch name. It adds
 `Bash(git fetch origin <base>)` and `Bash(git merge --no-edit refs/remotes/origin/<base>)` as
-exact entries, no wildcard, only when `<base>` matches the single-word form of `LINE_CHARS`, and
+exact entries, no wildcard, only when `<base>` matches the single-word form of `LINE_CHARS` and
+does not begin with `-` (the word form is derived from `LINE_CHARS` or tied to it by a test, so
+the two cannot drift), and
 only for a Code run (`kind === "code"`): a Spec run shares the Code list today, but it has no
 conflict to fix and nothing on its playbook runs either command, so it does not get them.
 Otherwise it adds nothing and the `scanned` line says `base branch "<name>" cannot be written into
@@ -179,7 +185,11 @@ rest of the fix in prose that names commands already on the list.
 5. **What parses the string.** The base name goes into a `Bash(...)` rule the harness re-reads
    character by character (`allowlist.ts`, the transcription of `td`): `)` closes the rule early
    and space or comma opens another. The single-word `LINE_CHARS` check is the allowlist, and
-   omitting the entries is the loud failure. The base name also goes into the attention note
+   omitting the entries is the loud failure. A second parser sits behind the first: git reads
+   the entry's arguments as a command line, so a name beginning with `-` is an option to git,
+   not a branch — review round 2 built `Bash(git fetch origin --upload-pack=/tmp/evil)` from
+   such a name — and the check refuses a leading `-` for that reason. The base name also goes
+   into the attention note
    and the comment; git refuses control characters in ref names, and the note goes through
    `postingCore`.
 
