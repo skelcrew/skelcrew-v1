@@ -30,7 +30,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 14 | 017 A playbook's commands are checked against the harness that runs them | landed, PR #15 |
 | 15 | 018 A merged pull request lands the card in Done (008a) | landed, PR #16 — three review rounds, every Important a claim nobody had run |
 | 16 | 019 Code is reviewed before the owner sees it (008b) | landed, PR #17 — three review rounds; the milestone's premise that the playbook already looped was wrong |
-| 17 | 020 A conflicting pull request asks to go back to Code (008c) | specified |
+| 17 | 020 A conflicting pull request asks to go back to Code (008c) | landed, PR #18 — two review rounds; the daemon offers the move and does not make it |
 | | 005 | dropped |
 
 ## Background
@@ -666,6 +666,43 @@ two fixed after the approval and confirmed by the verifier.
 - **`resolve` cannot take an offered move.** An attention request carries its moves, but
   `skelcrew resolve` only clears; the owner takes a move with `skelcrew mv`. Found writing 020;
   a `resolve --move` is a small CLI spec if the two-command dance grates.
+
+## 020 — A conflicting pull request asks to go back to Code
+
+008c, landed as PR #18. The merge poll from 018 also reads `gh`'s own mergeability answer on
+every open pull request it polls. A conflict on the card's own pull request raises an attention
+request to the owner with the move to Code attached and the fix spelled out: fetch the base,
+merge `refs/remotes/origin/<base>` in, resolve, commit with `--no-edit`, push, record the pull
+request again. The daemon offers the move and never makes it — this is the first spec to argue
+against 018's precedent paragraph and decline the exception, because merging a different pull
+request is not a gesture about this card. A Code run gets two exact grants for the two commands,
+composed per run from the default branch's name and omitted when that name cannot be written
+into a rule or begins with a dash (review round 2 built `git fetch origin --upload-pack=…` from a
+flag-shaped name); a rebase is never granted, because it needs a force-push. The harness check
+now keeps one list per run kind, so a Spec playbook line naming either command would be caught.
+
+**Carried findings.**
+
+- **Every run is measured against the stale local base.** The runner reads `refs/heads/<base>`
+  and never fetches. After a fix run merges `refs/remotes/origin/<base>` in, the next review's
+  `git diff refs/heads/<base>...refs/heads/<branch>` includes every commit the owner merged for
+  the other card, and 014's commit range records those shas on the card. Reproduced in 020's
+  review round 1 and recorded as a limit, with `code.md` §6 telling the fix run to name its merge
+  commit on the card so the reviewer knows what is not this card's. The fix is to measure against
+  commits reachable from the branch but from neither the local nor the remote-tracking base
+  (`git log ^refs/heads/<base> ^refs/remotes/origin/<base> refs/heads/<branch>`), and to tell the
+  review playbook the same. It changes 014's contract and 019's playbook together, so it is its
+  own small spec, and it becomes due the first time a conflict fix goes through review.
+- **A conflict that clears and returns is not said again.** The once-rule is keyed to the note
+  since the card entered PR. The owner's queue is right; the feed's last line is stale.
+- **The grant and the note can name different branches.** The grant uses the runner's default
+  branch; the note uses the pull request's `baseRefName`. Same in every repository seen so far.
+- **`git fetch origin <base>` now writes the ref the instruction scan reads**, to origin's own
+  value only. No entry on the Code list can move a local branch head, so `push.default =
+  matching` cannot push a local base that is ahead. Recorded in `allowlist.ts`; worth re-reading
+  if the Code list ever gains a verb that moves `refs/heads/`.
+- **`gh`'s conflicting answer was observed on another repository's pull request**, never on one
+  of this repository's own, and never through the transition from `UNKNOWN` to `CONFLICTING`.
 
 ## Later, deliberately unplanned
 
