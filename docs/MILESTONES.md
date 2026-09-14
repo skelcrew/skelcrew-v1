@@ -29,8 +29,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 13 | 015 Control characters can't repaint the record | landed, PR #14 — two Criticals were regressions the spec itself introduced |
 | 14 | 017 A playbook's commands are checked against the harness that runs them | landed, PR #15 |
 | 15 | 018 A merged pull request lands the card in Done (008a) | landed, PR #16 — three review rounds, every Important a claim nobody had run |
-| 16 | 008b The review loop inside Code, with a budget the runner enforces | planned |
-| 17 | 008c When the default branch moves | planned, deferred until needed |
+| 16 | 019 Code is reviewed before the owner sees it (008b) | landed, PR #17 — three review rounds; the milestone's premise that the playbook already looped was wrong |
+| 17 | 020 A conflicting pull request asks to go back to Code (008c) | specified |
 | | 005 | dropped |
 
 ## Background
@@ -619,6 +619,53 @@ socket, which is 016's recorded limit.
 - **Killing a hanging `gh` leaves what it spawned.** SIGKILL on the direct child reparents its
   descendants to pid 1, so a `gh` that hangs every tick leaks one orphan per tick for the life
   of the daemon. Recorded in `forge.ts`; a process-group kill is the fix if it ever matters.
+
+## 019 — Code is reviewed before the owner sees it
+
+008b, landed as PR #17. The milestone entry said the Code playbook "already instructs its own
+review rounds"; it never did, in any version — that sentence came from the spike's playbook. So
+the spec built the loop as well as the count. A Code run that meets its contract is followed,
+under the same claim and in the same worktree, by a reviewer in a fresh subprocess with a
+read-only list of its own (`REVIEW_ALLOWLIST`; `Edit`, `Write` and `NotebookEdit` denied
+outright, measured against the pinned harness). The reviewer records a verdict with a new member
+primitive, `skelcrew review <id> approved|changes-requested`, which the owner can use too. Changes
+requested start a fix run whose brief is the card; approval hands the card on exactly as 014
+did; the third changes-requested verdict hands it on anyway, saying what is open. The count is a
+number the runner holds for the claim, because a count read off the card would be read from
+events any member can write. A run whose ending cannot be recorded now parks the card on the
+owner instead of re-entering the queue at once, which closes 015's re-claim loop.
+
+Three review rounds. Round 1: the review playbook claimed a second verdict fails the run (the
+contract takes the last). Round 2, both measured against the real harness: a reviewer that raised
+its own question and requested changes started a fix run under that question, which could then
+raise nothing and would block for an hour; and the playbook's double-quoted findings made the
+harness ask on a backtick, so the findings are now single-quoted and the harness check carries a
+backticked representative that fails if that ever changes. Round 3 approved with three Minors,
+two fixed after the approval and confirmed by the verifier.
+
+**Carried findings.**
+
+- **A restart resets the review budget.** The count lives in the claim's frame; a daemon
+  restart releases the claim and the next run begins a new loop. Chosen over a card-derived
+  count on purpose; if it ever matters, the count could be written by the runner as its own
+  event and read back with the actor check 018's ownership check uses.
+- **A background process the Code run leaves alive can record a verdict during the review
+  window.** The review contract counts `crew`'s verdicts inside the review run's window, and a
+  subprocess the Code run started is `crew`. That is 016's open subprocess limit, not something
+  the window closes; what it reaches is an untrue `approved`, which reaches the owner's own
+  review of the pull request.
+- **Whether the harness can end a session with a permission question outstanding is
+  unverified.** The loop's guard excludes the run's own question on reasoning (an ending
+  replaces it, and widening the guard would let a run that asked and then finished skip the
+  review); nobody has produced the state.
+- **"Never an apostrophe in the findings" is enforced by nothing.** A stray apostrophe makes
+  the shell fail the `skelcrew review` call with an error the reviewer can see and retry, not a
+  permission question, so it costs a tool call rather than the round. A `--file` or stdin path
+  for `skelcrew review` would remove the class, but a review run cannot write a file; stdin
+  through a heredoc is untested against the harness.
+- **`resolve` cannot take an offered move.** An attention request carries its moves, but
+  `skelcrew resolve` only clears; the owner takes a move with `skelcrew mv`. Found writing 020;
+  a `resolve --move` is a small CLI spec if the two-command dance grates.
 
 ## Later, deliberately unplanned
 
