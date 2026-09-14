@@ -118,3 +118,67 @@ Both are called out rather than silently resolved:
   fenced `bun run check`) and 19 under the review list (the review playbook's instructions, a
   representative per entry, the same fenced command). Every one ran unprompted;
   `git push origin HEAD:main` was denied; the temporary repository was unchanged.
+
+## Review round 1, and what each finding became
+
+One Important, six Minor, no Critical. Every finding is fixed. The spec was amended first
+(`docs:` commits `6aeb9ff`, `fa89dc0`) and the amended wording is what the code now matches.
+Three of the seven change behaviour, and each of those was driven red first.
+
+- **Important 1 — the playbook told the reviewer a second verdict fails the run, and it does
+  not.** `reviewContract` takes `recorded.at(-1)`, criterion 9 blesses it, and
+  `contracts.test.ts`'s "a review run that records two verdicts is judged by the last" passes.
+  So the playbook was the artefact to change: §5 now says a run that ends without a verdict is a
+  failed run, then "Record one verdict and mean it. If you record a second, the last one you
+  recorded is the one that counts." No code moved. The cost of the old sentence was concrete —
+  a reviewer that changed its mind and then raised `skelcrew attention` about it would have its
+  approval ending refuse the raise and release `blocked`, parking a clean approval on the owner.
+- **Minor 2 — `allowlist.ts` counted one defeat and then named three.** The paragraph now says
+  "defeated in three recorded ways, of which the contract catches one" and numbers them: the
+  check command's subprocess (the contract catches it), a push of another ref (nothing here
+  does), and an untrue `approved` (which reaches the owner's own review, as every Code finish
+  did before 019). Prose only.
+- **Minor 3 — a met Code contract started a review under the agent's own standing question.**
+  Settled by the spec amendment at `fa89dc0`: before each review run the loop reads the card's
+  request and, when one stands that this run may not replace (`question.isOpen` is false), ends
+  there with 014's ending for a met artefact under a standing question — `endRun` comments that
+  the artefact landed, its own raise is refused for the same reason, no move is offered and the
+  claim is released `blocked`. Red first, in the finding's own shape: *`Expected: false Received:
+  true`* on "no `review round 1 of 3 starting` comment". The new case also asserts one system
+  prompt seen by the driver, no verdict on the card, the question still the card's request, and
+  `blocked`. Criterion 10's case — the reviewer's own question at the end of an approved review
+  run — still passes, because the check runs before a review rather than after one.
+- **Minor 4 — the step label before the branch-head read said "open the run log".** `step` is
+  now `read the ${kind} branch head` before the `revParse` and `open the ${kind} run log` just
+  before `createRunLog`. Red first, with a git whose `revParse` fails once the Code run's commits
+  are recorded: *Expected to contain "read the review branch head failed"; received "open the
+  review run log failed: fatal: ambiguous argument"* — which is exactly the misreport the finding
+  named.
+- **Minor 5 — every run's prompt came from the `Card` read at claim time.** `runOnce` now passes
+  `core.getCard(id)`, so a fix run's brief is the card as it is now. Red first, with the owner
+  editing the body while the review run is live: *Expected to contain "Goal: ship it, and the
+  second half too."; received the body the first run read.* Criterion 5's own case asserted byte
+  identity with the first run's brief (`toBe(briefs[0])`); it now asserts the brief carries the
+  card's body as it stands, which is what "the first user message is the card" means. Nothing
+  else in that case changed.
+- **Minor 6 — nothing told the reviewer the findings are capped.** §5 gained one paragraph: the
+  findings are a field under a comment's cap, 16 KiB; a longer text is refused, the call exits
+  non-zero and nothing is recorded; cut the findings rather than lose the verdict. Written
+  without a backticked command, so `instructedCommands` harvests nothing new — `check:harness`
+  still puts 49 commands through the harness, 19 of them under the review list.
+- **Minor 7 — the time-limit case's budget also bounded the Code run before it.** The runner's
+  limit is one number for every run in the loop, so 1500 ms bounded five real git spawns as well
+  as the reviewer. The budget is now 3000 ms with the case's own 20 s timeout, and the comment
+  says why. Nothing about the limit can be driven from `now()`: it is a `setTimeout` on the real
+  clock, and the runner has no per-kind limit to give the review run a shorter one without
+  widening the spec.
+
+**Knowingly unchanged.** The guard is on the Code → review transition alone, which is what the
+amended spec settles. A *reviewer* that raises its own question and records `changes_requested`
+still starts a fix run under that standing request; that run cannot raise a permission question
+either, and its ending releases `blocked` with the question standing. Naming it here rather than
+widening the rule the spec states.
+
+**Checks after the round.** `bun run check` — 709 tests, green (706 before, plus the three new
+cases). `bun run check:harness` — 49 commands under test plus the control, all unprompted,
+`git push origin HEAD:main` denied, the temporary repository unchanged.

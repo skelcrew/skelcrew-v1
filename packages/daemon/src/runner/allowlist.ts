@@ -260,15 +260,16 @@ export const FIXED_ALLOWLIST: readonly string[] = [
  * question the owner would have to answer. With no `Edit(…)` allow rule on the list, a shell
  * redirection has no target any rule covers, so `>` asks too (`redirectionAllowed`).
  *
- * **This is a gate, not a boundary, and it is defeated in exactly one recorded way.** The
- * scanned check commands are added to this list as they are to a Code run's, deliberately, so
- * the reviewer can run the repository's checks — and *What a subprocess reaches* above is true
- * of that subprocess here too: it can write, commit and push, and nothing in the permission
- * layer sees it. What catches the ordinary case is the review contract (`contracts.ts`), which
- * fails a run whose branch moved or whose worktree is dirty whatever verdict it recorded. What
- * catches nothing is a push of another ref, which 013 records for Code runs and which is no
- * wider here. And a reviewer that simply records an untrue `approved` reaches exactly what
- * every Code finish reached before 019: the owner's own review of the pull request.
+ * **This is a gate, not a boundary, and it is defeated in three recorded ways, of which the
+ * contract catches one.** The scanned check commands are added to this list as they are to a
+ * Code run's, deliberately, so the reviewer can run the repository's checks — and *What a
+ * subprocess reaches* above is true of that subprocess here too: it can write, commit and push,
+ * and nothing in the permission layer sees it. That is the first way, and the review contract
+ * (`contracts.ts`) is what catches it in the ordinary course, failing a run whose branch moved
+ * or whose worktree is dirty whatever verdict it recorded. The second is a push of another ref,
+ * which nothing here catches, which 013 records for Code runs and which is no wider here. The
+ * third is a reviewer that simply records an untrue `approved`, which reaches exactly what every
+ * Code finish reached before 019: the owner's own review of the pull request.
  */
 export const REVIEW_ALLOWLIST: readonly string[] = [
   "Read",

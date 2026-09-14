@@ -133,7 +133,8 @@ or **Minor** (small but real). Each one says where it is, what is wrong, what it
 what it should do instead.
 
 The phase ends in this call and the runner verifies it: a review run that ends without a
-verdict is a failed run, and so is one that records two.
+verdict is a failed run. Record one verdict and mean it. If you record a second, the last one
+you recorded is the one that counts.
 
 ```
 skelcrew review <id> approved
@@ -147,6 +148,10 @@ skelcrew review <id> changes-requested "<the findings, Critical first>"
 compatible with it — put them in the text, and they travel to the owner with the card.
 `changes-requested` carries the findings themselves: they are the next run's brief, so they
 have to be specific enough to act on without you.
+
+The findings are a field on the card under the same cap a comment has: 16 KiB. A longer text is
+refused, the call exits non-zero, and nothing is recorded. Cut the findings to fit and record
+them rather than losing the verdict — quote less, and say where each finding is instead.
 
 You have at most three rounds on this card, counted by the runner. A third
 `changes-requested` ends the run and hands the card to the owner with whatever is still open,

@@ -122,6 +122,8 @@ interface StartOptions {
   now?: () => number;
   /** A core with one call replaced, for the failures the real one cannot be made to have. */
   core?: Core;
+  /** A git with one call replaced, for the same reason. */
+  git?: Git;
 }
 
 function start(options: StartOptions): Runner {
@@ -129,7 +131,7 @@ function start(options: StartOptions): Runner {
     core: options.core ?? core,
     dataDir,
     repoRoot: repo,
-    git,
+    git: options.git ?? git,
     member: runnerMember,
     crew: crewMember,
     warn: (line) => warnings.push(line),
@@ -1400,6 +1402,41 @@ test("a met Code contract is reviewed under the same claim, and an approval hand
   expect(warnings).toEqual([]);
 });
 
+/**
+ * *The loop runs under one claim*: a met Code contract starts a review **only when nothing is
+ * waiting on the owner**. Here the agent asked its own question and then finished the artefact,
+ * so the Code run ends there with 014's ending for that case — the artefact named, no move, the
+ * question standing, released blocked — and no reviewer is spawned. A reviewer under that
+ * request could raise no permission question of its own and would block until its time limit.
+ */
+test("a met Code contract under the agent's own standing question starts no review", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: scripted(async function* (options) {
+      seen.push(options);
+      agentAsks(1, "does the fix belong here or in a card of its own?");
+      await commitIn(options.cwd, "feature.ts");
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Asked, and finished anyway", "code");
+
+  const said = comments(1);
+  expect(said.some((text) => text.startsWith("review round 1 of 3 starting"))).toBe(false);
+  // One run in the loop, and it was the Code run: the driver saw one system prompt.
+  expect(seen.map((options) => options.systemPrompt)).toEqual([playbooks.code]);
+  expect(verdicts(1)).toEqual([]);
+
+  const card = core.getCard(1);
+  expect(said.at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(card.attention?.note).toBe("does the fix belong here or in a card of its own?");
+  expect(card.attention?.moves).toEqual([]);
+  expect(lastRelease(1)).toBe("blocked");
+  expect(card.phase).toBe("code");
+});
+
 /** Criterion 5. The findings are on the card, and the card is the fix run's brief. */
 test("changes requested starts a fix run whose brief is the card, then a second review", async () => {
   await initRepo();
@@ -1433,7 +1470,8 @@ test("changes requested starts a fix run whose brief is the card, then a second 
   expect(briefs[1]).toContain("Card 1: Sent back once");
   expect(briefs[1]).toContain("Branch: skelcrew/1-sent-back-once (from main)");
   expect(briefs[1]).toContain("Goal: ship it.");
-  expect(briefs[1]).toBe(briefs[0]);
+  // The card as it is now: nothing edited it here, so the body it carries is the one on the card.
+  expect(briefs[1]).toContain(core.getCard(1).body);
   // The findings the fix run works from are on the card, as the last verdict.
   expect(verdicts(1)).toEqual([`${crewMember.id}:changes_requested`, `${crewMember.id}:approved`]);
   const card = core.getCard(1);
@@ -1442,6 +1480,48 @@ test("changes requested starts a fix run whose brief is the card, then a second 
   expect(lastRelease(1)).toBe("finished");
   expect(card.refs.commits).toHaveLength(2);
   expect(card.activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+});
+
+/**
+ * Criterion 5's "whose first user message is the card", read as *the card*: every run in the
+ * loop composes its brief from the card as it is then. The owner editing the body while the
+ * review is live is the ordinary case — the claim is the runner's for the whole loop, and
+ * `setBody` is the owner's to call throughout — and the fix run must work from what they wrote.
+ */
+test("a fix run's brief is the card as it is now, not as it was when the claim was taken", async () => {
+  await initRepo();
+  const briefs: string[] = [];
+  let codeRuns = 0;
+  let reviews = 0;
+  start({
+    driver: scripted(
+      async function* (options) {
+        codeRuns += 1;
+        briefs.push(await firstMessage(options));
+        await commitIn(options.cwd, `feature-${codeRuns}.ts`);
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+      async function* (options) {
+        reviews += 1;
+        if (reviews === 1) {
+          core.setBody(1, "# the spec\n\nGoal: ship it, and the second half too.", owner.id);
+          return yield* requesting("Critical: the second half is missing")(options);
+        }
+        core.review(1, { verdict: "approved" }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+    ),
+  });
+  await runCard("Edited mid-claim", "code", "# the spec\n\nGoal: ship it.");
+
+  expect([codeRuns, reviews]).toEqual([2, 2]);
+  expect(briefs[0]).toContain("Goal: ship it.");
+  expect(briefs[0]).not.toContain("the second half too");
+  // Still the card — id, title, branch, body — and the body is the one the owner left.
+  expect(briefs[1]).toContain("Card 1: Edited mid-claim");
+  expect(briefs[1]).toContain("Branch: skelcrew/1-edited-mid-claim (from main)");
+  expect(briefs[1]).toContain("Goal: ship it, and the second half too.");
 });
 
 /**
@@ -1537,6 +1617,41 @@ test("a review run that records no verdict fails, keeps the worktree, and leaves
   expect(lastRelease(1)).toBe("failed");
   expect(await worktreeKept(1)).toBe(true);
   expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+});
+
+/**
+ * A failed step names the step that failed. The read this fails is the branch head each run is
+ * measured against, which the runner takes before it opens the run's log — so the note the owner
+ * reads has to say the head could not be read, not that a file could not be opened.
+ */
+test("a branch head that cannot be read before the review run names that step, not the log", async () => {
+  await initRepo();
+  /** The head read for the *review* run: the first one after the Code run's work was recorded. */
+  const failing: Git = {
+    ...git,
+    async revParse(root, ref) {
+      const recorded = core
+        .getCard(1)
+        .activity.some(
+          (e) =>
+            e.type === "refs_set" &&
+            e.actorId === runnerMember.id &&
+            (e.data.set ?? []).includes("commits"),
+        );
+      if (recorded && ref.startsWith("refs/heads/skelcrew/")) {
+        throw new Error("fatal: ambiguous argument");
+      }
+      return git.revParse(root, ref);
+    },
+  };
+  start({ driver: scripted(implementing()), git: failing });
+  await runCard("Unreadable head", "code");
+
+  const said = comments(1).at(-1) as string;
+  expect(said).toContain("read the review branch head failed");
+  expect(said).toContain("fatal: ambiguous argument");
+  expect(said).not.toContain("run log");
+  expect(lastRelease(1)).toBe("failed");
 });
 
 test("a review run that moved the branch fails naming it, and its verdict is ignored", async () => {
@@ -1730,11 +1845,18 @@ async function whileReviewing(
   await live;
 }
 
+/**
+ * The limit is per run, and the runner's is one number for every run in the loop — so the Code
+ * run that must finish before the reviewer starts is bounded by it too. Its five git spawns
+ * against a real repository are the slow part, and a budget tight enough to keep this case quick
+ * is a budget a loaded machine can blow *there*, failing this case on the wrong run. The budget
+ * is therefore generous and the case is given the wall-clock time to spend it.
+ */
 test("a review run over the time limit ends the loop with 014's time-limit note", async () => {
   await initRepo();
-  await whileReviewing(reviewerAtWork, { runLimitMs: 1500, abortGraceMs: 500 });
+  await whileReviewing(reviewerAtWork, { runLimitMs: 3000, abortGraceMs: 500 });
 
-  await untilEvent(ended(1), 8000);
+  await untilEvent(ended(1), 10_000);
   const said = comments(1).at(-1) as string;
   expect(said).toContain("time limit");
   const card = core.getCard(1);
@@ -1742,7 +1864,7 @@ test("a review run over the time limit ends the loop with 014's time-limit note"
   expect(card.activity.filter((e) => e.type === "released")).toHaveLength(1);
   expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
   expect(card.phase).toBe("code");
-});
+}, 20_000);
 
 test("the daemon stopping ends a live review run as daemon stopping", async () => {
   await initRepo();

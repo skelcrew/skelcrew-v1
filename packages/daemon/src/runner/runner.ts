@@ -399,11 +399,12 @@ export function startRunner(options: RunnerOptions): Runner {
         // the owner merged it.
         const allowlist = await allowlistFor(git, repoRoot, base.name, path, kind);
         stillHeld();
-        step = `open the ${kind} run log`;
+        step = `read the ${kind} branch head`;
         // Re-read per run: the previous run's commits are where this one starts, so "the
         // branch moved during this run" is about this round and not about the claim.
         const head = (await git.revParse(repoRoot, `refs/heads/${branch}`)) ?? branchHead;
         stillHeld();
+        step = `open the ${kind} run log`;
         logPath = createRunLog(dataDir, id, now());
         core.comment(id, opening(logPath, allowlist.scanned), member.id);
         // Where this run's own record starts: everything past its opening comment is what
@@ -418,7 +419,10 @@ export function startRunner(options: RunnerOptions): Runner {
           attention,
           ownerId,
           warn,
-          card,
+          // The card as it is *now*, not as it was when the claim was taken: the loop holds one
+          // claim across several runs, and `setBody` is the owner's to call throughout — so a
+          // fix run's brief is what the owner left on the card, not what the first run read.
+          card: core.getCard(id),
           phase,
           kind,
           sinceSeq,
@@ -467,6 +471,21 @@ export function startRunner(options: RunnerOptions): Runner {
       let met = first;
       for (let round = 1; round <= REVIEW_ROUNDS_MAX; round += 1) {
         stillHeld();
+        /**
+         * A met Code contract starts a review **only when nothing is waiting on the owner**. A
+         * request this run may not replace — the agent's own `skelcrew attention` question — is
+         * answered before anything else makes sense, and a reviewer working under it could
+         * raise no permission question of its own (`raiseNext` refuses over a foreign request)
+         * and would block until its time limit. So the Code run ends here with 014's ending for
+         * a met artefact under a standing question: the artefact named, no move, the question
+         * standing, released blocked — which is what `endRun` makes of this call, because the
+         * raise it tries is refused for the same reason.
+         */
+        const standing = core.getCard(id).attention;
+        if (standing !== null && !question.isOpen(standing)) {
+          end(met.note, met.moves, "finished");
+          return;
+        }
         const reviewed = await runOnce(
           "review",
           (log) => `review round ${round} of ${REVIEW_ROUNDS_MAX} starting; run log at ${log}`,
