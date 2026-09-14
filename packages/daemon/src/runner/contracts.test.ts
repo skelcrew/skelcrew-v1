@@ -11,7 +11,14 @@ import { type Activity, type Member, type Phase, worktreesDir } from "@skelcrew/
 import { type Core, openCore } from "../core/core";
 import { mergePoll } from "../merges";
 import type { AgentDriver, AgentEvent, AgentRunOptions } from "./agent";
-import { deniedTools, editsIn, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
+import {
+  baseBranchGrants,
+  deniedTools,
+  editsIn,
+  FIXED_ALLOWLIST,
+  REVIEW_ALLOWLIST,
+  runsUnprompted,
+} from "./allowlist";
 import type { Forge } from "./forge";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
@@ -506,6 +513,9 @@ test("a merged pull request lands the card in Done; the owner can still send it 
         mergedAt: "2026-09-09T08:44:11Z",
         headRefName: core.getCard(1).refs.branch as string,
         baseRepo: REPO_URL,
+        baseRefName: "main",
+        // What the real `gh` answers about a merged pull request (020).
+        mergeable: "unknown",
       };
     },
     async repoUrl() {
@@ -543,6 +553,89 @@ test("a merged pull request lands the card in Done; the owner can still send it 
   expect(warnings).toEqual([]);
 });
 
+// --- a conflicting pull request offers the move back to Code (020) ---
+
+/**
+ * 020's criterion 8, end to end: the owner merges something else, the poll finds this card's
+ * pull request conflicting and hands the card over with the move attached, and the owner's one
+ * gesture — `skelcrew mv <id> code`, which is `moveCard` here — resolves the request as `moved`
+ * and starts the fix run on the same branch, with the card in front of it.
+ */
+test("a conflicting pull request hands the card over, and the owner's move starts the fix run", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  const messages: string[] = [];
+  let run = 0;
+  start({
+    driver: scripted(async function* (options) {
+      seen.push(options);
+      messages.push(await firstMessage(options));
+      run += 1;
+      await commitIn(options.cwd, `feature-${run}.ts`);
+      core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Fix me up", "code");
+  core.moveCard(1, "pr", owner.id);
+  const branch = core.getCard(1).refs.branch as string;
+
+  const forge: Forge = {
+    async pullRequest(_repoRoot, url) {
+      return {
+        url,
+        state: "open",
+        headRefName: branch,
+        baseRepo: REPO_URL,
+        baseRefName: "main",
+        mergeable: "conflicting",
+      };
+    },
+    async repoUrl() {
+      return REPO_URL;
+    },
+  };
+  await mergePoll({
+    core,
+    forge,
+    repoRoot: repo,
+    runnerId: runnerMember.id,
+    warn: (line) => warnings.push(line),
+  }).tick();
+
+  const note = `pull request ${PR_URL} conflicts with main; ${branch} needs refs/remotes/origin/main merged in`;
+  const waiting = core.getCard(1);
+  expect(waiting.phase).toBe("pr");
+  expect(waiting.attention).toMatchObject({ to: owner.id, note, moves: ["code"] });
+  expect(comments(1).at(-1)).toBe(note);
+
+  // The owner takes the offered move. The request resolves as `moved`, the runner claims the
+  // card, and the fix run works the same branch with the card — conflict note and all — on it.
+  const fixed = untilEvent(ended(1));
+  core.moveCard(1, "code", owner.id);
+  await fixed;
+
+  expect(run).toBe(2);
+  expect(
+    core
+      .getCard(1)
+      .activity.filter((e) => e.type === "attention_resolved")
+      .at(-1),
+  ).toMatchObject({ data: { how: "moved", phase: "code" } });
+  expect(messages[1]).toContain("Card 1: Fix me up");
+  expect((seen[1] as AgentRunOptions).cwd).toBe(worktreePath(1));
+  expect(core.getCard(1).refs.branch).toBe(branch);
+  // What the run reads the note from is the card itself, through `skelcrew show`.
+  expect(comments(1)).toContain(note);
+  // And the two commands its brief tells it to run do not stop to ask.
+  for (const command of ["git fetch origin main", "git merge --no-edit refs/remotes/origin/main"]) {
+    expect([
+      command,
+      runsUnprompted("Bash", { command }, (seen[1] as AgentRunOptions).allowedTools),
+    ]).toEqual([command, true]);
+  }
+});
+
 /**
  * Review round 1, Important 2, against a real run's refs: the branch the ownership check reads
  * is the one *this* run recorded as `runner` at run start, so `crew` rewriting both `branch` and
@@ -574,6 +667,8 @@ test("crew pointing a card's refs at another merged pull request leaves it in PR
         mergedAt: "2026-09-09T08:44:11Z",
         headRefName: "someone-elses",
         baseRepo: REPO_URL,
+        baseRefName: "main",
+        mergeable: "unknown",
       };
     },
     async repoUrl() {
@@ -1818,8 +1913,13 @@ test("the driver sees the review list for the review run and the Code list for t
   await runCard("Two lists", "code");
 
   const [code, review] = seen as [AgentRunOptions, AgentRunOptions];
-  // The Code run's list is unchanged from 013 and 016.
-  expect(code.allowedTools).toEqual([...FIXED_ALLOWLIST, editsIn(worktreePath(1))]);
+  // The Code run's list is 013's and 016's, plus the two entries composed from the base
+  // branch's name (020) — which are a Code run's alone.
+  expect(code.allowedTools).toEqual([
+    ...FIXED_ALLOWLIST,
+    editsIn(worktreePath(1)),
+    ...baseBranchGrants("main"),
+  ]);
   expect(code.disallowedTools).toEqual(deniedTools(worktreePath(1)));
   // The review run's is the review list exactly: no file-tool entry, and no write verb.
   expect(review.allowedTools).toEqual([...REVIEW_ALLOWLIST]);
@@ -1832,6 +1932,8 @@ test("the driver sees the review list for the review run and the Code list for t
     "Bash(git push)",
     "Bash(gh pr create *)",
     "Bash(gh pr comment *)",
+    "Bash(git fetch origin main)",
+    "Bash(git merge --no-edit refs/remotes/origin/main)",
   ]) {
     expect(review.allowedTools).not.toContain(absent);
   }

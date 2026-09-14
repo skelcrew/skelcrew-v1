@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
+import { baseBranchGrants, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
 import {
   CONTROL_COMMAND,
   type CommandOutcome,
@@ -24,6 +24,8 @@ import {
   unrepresentedEntries,
   writeStubExecutables,
 } from "./harness-check";
+import { FILLED_BASE, instructedCommands } from "./playbook-commands";
+import { loadPlaybooks } from "./playbooks";
 
 let dir: string;
 
@@ -275,8 +277,12 @@ test("another tool call's result is not this command running", () => {
   expect(ranTheCommand({ type: "assistant", message: { content: [] } }, "t1")).toBe(false);
 });
 
-/** The two lists the check puts through the harness, each with its own representatives. */
-const [CODE_LIST, REVIEW_LIST] = LISTS_UNDER_TEST as [ListUnderTest, ListUnderTest];
+/** The three lists the check puts through the harness, each with its own representatives. */
+const [SPEC_LIST, CODE_LIST, REVIEW_LIST] = LISTS_UNDER_TEST as [
+  ListUnderTest,
+  ListUnderTest,
+  ListUnderTest,
+];
 
 const clean = (command: string, list = CODE_LIST.name): CommandOutcome => ({
   command,
@@ -300,11 +306,12 @@ const control: CommandOutcome = {
   credentials: [STUB_API_KEY],
 };
 
-/** The same control, under the review list: every list under test carries one of its own. */
+/** The same control, under the other two lists: every list under test carries one of its own. */
+const specControl: CommandOutcome = { ...control, list: SPEC_LIST.name };
 const reviewControl: CommandOutcome = { ...control, list: REVIEW_LIST.name };
 
 /**
- * A whole run of the check with `outcomes` in it: every representative of both lists ran under
+ * A whole run of the check with `outcomes` in it: every representative of every list ran under
  * its own list and each list's control was denied, which is what a passing run looks like. Each
  * test below puts exactly one thing wrong into it, so the verdict it asserts is on that one thing.
  */
@@ -313,6 +320,7 @@ const runWith = (...outcomes: CommandOutcome[]): CommandOutcome[] => [
   ...LISTS_UNDER_TEST.flatMap((list) =>
     list.representatives.map((command) => clean(command, list.name)),
   ),
+  specControl,
   control,
   reviewControl,
 ];
@@ -330,16 +338,58 @@ test("a run where every prescribed command executed and the control was denied p
  * meant less than it looked. Every `Bash(...)` entry now has a representative, and an entry
  * without one fails the check rather than being quietly skipped.
  */
-test("every Bash entry of both lists has a representative command", () => {
+test("every Bash entry of every list has a representative command", () => {
   for (const { name, list, representatives } of LISTS_UNDER_TEST) {
     const bashEntries = list.filter((entry) => entry.startsWith("Bash("));
     expect([name, unrepresentedEntries(representatives, list)]).toEqual([name, []]);
     expect(bashEntries.length).toBeGreaterThan(0);
     expect([name, representatives.length]).toEqual([name, bashEntries.length]);
   }
-  expect(LISTS_UNDER_TEST.map((entry) => entry.kind)).toEqual(["code", "review"]);
-  expect(CODE_LIST.list).toEqual([...FIXED_ALLOWLIST]);
+  expect(LISTS_UNDER_TEST.map((entry) => entry.kind)).toEqual(["spec", "code", "review"]);
+  // The Code list under test is what a Code run is really spawned with, which since 020 is the
+  // fixed list plus the two entries composed from the base branch's name — the same name the
+  // playbook's `<base>` fills with, and the same one the temporary repository is created on.
+  expect(CODE_LIST.list).toEqual([...FIXED_ALLOWLIST, ...baseBranchGrants(FILLED_BASE)]);
   expect(REVIEW_LIST.list).toEqual([...REVIEW_ALLOWLIST]);
+});
+
+/**
+ * Minor 3 of review round 2. A Spec run is spawned with the fixed list and nothing composed, so
+ * its playbook's commands are evidence only against that list — and each list under test runs one
+ * playbook, its own, rather than the two claimable phases sharing the Code list's grants.
+ */
+test("the Spec list is the fixed list alone, and each list runs its own playbook", () => {
+  expect(SPEC_LIST.list).toEqual([...FIXED_ALLOWLIST]);
+  for (const entry of baseBranchGrants(FILLED_BASE)) {
+    expect([entry, SPEC_LIST.list.includes(entry)]).toEqual([entry, false]);
+  }
+  expect(LISTS_UNDER_TEST.map((list) => [list.kind, [...list.playbooks]])).toEqual([
+    ["spec", ["spec"]],
+    ["code", ["code"]],
+    ["review", ["review"]],
+  ]);
+});
+
+/**
+ * 020, criterion 1. An exact entry's representative is the entry itself: there is no argument to
+ * choose, and the command the playbook instructs is that same string once `<base>` is filled. So
+ * both are under test, and `unrepresentedEntries` would name either one left off.
+ */
+test("the two base-branch entries are representatives of the Code list, as themselves", () => {
+  for (const command of [
+    `git fetch origin ${FILLED_BASE}`,
+    `git merge --no-edit refs/remotes/origin/${FILLED_BASE}`,
+  ]) {
+    expect([command, CODE_LIST.representatives.includes(command)]).toEqual([command, true]);
+    // And not the Spec list's, whose run gets neither entry: a representative run under a list
+    // that does not hold the entry would be a session proving nothing about either.
+    expect([command, SPEC_LIST.representatives.includes(command)]).toEqual([command, false]);
+    expect([command, FIXED_LIST_REPRESENTATIVES.includes(command)]).toEqual([command, false]);
+    expect([command, instructedCommands(loadPlaybooks().code).includes(command)]).toEqual([
+      command,
+      true,
+    ]);
+  }
 });
 
 test("a fixed-list entry whose representative is missing is named", () => {
@@ -354,7 +404,7 @@ test("a fixed-list entry whose representative is missing is named", () => {
 });
 
 test("a fixed-list entry with no representative fails the check", () => {
-  const short = FIXED_LIST_REPRESENTATIVES.filter((command) => !command.startsWith("gh pr create"));
+  const short = CODE_LIST.representatives.filter((command) => !command.startsWith("gh pr create"));
   const problems = problemsIn(
     [...short.map((command) => clean(command)), control],
     [{ ...CODE_LIST, representatives: short }],
@@ -363,8 +413,15 @@ test("a fixed-list entry with no representative fails the check", () => {
   expect(problems[0]).toContain("Bash(gh pr create *)");
 });
 
+/**
+ * And per list: `git add -A` stands for `Bash(git add *)` on the Spec list and on the Code list
+ * alike, so a session of it under one leaves the other uncovered — the same rule as the review
+ * case below, now that the two claimable phases have a list each.
+ */
 test("a representative the run never put through the harness fails the check", () => {
-  const run = runWith().filter((outcome) => outcome.command !== "git add -A");
+  const run = runWith().filter(
+    (outcome) => !(outcome.command === "git add -A" && outcome.list === CODE_LIST.name),
+  );
   expect(problemsIn(run)).toEqual([
     "`git add -A` is a representative of the Code list that this run never ran",
   ]);

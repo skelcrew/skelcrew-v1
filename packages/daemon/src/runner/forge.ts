@@ -23,6 +23,10 @@
  *   answers about another repository's pull request from inside this one, and from outside any
  *   repository. That is why `repoUrl` exists: "this repository" has to be asked for separately,
  *   and `merges.ts` compares the two.
+ * - `mergeable` and `baseRefName` (020) are both fields of that same call, verified against real
+ *   pull requests before this module asked for them. What each answer was observed to be — and
+ *   the one thing that was not — is recorded on `PullRequest.mergeable` below, because that is
+ *   the field the daemon now acts on.
  *
  * The URL is one argv element, never composed into a shell line, and the core has already
  * validated it as an absolute https URL free of control characters — so it cannot arrive
@@ -38,7 +42,7 @@
  */
 
 /** What `gh pr view` is asked for. Nothing here runs a program or fetches a body. */
-const PR_FIELDS = "state,mergedAt,headRefName,url";
+const PR_FIELDS = "state,mergedAt,headRefName,url,mergeable,baseRefName";
 
 /**
  * How long one `gh` call may take. Well inside the merge poll's minute, and far outside what a
@@ -56,6 +60,29 @@ export interface PullRequest {
   headRefName: string;
   /** The repository the pull request is in, as a URL: `https://<host>/<owner>/<repo>`. */
   baseRepo: string;
+  /** The branch the pull request would merge *into*, as the forge names it. */
+  baseRefName: string;
+  /**
+   * Whether the forge can merge it as it stands. **`unknown` is not "no"**: GitHub computes
+   * mergeability lazily and answers `UNKNOWN` until it has, and a merged pull request answers
+   * `UNKNOWN` too — so a caller asks again rather than concluding anything from it.
+   *
+   * What was verified against `gh` 2.86.0 and what was not, since this is the one field the
+   * daemon now acts on:
+   *
+   * - The three enum values are the GraphQL schema's (`MERGEABLE`, `CONFLICTING`, `UNKNOWN`).
+   * - `MERGEABLE`: observed, on an open pull request (`cli/cli#14373`) and — which says the
+   *   field is not about the *state* — on one closed without merging (`cli/cli#14423`).
+   * - `UNKNOWN`: observed on a merged pull request (this repository's own #7).
+   * - `CONFLICTING`: observed on an open pull request whose base had moved under it
+   *   (`cli/cli#14285`, 2026-09-14). 020's spec records this answer as *unobserved* — no
+   *   conflicting pull request existed while it was written — and it is now recorded here and in
+   *   `forge.test.ts` as real output rather than as an expectation.
+   * - Not observed: the transition itself, a pull request seen `UNKNOWN` and then `CONFLICTING`
+   *   as the forge caught up. The poll's answer to `unknown` — do nothing, ask again next tick —
+   *   is what makes that transition nothing it has to handle.
+   */
+  mergeable: "mergeable" | "conflicting" | "unknown";
 }
 
 export interface Forge {
@@ -75,6 +102,24 @@ const STATES: Record<string, PullRequest["state"]> = {
   OPEN: "open",
   MERGED: "merged",
   CLOSED: "closed",
+};
+
+/**
+ * `gh`'s own spelling of mergeability. Everything else — `UNKNOWN`, a value a later schema adds,
+ * an absent field — is `unknown`, so a **value this map does not know** degrades to "nothing on
+ * the card" rather than to a parse failure that would stop a merge from landing. A fourth enum
+ * value added to the schema later is what that covers.
+ *
+ * It is **not** what covers an older `gh`, and review round 2 of 020 corrected the claim that it
+ * was: `mergeable` is in `PR_FIELDS`, and `gh pr view <url> --json <unknown field>` exits 1 with
+ * `Unknown JSON field` before it calls the API at all. So a `gh` that does not know a field fails
+ * the whole call — "cannot answer", the path a logged-out `gh` already takes — and nothing here is
+ * reached. Adding a field to `PR_FIELDS` is the change an older `gh` fails on, and it fails on it
+ * whole.
+ */
+const MERGEABILITY: Record<string, PullRequest["mergeable"]> = {
+  MERGEABLE: "mergeable",
+  CONFLICTING: "conflicting",
 };
 
 function asRecord(stdout: string): Record<string, unknown> | undefined {
@@ -105,12 +150,16 @@ function baseRepoOf(url: string): string | undefined {
   return `${parsed.origin}/${parts[0]}/${parts[1]}`;
 }
 
-/** One `gh pr view --json state,mergedAt,headRefName,url` answer, or nothing it can be read as. */
+/** One `gh pr view --json <PR_FIELDS>` answer, or nothing it can be read as. */
 export function parsePullRequest(stdout: string): PullRequest | undefined {
   const record = asRecord(stdout);
   if (record === undefined) return undefined;
-  const { state, mergedAt, headRefName, url } = record;
+  const { state, mergedAt, headRefName, url, baseRefName, mergeable } = record;
   if (typeof url !== "string" || typeof headRefName !== "string") return undefined;
+  // The base branch is read as strictly as the head: it is what the conflict note names, and
+  // there is nothing to degrade to that a card could be told. `mergeable` is the other way —
+  // `unknown` is a real answer the poll already does nothing about, so it takes anything.
+  if (typeof baseRefName !== "string") return undefined;
   if (typeof state !== "string" || STATES[state] === undefined) return undefined;
   if (mergedAt !== null && typeof mergedAt !== "string") return undefined;
   const baseRepo = baseRepoOf(url);
@@ -120,6 +169,8 @@ export function parsePullRequest(stdout: string): PullRequest | undefined {
     state: STATES[state] as PullRequest["state"],
     headRefName,
     baseRepo,
+    baseRefName,
+    mergeable: (typeof mergeable === "string" ? MERGEABILITY[mergeable] : undefined) ?? "unknown",
   };
   return mergedAt === null ? pullRequest : { ...pullRequest, mergedAt };
 }

@@ -1,9 +1,9 @@
 /**
- * `gh pr view --json`'s output, as the installed `gh` really renders it. The three payloads
+ * `gh pr view --json`'s output, as the installed `gh` really renders it. The four payloads
  * below were captured from `gh version 2.86.0 (2026-01-21)` against real pull requests (see
- * `docs/plans/018-a-merged-pull-request-lands-in-done.md`); no test here runs the real `gh`. The
- * timeout case at the bottom spawns a `gh` of its own making on a `PATH` of one directory, which
- * is how the child being killed can be observed at all.
+ * `docs/plans/018-a-merged-pull-request-lands-in-done.md` and `…/020-…md`); no test here runs the
+ * real `gh`. The timeout case at the bottom spawns a `gh` of its own making on a `PATH` of one
+ * directory, which is how the child being killed can be observed at all.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
@@ -11,12 +11,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createForge, parsePullRequest, parseRepoUrl } from "./forge";
 
-/** `gh pr view https://github.com/skelcrew/skelcrew/pull/7 --json state,mergedAt,headRefName,url` */
-const MERGED = `{"headRefName":"worktree-runner-skeleton","mergedAt":"2026-09-09T08:44:11Z","state":"MERGED","url":"https://github.com/skelcrew/skelcrew/pull/7"}`;
-/** The same command against an open pull request: `mergedAt` is null. */
-const OPEN = `{"headRefName":"patch-1","mergedAt":null,"state":"OPEN","url":"https://github.com/cli/cli/pull/14373"}`;
-/** And against one closed without merging: `mergedAt` is null there too. */
-const CLOSED = `{"headRefName":"bump-go-1.27.1","mergedAt":null,"state":"CLOSED","url":"https://github.com/cli/cli/pull/14423"}`;
+/**
+ * `gh pr view https://github.com/skelcrew/skelcrew/pull/7 --json
+ * state,mergedAt,headRefName,url,mergeable,baseRefName`. A merged pull request answers
+ * `UNKNOWN` for `mergeable`: the forge computes mergeability for what could still be merged.
+ */
+const MERGED = `{"baseRefName":"main","headRefName":"worktree-runner-skeleton","mergeable":"UNKNOWN","mergedAt":"2026-09-09T08:44:11Z","state":"MERGED","url":"https://github.com/skelcrew/skelcrew/pull/7"}`;
+/** The same command against an open pull request that merges cleanly: `mergedAt` is null. */
+const OPEN = `{"baseRefName":"trunk","headRefName":"patch-1","mergeable":"MERGEABLE","mergedAt":null,"state":"OPEN","url":"https://github.com/cli/cli/pull/14373"}`;
+/** And against one closed without merging, where `mergeable` says nothing about that. */
+const CLOSED = `{"baseRefName":"trunk","headRefName":"bump-go-1.27.1","mergeable":"MERGEABLE","mergedAt":null,"state":"CLOSED","url":"https://github.com/cli/cli/pull/14423"}`;
+/** An open pull request that conflicts with its base: `cli/cli#14285`, read on 2026-09-14. */
+const CONFLICTING = `{"baseRefName":"trunk","headRefName":"williammartin-audit-spam-labeling","mergeable":"CONFLICTING","mergedAt":null,"state":"OPEN","url":"https://github.com/cli/cli/pull/14285"}`;
 
 test("a merged pull request: the state, the merge time, the head branch, and the repository", () => {
   expect(parsePullRequest(MERGED)).toEqual({
@@ -25,6 +31,8 @@ test("a merged pull request: the state, the merge time, the head branch, and the
     mergedAt: "2026-09-09T08:44:11Z",
     headRefName: "worktree-runner-skeleton",
     baseRepo: "https://github.com/skelcrew/skelcrew",
+    baseRefName: "main",
+    mergeable: "unknown",
   });
 });
 
@@ -34,6 +42,8 @@ test("an open pull request has no merge time", () => {
     state: "open",
     headRefName: "patch-1",
     baseRepo: "https://github.com/cli/cli",
+    baseRefName: "trunk",
+    mergeable: "mergeable",
   });
 });
 
@@ -43,11 +53,44 @@ test("a pull request closed without merging is closed, not merged", () => {
     state: "closed",
     headRefName: "bump-go-1.27.1",
     baseRepo: "https://github.com/cli/cli",
+    baseRefName: "trunk",
+    mergeable: "mergeable",
   });
 });
 
+/**
+ * Criterion 2, and the answer the spec records as unobserved — no conflicting pull request
+ * existed while it was written. This one did, and the base branch it conflicts with is the
+ * `baseRefName` beside it, which is what the poll's note names.
+ */
+test("an open pull request that conflicts with its base says so, naming that base", () => {
+  expect(parsePullRequest(CONFLICTING)).toEqual({
+    url: "https://github.com/cli/cli/pull/14285",
+    state: "open",
+    headRefName: "williammartin-audit-spam-labeling",
+    baseRepo: "https://github.com/cli/cli",
+    baseRefName: "trunk",
+    mergeable: "conflicting",
+  });
+});
+
+/**
+ * Anything that is not one of the two named answers is `unknown`, an absent field included:
+ * GitHub computes mergeability lazily and answers `UNKNOWN` until it has, so "cannot say yet"
+ * and "this `gh` does not answer that" collapse into the one value the poll does nothing about.
+ */
+test("every other mergeability, and an absent one, is unknown rather than a parse failure", () => {
+  const said = (mergeable: string): string =>
+    `{"baseRefName":"main","headRefName":"x","mergeable":${mergeable},"mergedAt":null,"state":"OPEN","url":"https://h/o/r/pull/1"}`;
+  for (const answer of [`"UNKNOWN"`, `"SOMETHING_NEW"`, "null", "7"]) {
+    expect([answer, parsePullRequest(said(answer))?.mergeable]).toEqual([answer, "unknown"]);
+  }
+  const absent = `{"baseRefName":"main","headRefName":"x","mergedAt":null,"state":"OPEN","url":"https://h/o/r/pull/1"}`;
+  expect(parsePullRequest(absent)?.mergeable).toBe("unknown");
+});
+
 test("the repository is taken from the host too, so two hosts cannot be confused", () => {
-  const enterprise = `{"headRefName":"work","mergedAt":null,"state":"OPEN","url":"https://forge.example.invalid/skelcrew/skelcrew/pull/3"}`;
+  const enterprise = `{"baseRefName":"main","headRefName":"work","mergeable":"MERGEABLE","mergedAt":null,"state":"OPEN","url":"https://forge.example.invalid/skelcrew/skelcrew/pull/3"}`;
   expect(parsePullRequest(enterprise)?.baseRepo).toBe(
     "https://forge.example.invalid/skelcrew/skelcrew",
   );
@@ -63,19 +106,28 @@ test("the repository the daemon is watching, as `gh repo view --json url` render
 });
 
 test("output that is not an answer about a pull request is no answer at all", () => {
-  // Not JSON, JSON of the wrong shape, a state nothing here knows, and a URL that names no
-  // repository: each is "cannot answer", never a guess.
+  // Not JSON, JSON of the wrong shape, a state nothing here knows, a URL that names no
+  // repository, and no base branch to name: each is "cannot answer", never a guess.
   expect(parsePullRequest("")).toBeUndefined();
   expect(parsePullRequest("no pull requests found for branch\n")).toBeUndefined();
   expect(parsePullRequest("[]")).toBeUndefined();
   expect(parsePullRequest(`{"state":"MERGED"}`)).toBeUndefined();
   expect(
     parsePullRequest(
-      `{"headRefName":"x","mergedAt":null,"state":"DRAFTED","url":"https://h/o/r/pull/1"}`,
+      `{"baseRefName":"main","headRefName":"x","mergedAt":null,"state":"DRAFTED","url":"https://h/o/r/pull/1"}`,
     ),
   ).toBeUndefined();
   expect(
-    parsePullRequest(`{"headRefName":"x","mergedAt":null,"state":"OPEN","url":"https://h/pull/1"}`),
+    parsePullRequest(
+      `{"baseRefName":"main","headRefName":"x","mergedAt":null,"state":"OPEN","url":"https://h/pull/1"}`,
+    ),
+  ).toBeUndefined();
+  // The base branch is the one the note names, so an answer without one is no answer: unlike
+  // `mergeable`, there is nothing to degrade to that a card could be told.
+  expect(
+    parsePullRequest(
+      `{"headRefName":"x","mergedAt":null,"state":"OPEN","url":"https://h/o/r/pull/1"}`,
+    ),
   ).toBeUndefined();
 });
 

@@ -13,6 +13,8 @@ const REPO_URL = "https://example.invalid/skelcrew/skelcrew";
 const OTHER_REPO_URL = "https://example.invalid/someone/else";
 const PR_URL = `${REPO_URL}/pull/1`;
 const BRANCH = "skelcrew/1-a-card";
+/** The branch the pull request would merge into, as the forge names it. */
+const BASE = "main";
 const MERGED_AT = "2026-09-09T08:44:11Z";
 
 let core: Core;
@@ -29,6 +31,7 @@ beforeEach(() => {
   warnings.length = 0;
 });
 
+/** A merged pull request answers `UNKNOWN` for `mergeable`, as the real `gh` does (020). */
 function mergedPr(overrides: Partial<PullRequest> = {}): PullRequest {
   return {
     url: PR_URL,
@@ -36,17 +39,43 @@ function mergedPr(overrides: Partial<PullRequest> = {}): PullRequest {
     mergedAt: MERGED_AT,
     headRefName: BRANCH,
     baseRepo: REPO_URL,
+    baseRefName: BASE,
+    mergeable: "unknown",
     ...overrides,
   };
 }
 
-function openPr(): PullRequest {
-  return { url: PR_URL, state: "open", headRefName: BRANCH, baseRepo: REPO_URL };
+function openPr(overrides: Partial<PullRequest> = {}): PullRequest {
+  return {
+    url: PR_URL,
+    state: "open",
+    headRefName: BRANCH,
+    baseRepo: REPO_URL,
+    baseRefName: BASE,
+    mergeable: "mergeable",
+    ...overrides,
+  };
 }
 
+/** Closed without merging; the forge answers `MERGEABLE` for one of those too (020). */
 function closedPr(): PullRequest {
-  return { url: PR_URL, state: "closed", headRefName: BRANCH, baseRepo: REPO_URL };
+  return {
+    url: PR_URL,
+    state: "closed",
+    headRefName: BRANCH,
+    baseRepo: REPO_URL,
+    baseRefName: BASE,
+    mergeable: "mergeable",
+  };
 }
+
+/** The answer this spec is about: open, this card's work, and no longer merging into its base. */
+function conflictingPr(overrides: Partial<PullRequest> = {}): PullRequest {
+  return openPr({ mergeable: "conflicting", ...overrides });
+}
+
+/** What the poll says on a card whose pull request conflicts, and offers the move for. */
+const CONFLICT_NOTE = `pull request ${PR_URL} conflicts with ${BASE}; ${BRANCH} needs refs/remotes/origin/${BASE} merged in`;
 
 interface FakeForge extends Forge {
   /** Every pull request URL the poll asked about, in order. */
@@ -201,6 +230,8 @@ test("a merge the forge gives no time for lands the card, and the comment says o
     state: "merged",
     headRefName: BRANCH,
     baseRepo: REPO_URL,
+    baseRefName: BASE,
+    mergeable: "unknown",
   };
 
   await poll(fakeForge({ answer: () => noTime })).tick();
@@ -523,6 +554,192 @@ test("a repository URL that is not a URL dials nothing either", async () => {
   expect(forge.asked).toEqual([]);
   expect(core.getCard(card.id).phase).toBe("pr");
   expect(warnings).toHaveLength(1);
+});
+
+// --- 020, criterion 3: a conflicting pull request offers the move back to Code ---
+
+test("a conflicting pull request asks the owner, with the move to Code, once", async () => {
+  const card = cardInPr();
+  const poller = poll(fakeForge({ answer: () => conflictingPr() }));
+
+  await poller.tick();
+
+  expect(core.getCard(card.id).phase).toBe("pr");
+  const open = core.listAttention();
+  expect(open).toHaveLength(1);
+  expect(open[0]).toMatchObject({
+    cardId: card.id,
+    to: owner.id,
+    note: CONFLICT_NOTE,
+    moves: ["code"],
+    raisedBy: runnerMember.id,
+  });
+  // The request first and the comment immediately after it, for the closed path's reason: the
+  // comment is what the once-rule reads, so posting it over a raise that failed would suppress
+  // every later tick's retry.
+  const last = activity(card.id).slice(-2);
+  expect(last[0]?.type).toBe("attention_requested");
+  expect(last[1]).toMatchObject({
+    type: "comment",
+    actorId: runnerMember.id,
+    data: { text: CONFLICT_NOTE },
+  });
+  // The daemon offers the move; it does not make it.
+  expect(moves(card.id)).toEqual(["idea-pr"]);
+
+  const seen = activity(card.id).length;
+  await poller.tick();
+  expect(activity(card.id).length).toBe(seen);
+  expect(core.getCard(card.id).phase).toBe("pr");
+});
+
+test("'once' is since the card entered PR here too: sent back and returned, it is told again", async () => {
+  const card = cardInPr();
+  const poller = poll(fakeForge({ answer: () => conflictingPr() }));
+
+  await poller.tick();
+  expect(comments(card.id)).toEqual([CONFLICT_NOTE]);
+
+  // The owner takes the offered move, the fix run happens elsewhere, and the card comes back
+  // still conflicting: the second entry into PR is told afresh.
+  core.moveCard(card.id, "code", owner.id);
+  core.moveCard(card.id, "pr", owner.id);
+  await poller.tick();
+
+  expect(comments(card.id)).toEqual([CONFLICT_NOTE, CONFLICT_NOTE]);
+  expect(core.getCard(card.id).attention?.moves).toEqual(["code"]);
+});
+
+// --- criterion 4: only this card's own conflicting pull request is anything ---
+
+describe("a conflicting pull request that is not this card's work", () => {
+  const table: { name: string; answer: PullRequest; refs?: { branch?: string; prUrl?: string } }[] =
+    [
+      {
+        name: "in another repository",
+        answer: conflictingPr({ url: `${OTHER_REPO_URL}/pull/1`, baseRepo: OTHER_REPO_URL }),
+      },
+      { name: "from another branch", answer: conflictingPr({ headRefName: "someone-elses" }) },
+      {
+        name: "on a card no run or human recorded a branch on",
+        answer: conflictingPr(),
+        refs: { prUrl: PR_URL },
+      },
+    ];
+
+  for (const shape of table) {
+    test(`${shape.name} is nothing on the card`, async () => {
+      const card = shape.refs === undefined ? cardInPr() : cardInPr(shape.refs);
+
+      await poll(fakeForge({ answer: () => shape.answer })).tick();
+
+      expect(core.getCard(card.id).phase).toBe("pr");
+      expect(comments(card.id)).toEqual([]);
+      expect(core.listAttention()).toEqual([]);
+    });
+  }
+});
+
+/**
+ * The branch is read the way 018's ownership check reads it — a `refs_set` by the `runner`
+ * member or a human — so `crew` writing both refs buys a conflict request no more than it buys
+ * a move to Done.
+ */
+test("a branch only crew recorded is no branch of this card's here either", async () => {
+  const card = core.createCard({ title: "a card" }, owner.id);
+  core.setRefs(card.id, { branch: BRANCH, prUrl: PR_URL }, crew.id);
+  core.moveCard(card.id, "pr", owner.id);
+
+  await poll(fakeForge({ answer: () => conflictingPr() })).tick();
+
+  expect(comments(card.id)).toEqual([]);
+  expect(core.listAttention()).toEqual([]);
+});
+
+// --- criterion 5: an unknown mergeability is nothing on the card ---
+
+/**
+ * `unknown` is not "no": GitHub computes mergeability lazily and answers `UNKNOWN` until it has.
+ * So the card is told nothing and the next tick asks again — and when the answer arrives, the
+ * request is raised then.
+ */
+test("an unknown mergeability is nothing on the card, and the next tick asks again", async () => {
+  const card = cardInPr();
+  let known = false;
+  const forge = fakeForge({
+    answer: () => (known ? conflictingPr() : openPr({ mergeable: "unknown" })),
+  });
+  const poller = poll(forge);
+
+  await poller.tick();
+
+  expect(comments(card.id)).toEqual([]);
+  expect(core.listAttention()).toEqual([]);
+
+  known = true;
+  await poller.tick();
+
+  expect(forge.asked).toEqual([PR_URL, PR_URL]);
+  expect(comments(card.id)).toEqual([CONFLICT_NOTE]);
+});
+
+// --- criterion 6: the conflict clearing is said once, and the request stands ---
+
+/**
+ * The core refuses a non-human actor clearing a request addressed to the owner, so the poll
+ * cannot take back what it raised. What it can do is say what changed, once, and leave the
+ * request where the owner will see it.
+ */
+test("a conflict that clears is commented once, and the request the poll raised still stands", async () => {
+  const card = cardInPr();
+  let conflicting = true;
+  const poller = poll(fakeForge({ answer: () => (conflicting ? conflictingPr() : openPr()) }));
+
+  await poller.tick();
+  expect(core.getCard(card.id).attention?.note).toBe(CONFLICT_NOTE);
+
+  conflicting = false;
+  await poller.tick();
+
+  const cleared = `pull request ${PR_URL} no longer conflicts with ${BASE}`;
+  expect(comments(card.id)).toEqual([CONFLICT_NOTE, cleared]);
+  expect(core.getCard(card.id).attention?.note).toBe(CONFLICT_NOTE);
+  expect(core.getCard(card.id).attention?.moves).toEqual(["code"]);
+
+  const seen = activity(card.id).length;
+  await poller.tick();
+  expect(activity(card.id).length).toBe(seen);
+});
+
+test("a pull request that merges cleanly with no conflict request open says nothing", async () => {
+  const card = cardInPr();
+  // The owner's own question, not the poll's: there is nothing here the poll reported clearing.
+  core.requestAttention(card.id, { to: owner.id, note: "what happened here?" }, owner.id);
+
+  await poll(fakeForge({ answer: () => openPr() })).tick();
+
+  expect(comments(card.id)).toEqual([]);
+  expect(core.getCard(card.id).attention?.note).toBe("what happened here?");
+});
+
+// --- criterion 7: a request the poll did not raise stands, and nothing is said over it ---
+
+test("a conflict raises nothing over another member's request, and asks once it is answered", async () => {
+  const card = cardInPr();
+  core.requestAttention(card.id, { to: owner.id, note: "what happened here?" }, owner.id);
+  const poller = poll(fakeForge({ answer: () => conflictingPr() }));
+
+  await poller.tick();
+
+  expect(core.getCard(card.id).attention?.note).toBe("what happened here?");
+  expect(comments(card.id)).toEqual([]);
+
+  core.resolveAttention(card.id, undefined, owner.id);
+  await poller.tick();
+
+  expect(comments(card.id)).toEqual([CONFLICT_NOTE]);
+  expect(core.getCard(card.id).attention?.note).toBe(CONFLICT_NOTE);
+  expect(core.getCard(card.id).attention?.moves).toEqual(["code"]);
 });
 
 // --- criterion 4: closed without merging is the owner's to decide ---

@@ -81,7 +81,9 @@ starts with the card as its first user message, the conflict note on it.
 **The Code run can bring the base in without asking.** Two exact commands run unprompted in a
 Code run: `git fetch origin <base>` and `git merge --no-edit refs/remotes/origin/<base>`, where
 `<base>` is the runner's default branch name. `code.md` tells a run whose card carries a conflict
-note to run exactly those two, resolve what conflicts, `git add`, `git commit`, `git push`, and
+note to run exactly those two, resolve what conflicts, `git add`, `git commit --no-edit` (the
+merge's prepared message; a bare `git commit` opens an editor and hangs an unattended run, which
+review round 1 measured), `git push`, and
 record the pull request again as §4 already requires. It says never to rebase, because a rebase
 needs a force-push, which asks and which the run never does. The Code contract applies
 unchanged: the merge commit moves the branch, the worktree is clean, the pull request is
@@ -90,8 +92,12 @@ recorded, and the run ends in the review loop 019 builds, or, before 019 lands, 
 
 **A base name that cannot be written into a rule is not written.** A branch name may contain
 `)`, and a `)` inside a `Bash(...)` entry ends the rule early. When the default branch's name is
-not made only of the characters the allowlist already permits in a scanned line, the two entries
-are left off, the run-start comment says so, and the two commands ask like anything else.
+not made only of the characters the allowlist already permits in a scanned line, **or begins
+with `-`**, the two entries are left off, the run-start comment says so, and the two commands ask
+like anything else. The second condition is review round 2's: a name shaped like an option
+(`--upload-pack=/tmp/evil` is a valid ref name, and `origin/HEAD` can point at it) would put an
+option into the entry, and `git fetch origin --upload-pack=…` runs a program. A name git itself
+would refuse to check out is not a name a rule may be written for.
 
 ## Implementation approach
 
@@ -106,7 +112,9 @@ fields as `gh` 2.86.0 renders them.
 
 What is verified and what is not, recorded in `forge.ts`: the three enum values are from the
 schema; a merged pull request answers `UNKNOWN`; the answer for a live conflicting pull request
-was not observed while writing this spec, because none existed. GitHub computes mergeability
+was not observed while writing this spec, because none existed — the implementer then observed
+one (`cli/cli#14285`, `"mergeable":"CONFLICTING"`), and `forge.ts` records the real answer
+(orchestrator's note, added during development). GitHub computes mergeability
 lazily and answers `UNKNOWN` until it has, which is why `unknown` is nothing and the poll simply
 asks again.
 
@@ -133,9 +141,14 @@ take the exception.
 
 `allowlist.ts`: `allowlistFor` already receives the default branch name. It adds
 `Bash(git fetch origin <base>)` and `Bash(git merge --no-edit refs/remotes/origin/<base>)` as
-exact entries, no wildcard, only when `<base>` matches the single-word form of `LINE_CHARS`.
+exact entries, no wildcard, only when `<base>` matches the single-word form of `LINE_CHARS` and
+does not begin with `-` (the word form is derived from `LINE_CHARS` or tied to it by a test, so
+the two cannot drift), and
+only for a Code run (`kind === "code"`): a Spec run shares the Code list today, but it has no
+conflict to fix and nothing on its playbook runs either command, so it does not get them.
 Otherwise it adds nothing and the `scanned` line says `base branch "<name>" cannot be written into
-a rule: git fetch and git merge will ask`. `RunAllowlist` is unchanged in shape.
+a rule: git fetch and git merge will ask`. `RunAllowlist` is unchanged in shape. (Review round 1
+found the entries added to every non-review run; the orchestrator narrowed this to Code runs.)
 
 `harness-check.ts`: the list under test includes the two entries composed for `main`, and
 `FIXED_LIST_REPRESENTATIVES` gains the two commands themselves, since an exact entry's
@@ -172,13 +185,36 @@ rest of the fix in prose that names commands already on the list.
 5. **What parses the string.** The base name goes into a `Bash(...)` rule the harness re-reads
    character by character (`allowlist.ts`, the transcription of `td`): `)` closes the rule early
    and space or comma opens another. The single-word `LINE_CHARS` check is the allowlist, and
-   omitting the entries is the loud failure. The base name also goes into the attention note
+   omitting the entries is the loud failure. A second parser sits behind the first: git reads
+   the entry's arguments as a command line, so a name beginning with `-` is an option to git,
+   not a branch — review round 2 built `Bash(git fetch origin --upload-pack=/tmp/evil)` from
+   such a name — and the check refuses a leading `-` for that reason. The base name also goes
+   into the attention note
    and the comment; git refuses control characters in ref names, and the note goes through
    `postingCore`.
 
-Open, recorded as such: `mergeable` was not observed on a live conflicting pull request; the
+Open, recorded as such: `mergeable` on a live conflicting pull request was observed once during
+development, not by a test, and never on a pull request of this repository's own; the
 grant uses the runner's default branch name while the note uses the pull request's base, and the
 two can differ; a subprocess reaches past every entry here (016).
+
+Two more limits, found by review round 1 and recorded rather than fixed here, because the fix
+belongs to the base every run is measured against and not to this spec:
+
+- **After a fix run merges the base in, the next review's diff is wide.** The runner's base is
+  the *local* `refs/heads/<base>`, which never fetches. The fix run merges
+  `refs/remotes/origin/<base>`, which is ahead of it, so `git diff refs/heads/<base>...refs/heads/<branch>`
+  afterwards includes every commit the owner merged for the other card, and 014's commit range
+  records those shas on the card too. Review reproduced it. The reviewer may request changes on
+  code that is not this card's, in which case the loop ends at the budget and the owner accepts
+  from the PR, whose diff on the forge is right. `code.md` §6 says so to the fix run, so it can
+  say so on the card for the reviewer. The fix is to measure every run against the newer of the
+  local and remote-tracking base (commits reachable from the branch but from neither), which
+  changes 014's contract and 019's review playbook together: carried to MILESTONES.
+- **A conflict that clears and then returns is not said again.** The once-rule is keyed to the
+  conflict note since the card entered PR, so the sequence conflict → clear → conflict leaves
+  "no longer conflicts" as the runner's last word while the open request still carries the
+  conflict. The owner's queue is right; the feed's last line is stale. Recorded in `merges.ts`.
 
 ## Acceptance criteria
 
@@ -247,7 +283,9 @@ two can differ; a subprocess reaches past every entry here (016).
 - **`BEHIND` and branch-protection "update branch" rules.** A mergeable pull request behind its
   base merges; only a conflict stops the owner.
 - **Rebasing, and any force-push grant.** A merge commit is the fix.
-- **Re-running the review** is 019's, and happens because the fix is a Code run.
+- **Re-running the review** is 019's, and happens because the fix is a Code run. **Measuring
+  that review, and 014's commit range, against the fetched base** rather than the stale local
+  one is the fix for the wide-diff limit above, and it is its own spec (MILESTONES).
 - **Taking an offered move from `skelcrew resolve`.** `resolve` clears; `mv` moves and clears.
   A `resolve --move` is a CLI finding for MILESTONES, not this spec.
 - **Reconciling the pull request's base branch with the runner's default branch** when they
