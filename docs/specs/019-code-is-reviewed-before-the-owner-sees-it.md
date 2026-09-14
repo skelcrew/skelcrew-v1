@@ -135,8 +135,13 @@ validation as a comment:
   error.
 - `packages/cli/src/commands/review.ts` in `attention.ts`'s shape: `review <id> <verdict>
   [text]`, where the verdict word is `approved` or `changes-requested`. `render.ts` renders the
-  event as `reviewed: approved` or `reviewed: changes requested`, then the text through the same
-  marked continuation a comment uses. `show --json` carries the event as stored.
+  event as `reviewed: approved` or `reviewed: changes requested` on a line of its own, then the
+  text with every line marked the way a comment's continuation lines are (015). The first line
+  of the findings is marked too, unlike a comment's, because criterion 2 asks for every line and
+  a finding quoting an activity entry is the ordinary case. (The spec as approved said "the same
+  marked continuation a comment uses", which leaves the first line unmarked; the orchestrator
+  aligned this sentence to criterion 2 during development.) `show --json` carries the event as
+  stored.
 
 ### A third playbook, for a run kind rather than a phase
 
