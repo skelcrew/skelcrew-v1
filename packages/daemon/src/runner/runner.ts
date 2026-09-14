@@ -27,9 +27,10 @@ import {
 import type { Core } from "../core/core";
 import type { AgentDriver } from "./agent";
 import { allowlistFor } from "./allowlist";
+import type { ContractOutcome } from "./contracts";
 import { endRun, postingCore, runAttention, runQuestion } from "./ending";
 import type { Git, WorktreeEntry } from "./git";
-import type { Playbooks } from "./playbooks";
+import type { PlaybookKind, Playbooks } from "./playbooks";
 import {
   ABORT_GRACE_MS_DEFAULT,
   createRunLog,
@@ -50,6 +51,18 @@ export const RUNNER_MEMBER_NAME = "runner";
  * runs is attributable to one name.
  */
 export const CREW_MEMBER_NAME = "crew";
+/**
+ * How many times a review may ask for changes before the card goes to the owner anyway.
+ *
+ * **The count is the runner's, held for the life of the claim.** It lives in `run(id)`'s own
+ * frame, so nothing the agent writes can reach it: a count derived from the card's activity
+ * would be read from events any member can record, and names are not credentials (016, 018).
+ * Three is `/develop`'s number and the milestone's, and it is not configurable.
+ *
+ * A daemon restart releases the claim as `daemon restarted` and the next run begins a new loop
+ * with a new budget. That is a recorded limit of 019 rather than a feature.
+ */
+export const REVIEW_ROUNDS_MAX = 3;
 /** The lease a run holds, and how often it is renewed while the run lasts. */
 export const RUN_CLAIM_TTL_SECONDS = 120;
 export const RUN_HEARTBEAT_MS = 30_000;
@@ -259,10 +272,6 @@ export function startRunner(options: RunnerOptions): Runner {
       warn(`skelcrew runner: card ${id} not claimed: ${message(error)}`);
       return;
     }
-    // Where this run's own record starts: the `claimed` event just written. Everything past
-    // it is what happened during the run — the contracts' "recorded by this run", and the
-    // ending's reason.
-    const sinceSeq = core.getCard(id).activity.at(-1)?.seq ?? 0;
     const heartbeat = setInterval(() => {
       try {
         core.heartbeat(id, member.id);
@@ -303,11 +312,31 @@ export function startRunner(options: RunnerOptions): Runner {
       }
     };
     /**
-     * This run's own permission question, made here so that the run and every ending share
-     * one value: the run records what it asked, and an ending — `run.ts`'s or the failed
-     * step below — replaces that request and leaves any other standing (`ending.ts`).
+     * The live run's own permission question, so that the run and every ending share one
+     * value: the run records what it asked, and an ending — `run.ts`'s or the failed step
+     * below — replaces that request and leaves any other standing (`ending.ts`). One per run
+     * in the loop, not one per claim: the ending that matters is the ending of the run that
+     * asked, and a round that is over answers nothing.
      */
-    const question = runQuestion();
+    let question = runQuestion();
+    /** The live run's log, for the same reason: an ending names the log of its own run. */
+    let logPath: string | undefined;
+    /** The loop's own endings, through the one place an ending is decided (`ending.ts`). */
+    const end = (note: string, moves: Phase[], reason: string): void => {
+      endRun({
+        core,
+        attention,
+        cardId: id,
+        memberId: member.id,
+        ownerId,
+        warn,
+        note: within(note),
+        moves,
+        reason,
+        question,
+        logPath,
+      });
+    };
     let step = "resolve base branch";
     try {
       const base = await git.defaultBranch(repoRoot);
@@ -348,56 +377,125 @@ export function startRunner(options: RunnerOptions): Runner {
         core.releaseCard(id, { reason: "no playbook" }, member.id);
         return;
       }
-      step = "read the allowlist";
-      // Read from the remote-tracking head of the default branch — a ref no *tool call* on
-      // the fixed list can write — so an instruction file a run writes, commits, or points a
-      // branch at grants nothing to it or to the next run. The file tools are anchored at
-      // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
-      // call and is not bound by any of it, and neither is a command the target repository's
-      // own instructions pre-allow for it; see *What a subprocess reaches* and
-      // `narrowedCommands` in `./allowlist`. What keeps the base commit meaningful is that
-      // the owner merged it.
-      const allowlist = await allowlistFor(git, repoRoot, base.name, path);
-      stillHeld();
-      step = "open run log";
-      const logPath = createRunLog(dataDir, id, now());
-      core.comment(
-        id,
-        `worktree ready at ${path} on ${branch} (from ${base.name}); ${allowlist.scanned}; run log at ${logPath}`,
-        member.id,
-      );
-      step = "run playbook";
-      await runPlaybook({
-        core,
-        member,
-        crew,
-        attention,
-        ownerId,
-        warn,
-        card,
+      /**
+       * One run of the loop, with everything that is a *run's* rather than the claim's: the
+       * list its kind gets, a log of its own, its own permission question, the sequence number
+       * its record starts at, and the branch head "moved during this run" is read against.
+       * Answers the contract's outcome when it was met, and nothing when the run ended on the
+       * card — `run.ts` settles every other ending, so the loop stops when it sees one.
+       */
+      const runOnce = async (
+        kind: PlaybookKind,
+        opening: (log: string, scanned: string) => string,
+      ): Promise<ContractOutcome | undefined> => {
+        step = `read the ${kind} allowlist`;
+        // Read from the remote-tracking head of the default branch — a ref no *tool call* on
+        // the fixed list can write — so an instruction file a run writes, commits, or points a
+        // branch at grants nothing to it or to the next run. The file tools are anchored at
+        // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
+        // call and is not bound by any of it, and neither is a command the target repository's
+        // own instructions pre-allow for it; see *What a subprocess reaches* and
+        // `narrowedCommands` in `./allowlist`. What keeps the base commit meaningful is that
+        // the owner merged it.
+        const allowlist = await allowlistFor(git, repoRoot, base.name, path, kind);
+        stillHeld();
+        step = `open the ${kind} run log`;
+        // Re-read per run: the previous run's commits are where this one starts, so "the
+        // branch moved during this run" is about this round and not about the claim.
+        const head = (await git.revParse(repoRoot, `refs/heads/${branch}`)) ?? branchHead;
+        stillHeld();
+        logPath = createRunLog(dataDir, id, now());
+        core.comment(id, opening(logPath, allowlist.scanned), member.id);
+        // Where this run's own record starts: everything past its opening comment is what
+        // happened during it — the contracts' "recorded by this run", and the ending's reason.
+        const sinceSeq = core.getCard(id).activity.at(-1)?.seq ?? 0;
+        question = runQuestion();
+        step = `run the ${kind} playbook`;
+        return await runPlaybook({
+          core,
+          member,
+          crew,
+          attention,
+          ownerId,
+          warn,
+          card,
+          phase,
+          kind,
+          sinceSeq,
+          now,
+          git,
+          repoRoot,
+          path,
+          branch,
+          branchHead: head,
+          base: base.name,
+          driver: agent.driver,
+          playbook: agent.playbooks[kind],
+          env: agentEnvironment(baseEnv, dataDir, crew.name),
+          allowedTools: allowlist.tools,
+          deniedTools: allowlist.denied,
+          question,
+          logPath,
+          limitMs: runLimitMs,
+          graceMs: abortGraceMs,
+          summaryMs,
+          stop: stopping.signal,
+          stillHeld,
+          lost,
+        });
+      };
+
+      const first = await runOnce(
         phase,
-        sinceSeq,
-        now,
-        git,
-        repoRoot,
-        path,
-        branch,
-        branchHead,
-        base: base.name,
-        driver: agent.driver,
-        playbook,
-        env: agentEnvironment(baseEnv, dataDir, crew.name),
-        allowedTools: allowlist.tools,
-        deniedTools: allowlist.denied,
-        question,
-        logPath,
-        limitMs: runLimitMs,
-        graceMs: abortGraceMs,
-        summaryMs,
-        stop: stopping.signal,
-        stillHeld,
-        lost,
-      });
+        (log, scanned) =>
+          `worktree ready at ${path} on ${branch} (from ${base.name}); ${scanned}; run log at ${log}`,
+      );
+      if (first === undefined) return;
+      // A Spec run's met contract is the end of its phase: reviewing specs is out of scope.
+      if (phase !== "code") {
+        end(first.note, first.moves, "finished");
+        return;
+      }
+      /**
+       * The review loop. **The count is the runner's, held for the life of this claim**, and
+       * nothing the agent does can reach it: it is a number in this frame rather than
+       * something read back off the card, where a verdict recorded by anyone — names are not
+       * credentials — would be counted. A daemon restart releases the claim as
+       * `daemon restarted` (`reconcile`) and the next run begins a new loop with a new budget;
+       * that is a recorded limit of this spec, not a feature.
+       */
+      let met = first;
+      for (let round = 1; round <= REVIEW_ROUNDS_MAX; round += 1) {
+        stillHeld();
+        const reviewed = await runOnce(
+          "review",
+          (log) => `review round ${round} of ${REVIEW_ROUNDS_MAX} starting; run log at ${log}`,
+        );
+        if (reviewed === undefined) return;
+        if (reviewed.verdict === "approved") {
+          // 014's criterion 4, now behind a review: the artefact the Code run produced, with
+          // the move into PR offered to the owner.
+          end(met.note, met.moves, "finished");
+          return;
+        }
+        if (round === REVIEW_ROUNDS_MAX) {
+          // The owner decides: approve into PR as it stands, or comment and resolve, which
+          // makes the card ready and starts a fresh run with a fresh budget.
+          end(
+            `review budget spent: changes requested ${REVIEW_ROUNDS_MAX} times; the last review names what is open; the work is in ${path}`,
+            ["pr"],
+            "finished",
+          );
+          return;
+        }
+        stillHeld();
+        // The fix run's brief is the card: the findings are on it as the last verdict. The
+        // Code contract applies to it unchanged, so a fix run that commits nothing fails the
+        // way any Code run does and the loop ends there.
+        const fixed = await runOnce("code", (log) => `fix run starting; run log at ${log}`);
+        if (fixed === undefined) return;
+        met = fixed;
+      }
     } catch (error) {
       if (error instanceof RunAbandoned) {
         abandon(error.message);
@@ -411,18 +509,7 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       // A throw out of a run that had already escalated ends the card here rather than in
       // `run.ts`, so this ending goes through the same one in `ending.ts`.
-      endRun({
-        core,
-        attention,
-        cardId: id,
-        memberId: member.id,
-        ownerId,
-        warn,
-        note: within(`${step} failed: ${message(error)}`),
-        moves: [],
-        reason: "failed",
-        question,
-      });
+      end(`${step} failed: ${message(error)}`, [], "failed");
     } finally {
       clearInterval(heartbeat);
     }

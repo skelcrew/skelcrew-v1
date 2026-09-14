@@ -35,7 +35,7 @@ import {
   type Phase,
 } from "@skelcrew/shared";
 import type { AgentDriver, AgentEvent, ToolDecision } from "./agent";
-import { checkContract } from "./contracts";
+import { type ContractOutcome, checkContract } from "./contracts";
 import {
   classifyEnding,
   endRun,
@@ -44,7 +44,7 @@ import {
   type RunQuestion,
 } from "./ending";
 import type { Git } from "./git";
-import type { PlaybookPhase } from "./playbooks";
+import type { PlaybookKind, PlaybookPhase } from "./playbooks";
 
 /** The default time limit; `SKELCREW_RUN_MINUTES` overrides it. */
 export const RUN_LIMIT_MINUTES_DEFAULT = 60;
@@ -90,6 +90,12 @@ export interface RunInput {
   card: Card;
   /** The phase claimed, narrowed to the phases a playbook and a contract exist for. */
   phase: PlaybookPhase;
+  /**
+   * What kind of run this is: the claimed phase, or the review the Code phase's loop runs
+   * between its Code runs. It chooses the playbook above and the contract below; `phase` stays
+   * the card's, which is what an ending is judged against.
+   */
+  kind: PlaybookKind;
   /** The last sequence number before the run began: what "during this run" means. */
   sinceSeq: number;
   /** The clock the card's claim is read against; the runner's, so the two agree. */
@@ -339,7 +345,15 @@ function describeLimit(ms: number): string {
 
 type Comment = Activity & { type: "comment" };
 
-export async function runPlaybook(input: RunInput): Promise<void> {
+/**
+ * One run. Returns the contract's outcome when it was met and the card is still this run's —
+ * what the caller does with that is the caller's, because a Code run's met contract is the
+ * start of a review rather than the end of the phase (`runner.ts`). Every other ending —
+ * an unmet contract, a time limit, the daemon stopping, a driver error, a self-action, a stop —
+ * is settled here through `endRun`, and answered with nothing, so the loop stops when it sees
+ * one. An abandonment throws `RunAbandoned`, as before.
+ */
+export async function runPlaybook(input: RunInput): Promise<ContractOutcome | undefined> {
   const { core, member, crew, ownerId, warn, card, path, logPath } = input;
   const id = card.id;
 
@@ -730,6 +744,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       note: cutMarked(note, COMMENT_MAX_BYTES / 4),
       moves,
       reason,
+      logPath,
       // The one open request an ending may replace is this run's own question, which nothing
       // will answer now: the owner's queue must show why the run ended, not a resolve command
       // that allows no tool. A question the agent raised is left exactly where it is.
@@ -753,10 +768,10 @@ export async function runPlaybook(input: RunInput): Promise<void> {
   // The contract is read-only, so it runs before the ending is settled and its git calls are
   // just another window the card can change in. What decides is the classification below it.
   const early = cutShort();
-  const settled =
+  const settled: ContractOutcome =
     early !== undefined
-      ? { met: false, note: early, moves: [] as Phase[], refs: undefined }
-      : await checkContract(input.phase, {
+      ? { met: false, note: early, moves: [] }
+      : await checkContract(input.kind, {
           core,
           git: input.git,
           repoRoot: input.repoRoot,
@@ -794,7 +809,7 @@ export async function runPlaybook(input: RunInput): Promise<void> {
       // the card is still there to be handed over. This run's failure is not a new holder's
       // queue to fill.
       end(outcome.note, [], "failed");
-      return;
+      return undefined;
     case "abandoned":
       throw new RunAbandoned(outcome.reason);
     case "released":
@@ -809,14 +824,16 @@ export async function runPlaybook(input: RunInput): Promise<void> {
         [],
         "stopped",
       );
-      return;
+      return undefined;
     case "held":
       break;
   }
   if (!settled.met) {
     fail(settled.note);
-    return;
+    return undefined;
   }
+  // The run's own work, recorded before it is handed back: a Code run's commits are this run's
+  // whatever the review that follows makes of them.
   if (settled.refs !== undefined) core.setRefs(id, settled.refs, member.id);
-  end(settled.note, settled.moves, "finished");
+  return settled;
 }

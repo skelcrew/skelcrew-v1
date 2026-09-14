@@ -4,13 +4,14 @@
  * agent or calls a model — the driver is the boundary, and the script is the whole agent.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Activity, type Member, type Phase, worktreesDir } from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
 import { mergePoll } from "../merges";
 import type { AgentDriver, AgentEvent, AgentRunOptions } from "./agent";
+import { deniedTools, editsIn, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
 import type { Forge } from "./forge";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
@@ -90,6 +91,28 @@ async function commitIn(cwd: string, name: string): Promise<void> {
 /** The agent, scripted: whatever the test's generator does is the whole run. */
 function fakeDriver(script: (options: AgentRunOptions) => AsyncGenerator<AgentEvent>): AgentDriver {
   return { run: (options) => script(options) };
+}
+
+type Script = (options: AgentRunOptions) => AsyncGenerator<AgentEvent>;
+
+/** Whether this run is the review run: its system prompt is the review playbook. */
+function reviewing(options: AgentRunOptions): boolean {
+  return options.systemPrompt === playbooks.review;
+}
+
+/** A reviewer that approves and ends — what a Code run's met contract now has to pass. */
+async function* approving(): AsyncGenerator<AgentEvent> {
+  core.review(1, { verdict: "approved" }, crewMember.id);
+  yield { type: "result", ok: true };
+}
+
+/**
+ * The scripted agent for a Code card past 019, where one claim runs two kinds of run: the
+ * driver branches on the system prompt, which is the only thing that tells it which it is in.
+ * The review run approves unless a test hands in a reviewer of its own.
+ */
+function scripted(implement: Script, review: Script = approving): AgentDriver {
+  return fakeDriver((options) => (reviewing(options) ? review(options) : implement(options)));
 }
 
 interface StartOptions {
@@ -234,7 +257,7 @@ test("a Spec run that writes an empty body has written no spec", async () => {
 test("a Code run that commits, leaves the worktree clean and records its PR hands the card on", async () => {
   await initRepo();
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       await commitIn(options.cwd, "feature.ts");
       core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
@@ -359,7 +382,7 @@ test("a revision run that re-records the same PR and makes new commits passes", 
   await initRepo();
   let run = 0;
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       run += 1;
       await commitIn(options.cwd, `feature-${run}.ts`);
       core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
@@ -385,7 +408,7 @@ test("a revision run that records nothing fails, though the card carries a PR an
   await initRepo();
   let run = 0;
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       run += 1;
       if (run === 1) {
         await commitIn(options.cwd, "feature.ts");
@@ -419,7 +442,7 @@ test("a revision run that records the same PR but commits nothing fails: the bra
   await initRepo();
   let run = 0;
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       run += 1;
       if (run === 1) await commitIn(options.cwd, "feature.ts");
       // Every run records, first or revision — which is what the playbook prescribes.
@@ -459,7 +482,7 @@ test("a merged pull request lands the card in Done; the owner can still send it 
   await initRepo();
   let run = 0;
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       run += 1;
       await commitIn(options.cwd, `feature-${run}.ts`);
       core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
@@ -526,7 +549,7 @@ test("a merged pull request lands the card in Done; the owner can still send it 
 test("crew pointing a card's refs at another merged pull request leaves it in PR", async () => {
   await initRepo();
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       await commitIn(options.cwd, "feature.ts");
       core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
       yield { type: "result", ok: true };
@@ -839,7 +862,7 @@ test("the core refuses even the runner's own move out of Code, and the run still
   await initRepo();
   let refused: string | undefined;
   start({
-    driver: fakeDriver(async function* (options) {
+    driver: scripted(async function* (options) {
       try {
         core.moveCard(1, "pr", runnerMember.id);
       } catch (error) {
@@ -1256,4 +1279,676 @@ test("an abandoned run writes nothing more, batched tool calls included", async 
   // "One comment saying so, and nothing else" applies to the summary too.
   expectAbandoned(1);
   expect(comments(1)).not.toContain("ran 1 tool: Read");
+});
+
+// --- the review loop (019) ---
+//
+// One claim, two kinds of run: a met Code contract is reviewed before the owner is asked
+// anything, and what the review records decides whether the card is handed on, fixed and
+// reviewed again, or handed over with the budget spent. The scripted driver plays whichever
+// run it is in by reading the system prompt it was given.
+
+/** A Code run that meets its contract: one commit, and the pull request recorded. */
+function implementing(name = "feature.ts"): Script {
+  return async function* (options) {
+    await commitIn(options.cwd, name);
+    core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+    yield { type: "result", ok: true };
+  };
+}
+
+/** A reviewer that asks for changes, naming what it found. */
+function requesting(text: string): Script {
+  return async function* () {
+    core.review(1, { verdict: "changes_requested", text }, crewMember.id);
+    yield { type: "result", ok: true };
+  };
+}
+
+/** The first user message a run was handed: the card, as `run.ts` composes it. */
+async function firstMessage(options: AgentRunOptions): Promise<string> {
+  for await (const message of options.input) return message;
+  return "";
+}
+
+/** The run log a comment names. */
+function logPathFrom(comment: string): string {
+  const at = comment.indexOf("run log at ");
+  expect(at).toBeGreaterThanOrEqual(0);
+  return comment.slice(at + "run log at ".length).trim();
+}
+
+/** Every verdict on the card, in order, as `<actor>:<verdict>`. */
+function verdicts(cardId: number): string[] {
+  return core
+    .getCard(cardId)
+    .activity.filter((e) => e.type === "review_recorded")
+    .map((e) => `${e.actorId}:${(e.data as { verdict: string }).verdict}`);
+}
+
+/** Whether the card's worktree is still registered: an unmet contract keeps it. */
+async function worktreeKept(id: number): Promise<boolean> {
+  return (await sh(repo, "worktree", "list", "--porcelain")).includes(worktreePath(id));
+}
+
+/**
+ * Criteria 3 and 4. The Code run's activity, then the round the runner opened, then the
+ * review run's — under one claim, in one worktree, with nothing handed to anyone in between.
+ */
+test("a met Code contract is reviewed under the same claim, and an approval hands the card on", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: scripted(
+      async function* (options) {
+        seen.push(options);
+        yield { type: "text", text: "implemented it" };
+        await commitIn(options.cwd, "feature.ts");
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+      async function* (options) {
+        seen.push(options);
+        yield { type: "text", text: "read the whole diff" };
+        core.review(1, { verdict: "approved" }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+    ),
+  });
+  await runCard("Reviewed first", "code");
+
+  const said = comments(1);
+  const round = said.findIndex((text) => text.startsWith("review round 1 of 3 starting"));
+  expect(round).toBeGreaterThanOrEqual(0);
+  expect(said.indexOf("implemented it")).toBeLessThan(round);
+  expect(round).toBeLessThan(said.indexOf("read the whole diff"));
+
+  // Two runs, the second the reviewer's, in the same worktree, each with its own log file.
+  expect(seen.map((options) => options.systemPrompt)).toEqual([playbooks.code, playbooks.review]);
+  expect(seen.map((options) => options.cwd)).toEqual([worktreePath(1), worktreePath(1)]);
+  const logs = said.filter((text) => text.includes("run log at ")).map(logPathFrom);
+  expect(logs).toHaveLength(2);
+  expect(logs[0]).not.toBe(logs[1]);
+  for (const log of logs) expect(existsSync(log)).toBe(true);
+
+  // Nothing between the two runs: no release, no request, and one claim, the runner's.
+  const card = core.getCard(1);
+  const types = card.activity.map((e) => e.type);
+  expect(types.filter((type) => type === "claimed")).toHaveLength(1);
+  expect(types.filter((type) => type === "released")).toHaveLength(1);
+  expect(types.filter((type) => type === "attention_requested")).toHaveLength(1);
+  expect(types.slice(-3)).toEqual(["comment", "attention_requested", "released"]);
+  expect(card.activity.find((e) => e.type === "claimed")?.actorId).toBe(runnerMember.id);
+
+  // Criterion 4: 014's criterion 4 exactly, now behind a review.
+  expect(said.at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(card.attention).toMatchObject({
+    to: owner.id,
+    note: `ready for review: ${PR_URL}`,
+    moves: ["pr"],
+  });
+  expect(lastRelease(1)).toBe("finished");
+  expect(card.phase).toBe("code");
+  expect(verdicts(1)).toEqual([`${crewMember.id}:approved`]);
+  expect(warnings).toEqual([]);
+});
+
+/** Criterion 5. The findings are on the card, and the card is the fix run's brief. */
+test("changes requested starts a fix run whose brief is the card, then a second review", async () => {
+  await initRepo();
+  const briefs: string[] = [];
+  let codeRuns = 0;
+  let reviews = 0;
+  start({
+    driver: scripted(
+      async function* (options) {
+        codeRuns += 1;
+        briefs.push(await firstMessage(options));
+        await commitIn(options.cwd, `feature-${codeRuns}.ts`);
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+      async function* (options) {
+        reviews += 1;
+        if (reviews === 1)
+          return yield* requesting("Critical: the note is composed, not fixed")(options);
+        core.review(1, { verdict: "approved" }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+    ),
+  });
+  await runCard("Sent back once", "code", "# the spec\n\nGoal: ship it.");
+
+  expect([codeRuns, reviews]).toEqual([2, 2]);
+  const said = comments(1);
+  expect(said.some((text) => text.startsWith("review round 2 of 3 starting"))).toBe(true);
+  // The fix run's first user message is the card: its id, title, branch and body.
+  expect(briefs[1]).toContain("Card 1: Sent back once");
+  expect(briefs[1]).toContain("Branch: skelcrew/1-sent-back-once (from main)");
+  expect(briefs[1]).toContain("Goal: ship it.");
+  expect(briefs[1]).toBe(briefs[0]);
+  // The findings the fix run works from are on the card, as the last verdict.
+  expect(verdicts(1)).toEqual([`${crewMember.id}:changes_requested`, `${crewMember.id}:approved`]);
+  const card = core.getCard(1);
+  expect(said.at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(card.attention?.moves).toEqual(["pr"]);
+  expect(lastRelease(1)).toBe("finished");
+  expect(card.refs.commits).toHaveLength(2);
+  expect(card.activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+});
+
+/**
+ * Criterion 5's second half. The Code contract applies to a fix run unchanged, so a fix run
+ * that concludes nothing should change fails the way any Code run with no commits does — and
+ * the loop stops there rather than reviewing the same branch again.
+ */
+test("a fix run that commits nothing fails the Code contract, and no further review starts", async () => {
+  await initRepo();
+  let codeRuns = 0;
+  let reviews = 0;
+  start({
+    driver: scripted(
+      async function* (options) {
+        codeRuns += 1;
+        if (codeRuns === 1) await commitIn(options.cwd, "feature.ts");
+        // The playbook records the pull request on every run, fix runs included.
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+      async function* (options) {
+        reviews += 1;
+        yield* requesting("Critical: this needs a test")(options);
+      },
+    ),
+  });
+  await runCard("Nothing to fix", "code");
+
+  expect([codeRuns, reviews]).toEqual([2, 1]);
+  const said = comments(1).at(-1) as string;
+  expect(said).toContain("no new commits on skelcrew/1-nothing-to-fix past main");
+  expect(said).toContain(`the work is in ${worktreePath(1)}`);
+  expect(comments(1).some((text) => text.startsWith("review round 2"))).toBe(false);
+  const card = core.getCard(1);
+  expect(card.phase).toBe("code");
+  expect(card.attention?.moves).toEqual([]);
+  expect(lastRelease(1)).toBe("failed");
+  expect(await worktreeKept(1)).toBe(true);
+});
+
+/** Criterion 6. Three changes-requested is the budget, and the owner decides what follows. */
+test("a third changes-requested ends the run: the budget is spent and the owner is handed the card", async () => {
+  await initRepo();
+  let codeRuns = 0;
+  let reviews = 0;
+  start({
+    driver: scripted(
+      async function* (options) {
+        codeRuns += 1;
+        await commitIn(options.cwd, `feature-${codeRuns}.ts`);
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+      async function* (options) {
+        reviews += 1;
+        yield* requesting(`Critical: still wrong, round ${reviews}`)(options);
+      },
+    ),
+  });
+  await runCard("Never satisfied", "code");
+
+  expect([codeRuns, reviews]).toEqual([3, 3]);
+  const note = `review budget spent: changes requested 3 times; the last review names what is open; the work is in ${worktreePath(1)}`;
+  const said = comments(1);
+  expect(said.at(-1)).toBe(note);
+  expect(said.some((text) => text.startsWith("review round 3 of 3 starting"))).toBe(true);
+  expect(said.some((text) => text.startsWith("review round 4"))).toBe(false);
+  const card = core.getCard(1);
+  expect(card.attention).toMatchObject({ to: owner.id, note, moves: ["pr"] });
+  expect(lastRelease(1)).toBe("finished");
+  expect(card.phase).toBe("code");
+  expect(verdicts(1)).toEqual(Array(3).fill(`${crewMember.id}:changes_requested`));
+});
+
+/** Criterion 7. A review run has a contract of its own, and each condition names itself. */
+test("a review run that records no verdict fails, keeps the worktree, and leaves the card in Code", async () => {
+  await initRepo();
+  start({
+    driver: scripted(implementing(), async function* () {
+      yield { type: "text", text: "I read it and had nothing to say" };
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Silent reviewer", "code");
+
+  const card = core.getCard(1);
+  expect(comments(1).at(-1)).toBe(
+    `review run ended without a verdict; the work is in ${worktreePath(1)}`,
+  );
+  expect(card.attention?.note).toBe(comments(1).at(-1));
+  expect(card.attention?.moves).toEqual([]);
+  expect(card.phase).toBe("code");
+  expect(lastRelease(1)).toBe("failed");
+  expect(await worktreeKept(1)).toBe(true);
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+});
+
+test("a review run that moved the branch fails naming it, and its verdict is ignored", async () => {
+  await initRepo();
+  start({
+    driver: scripted(implementing(), async function* (options) {
+      // Through a check command's subprocess is how this reaches the repository; the contract
+      // is what catches it, whatever the verdict says.
+      await commitIn(options.cwd, "reviewer-was-here.ts");
+      core.review(1, { verdict: "approved" }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Busy reviewer", "code");
+
+  const said = comments(1).at(-1) as string;
+  expect(said).toContain("the branch moved during the review run");
+  expect(said).not.toContain("without a verdict");
+  expect(said).not.toContain("uncommitted changes");
+  expect(said).toContain(`the work is in ${worktreePath(1)}`);
+  expect(verdicts(1)).toEqual([`${crewMember.id}:approved`]);
+  const card = core.getCard(1);
+  expect(card.attention?.moves).toEqual([]);
+  expect(card.phase).toBe("code");
+  expect(lastRelease(1)).toBe("failed");
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+});
+
+test("a review run that left the worktree dirty fails naming that, and its verdict is ignored", async () => {
+  await initRepo();
+  start({
+    driver: scripted(implementing(), async function* (options) {
+      writeFileSync(join(options.cwd, "notes.txt"), "my working notes\n");
+      core.review(1, { verdict: "approved" }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Untidy reviewer", "code");
+
+  const said = comments(1).at(-1) as string;
+  expect(said).toContain("uncommitted changes in the worktree");
+  expect(said).not.toContain("without a verdict");
+  expect(said).not.toContain("the branch moved");
+  expect(core.getCard(1).phase).toBe("code");
+  expect(lastRelease(1)).toBe("failed");
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+});
+
+/** Criterion 8, from the options the driver was handed, for both run kinds in one loop. */
+test("the driver sees the review list for the review run and the Code list for the Code run", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: scripted(
+      async function* (options) {
+        seen.push(options);
+        yield* implementing()(options);
+      },
+      async function* (options) {
+        seen.push(options);
+        yield* approving();
+      },
+    ),
+  });
+  await runCard("Two lists", "code");
+
+  const [code, review] = seen as [AgentRunOptions, AgentRunOptions];
+  // The Code run's list is unchanged from 013 and 016.
+  expect(code.allowedTools).toEqual([...FIXED_ALLOWLIST, editsIn(worktreePath(1))]);
+  expect(code.disallowedTools).toEqual(deniedTools(worktreePath(1)));
+  // The review run's is the review list exactly: no file-tool entry, and no write verb.
+  expect(review.allowedTools).toEqual([...REVIEW_ALLOWLIST]);
+  expect(review.disallowedTools).toEqual(["Edit", "Write", "NotebookEdit"]);
+  for (const entry of review.allowedTools) expect(entry.startsWith("Edit(")).toBe(false);
+  for (const absent of [
+    "Bash(git add *)",
+    "Bash(git commit *)",
+    "Bash(git push -u origin HEAD)",
+    "Bash(git push)",
+    "Bash(gh pr create *)",
+    "Bash(gh pr comment *)",
+  ]) {
+    expect(review.allowedTools).not.toContain(absent);
+  }
+});
+
+/**
+ * Criterion 9. The loop counts only what the review run itself recorded as `crew`: a verdict
+ * the owner records is activity, and so is one the agent records during a Code run.
+ */
+test("verdicts recorded outside the review run do not decide it", async () => {
+  await initRepo();
+  let reviews = 0;
+  let codeRuns = 0;
+  start({
+    driver: scripted(
+      async function* (options) {
+        codeRuns += 1;
+        if (codeRuns === 1) {
+          // The owner's own verdict, before the review run starts, and the agent's own during
+          // the Code run — neither is the review run's.
+          core.review(1, { verdict: "approved", text: "looks fine to me" }, owner.id);
+          core.review(1, { verdict: "approved" }, crewMember.id);
+        }
+        yield* implementing(`feature-${codeRuns}.ts`)(options);
+      },
+      async function* (options) {
+        reviews += 1;
+        if (reviews === 1) return yield* requesting("Critical: not so fast")(options);
+        core.review(1, { verdict: "approved" }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+    ),
+  });
+  await runCard("Not decided early", "code");
+
+  // The review run asked for changes, so a fix run followed — the two earlier approvals
+  // changed nothing.
+  expect([codeRuns, reviews]).toEqual([2, 2]);
+  expect(verdicts(1)).toEqual([
+    `${owner.id}:approved`,
+    `${crewMember.id}:approved`,
+    `${crewMember.id}:changes_requested`,
+    `${crewMember.id}:approved`,
+  ]);
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+});
+
+test("a review run that records two verdicts is judged by the last", async () => {
+  await initRepo();
+  let reviews = 0;
+  let codeRuns = 0;
+  start({
+    driver: scripted(
+      async function* (options) {
+        codeRuns += 1;
+        yield* implementing(`feature-${codeRuns}.ts`)(options);
+      },
+      async function* () {
+        reviews += 1;
+        // Round 1 ends on changes requested; round 2 ends on approved.
+        if (reviews === 1) {
+          core.review(1, { verdict: "approved" }, crewMember.id);
+          core.review(
+            1,
+            { verdict: "changes_requested", text: "Critical: on reflection" },
+            crewMember.id,
+          );
+        } else {
+          core.review(1, { verdict: "changes_requested", text: "Critical: wait" }, crewMember.id);
+          core.review(1, { verdict: "approved" }, crewMember.id);
+        }
+        yield { type: "result", ok: true };
+      },
+    ),
+  });
+  await runCard("Two minds", "code");
+
+  expect([codeRuns, reviews]).toEqual([2, 2]);
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(lastRelease(1)).toBe("finished");
+});
+
+// --- every existing ending, one run later (criterion 10) ---
+//
+// The time limit is per run; the daemon stopping, the owner releasing the card, another member
+// claiming it and a question left open each end the loop on the run they happened in, with the
+// ending 014 gives it. These are 014's criteria 8 through 14, moved to the review run.
+
+/** A reviewer that reads and then waits: live until the run tells it to stop. */
+const reviewerAtWork: Script = async function* (options) {
+  yield { type: "text", text: "reading the diff" };
+  await new Promise<void>((resolve) => {
+    if (options.signal.aborted) resolve();
+    else options.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+};
+
+/**
+ * A Code card whose first run meets its contract, resolved once the review run is live — so a
+ * test can do to a review run what 014's cases did to the run before it.
+ */
+async function whileReviewing(
+  review: Script,
+  options: Omit<StartOptions, "driver"> = {},
+): Promise<void> {
+  start({ ...options, driver: scripted(implementing(), review) });
+  core.createCard({ title: "Live review" }, owner.id);
+  const live = untilEvent(commentContaining(1, "reading the diff"));
+  core.moveCard(1, "code", owner.id);
+  await live;
+}
+
+test("a review run over the time limit ends the loop with 014's time-limit note", async () => {
+  await initRepo();
+  await whileReviewing(reviewerAtWork, { runLimitMs: 1500, abortGraceMs: 500 });
+
+  await untilEvent(ended(1), 8000);
+  const said = comments(1).at(-1) as string;
+  expect(said).toContain("time limit");
+  const card = core.getCard(1);
+  expect(card.attention).toMatchObject({ to: owner.id, note: said, moves: [] });
+  expect(card.activity.filter((e) => e.type === "released")).toHaveLength(1);
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+  expect(card.phase).toBe("code");
+});
+
+test("the daemon stopping ends a live review run as daemon stopping", async () => {
+  await initRepo();
+  await whileReviewing(reviewerAtWork);
+
+  await (runner as Runner).stop();
+  runner = undefined;
+
+  expect(comments(1).at(-1)).toContain("daemon stopping");
+  const card = core.getCard(1);
+  expect(card.attention?.note).toContain("daemon stopping");
+  expect(card.attention?.moves).toEqual([]);
+  expect(card.activity.filter((e) => e.type === "released")).toHaveLength(1);
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+});
+
+test("the owner releasing the card mid-review stops the run, and no second run starts", async () => {
+  await initRepo();
+  await whileReviewing(reviewerAtWork);
+
+  const stopped = untilEvent(commentContaining(1, "run stopped"));
+  core.releaseCard(1, { reason: "taking it by hand" }, owner.id);
+  await stopped;
+  await Bun.sleep(200);
+
+  const card = core.getCard(1);
+  expect(card.attention?.note).toContain("run stopped");
+  expect(card.attention?.moves).toEqual([]);
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+  // The card's one release is the owner's, and its one claim is this run's.
+  expect(card.activity.filter((e) => e.type === "released")).toHaveLength(1);
+  expect(lastRelease(1)).toBe("taking it by hand");
+  expect(card.activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+});
+
+test("another member claiming the card mid-review ends the run as an abandonment", async () => {
+  await initRepo();
+  const other = core.ensureMember("crew-1", "agent");
+  await whileReviewing(reviewerAtWork);
+
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  core.releaseCard(1, { reason: "taking it by hand" }, owner.id);
+  core.claimCard(1, {}, other.id);
+  await abandoned;
+  await Bun.sleep(200);
+
+  expectAbandoned(1);
+  expect(core.getCard(1).claim?.by).toBe(other.id);
+  expect(comments(1).some((text) => text.includes("ready for review"))).toBe(false);
+});
+
+/**
+ * The last clause of criterion 10. The reviewer approved *and* asked the owner something; the
+ * question is the card's open request and nothing an ending may replace, so the ending says
+ * the artefact landed, offers no move, and releases as blocked.
+ */
+test("a review run that approves with its own question open comments, offers no move, releases blocked", async () => {
+  await initRepo();
+  start({
+    driver: scripted(implementing(), async function* () {
+      agentAsks(1, "is criterion 3 about ordering or about the claim?");
+      core.review(1, { verdict: "approved" }, crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Approved, and asked", "code");
+
+  const card = core.getCard(1);
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(card.attention?.note).toBe("is criterion 3 about ordering or about the claim?");
+  expect(card.attention?.moves).toEqual([]);
+  expect(lastRelease(1)).toBe("blocked");
+  expect(card.activity.filter((e) => e.type === "released")).toHaveLength(1);
+});
+
+/** Criterion 11. Comments reach the live run, whichever kind of run it is. */
+test("a comment the owner posts while a review run is live reaches that run's agent", async () => {
+  await initRepo();
+  const heard: string[] = [];
+  await whileReviewing(async function* (options) {
+    yield { type: "text", text: "reading the diff" };
+    for await (const message of options.input) {
+      heard.push(message);
+      if (message.includes("the ordering test")) break;
+    }
+    core.review(1, { verdict: "approved" }, crewMember.id);
+    yield { type: "result", ok: true };
+  });
+
+  const done = untilEvent(ended(1));
+  core.comment(1, "look at the ordering test too", owner.id);
+  await done;
+
+  // The card first, as every run's first user message, then the owner's comment.
+  expect(heard[0]).toContain("Card 1: Live review");
+  expect(heard).toContain("look at the ordering test too");
+  expect(comments(1).at(-1)).toBe(`ready for review: ${PR_URL}`);
+});
+
+// --- an ending that cannot say why (criterion 12) ---
+
+/** Waits for a warning naming `fragment`, so a test need not guess how long a failure takes. */
+async function untilWarned(fragment: string, timeoutMs = 5000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    if (warnings.some((line) => line.includes(fragment))) return;
+    await Bun.sleep(10);
+  }
+  throw new Error(`no warning naming "${fragment}" within ${timeoutMs} ms`);
+}
+
+test("an ending whose comment and request both throw parks the card with the run log", async () => {
+  await initRepo();
+  // The failure 015 measured: the core refuses the ending's own text, so neither the comment
+  // nor the request lands. The parked note is the runner's own, and the core takes it.
+  const refuses: Core = {
+    ...core,
+    comment(id, text, actorId) {
+      if (text === "spec ready") throw new Error("comment is down");
+      return core.comment(id, text, actorId);
+    },
+    requestAttention(id, request, actorId) {
+      if (request.note === "spec ready") throw new Error("attention is down");
+      return core.requestAttention(id, request, actorId);
+    },
+  };
+  start({
+    core: refuses,
+    driver: fakeDriver(async function* () {
+      core.setBody(1, "# 1 — the spec", crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  const parked = untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
+  core.createCard({ title: "Cannot say why" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  await parked;
+  await Bun.sleep(200);
+
+  const card = core.getCard(1);
+  const note = card.attention?.note as string;
+  expect(note).toMatch(/^run ended and could not record why; see the run log at \S+$/);
+  expect(card.attention?.moves).toEqual([]);
+  expect(existsSync(note.split("run log at ")[1] as string)).toBe(true);
+  // The card waits on the owner rather than going back into the queue: one claim, one run.
+  expect(card.activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(comments(1).some((text) => text === "spec ready")).toBe(false);
+});
+
+test("an ending that cannot park either releases nothing: the lease lapses instead", async () => {
+  await initRepo();
+  let at = Date.now();
+  const now = (): number => at;
+  core.close();
+  core = openCore(":memory:", { owner: "simon", now });
+  owner = core.listMembers()[0] as Member;
+  runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
+  const refuses: Core = {
+    ...core,
+    comment(id, text, actorId) {
+      if (text === "spec ready") throw new Error("comment is down");
+      return core.comment(id, text, actorId);
+    },
+    requestAttention() {
+      throw new Error("attention is down");
+    },
+  };
+  let runs = 0;
+  start({
+    core: refuses,
+    now,
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      core.setBody(1, "# 1 — the spec", crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "Cannot park either" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  await untilWarned("not parked");
+
+  // The claim is not released, so nothing is free to claim and no second run starts.
+  const held = core.getCard(1);
+  expect(held.claim?.by).toBe(runnerMember.id);
+  expect(held.attention).toBeNull();
+  expect(held.activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(runs).toBe(1);
+
+  // And `run_interrupted` lands when the lease lapses, as 009 intends.
+  at += 10 * 60_000;
+  core.sweepClaims();
+  expect(core.getCard(1).activity.map((e) => e.type)).toContain("run_interrupted");
+});
+
+/** Criterion 13. Reviewing specs is out of scope: a Spec run hands the card on as 014 built it. */
+test("a Spec run that meets its contract hands the card to the owner with no review run", async () => {
+  await initRepo();
+  const prompts: string[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      prompts.push(options.systemPrompt);
+      core.setBody(1, "# 1 — the spec\n\nGoal: ship it.", crewMember.id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("Specs are not reviewed", "spec");
+
+  expect(prompts).toEqual([playbooks.spec]);
+  expect(comments(1).some((text) => text.startsWith("review round"))).toBe(false);
+  expect(verdicts(1)).toEqual([]);
+  const card = core.getCard(1);
+  expect(comments(1).at(-1)).toBe("spec ready");
+  expect(card.attention).toMatchObject({ to: owner.id, note: "spec ready", moves: ["code"] });
+  expect(lastRelease(1)).toBe("finished");
 });

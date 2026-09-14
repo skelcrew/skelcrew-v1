@@ -49,6 +49,17 @@
  * comment. Anything added to that path that wanted to raise attention would stop being an
  * abandonment, and would come back through here.
  *
+ * **An ending that cannot say why parks the card.** When the ending's own comment *and* its
+ * request both throw, nothing on the card says the run ended and the card is free in a
+ * claimable phase — which the next scan claims at once, forever. So one more request is raised,
+ * carrying a note the runner composed itself (`PARKED_NOTE`): the owner's queue then shows
+ * `run ended and could not record why; see the run log at <path>` on a card with no comment of
+ * its own, and the card waits on a person instead of spinning. A raise that fails *after* the
+ * comment landed is not this — the card already says why the run ended, and that ending goes on
+ * as it did before 019. If the parking raise throws too, nothing at all can be written and the
+ * claim is deliberately **not** released: the lease lapses on its own and `run_interrupted`
+ * lands once, as 009 intends, rather than the card returning to the queue immediately.
+ *
  * One call site raises attention without this guard: 006's `no playbook for <phase> yet`
  * handoff in `runner.ts`, which is not an ending — no agent has run in the worktree when it
  * fires. Note what that exemption rests on: *nothing has run*, not *nothing can be waiting*.
@@ -302,7 +313,26 @@ export interface RunEnding {
    * comment alone, which is the rule above.
    */
   question: RunQuestion;
+  /**
+   * This run's log, named by the fixed note when the ending itself cannot be recorded. Absent
+   * only where no run has opened one yet — a failure in the runner's own steps before the
+   * first agent started.
+   */
+  logPath?: string;
 }
+
+/**
+ * What a parked card says. A run whose ending the core refused used to leave nothing on the
+ * card and release the claim, and a free card in a claimable phase is claimed again at once:
+ * 015's run record measured 186 runs in three seconds with nothing written anywhere a member
+ * reads. So an ending that cannot say why it ended says *that* instead, and the card waits on
+ * the owner rather than going back into the queue.
+ *
+ * It is a constant plus a path the runner itself made, so it cannot fail 015's predicate or
+ * the byte cap — which is the whole point: whatever the note that was refused contained, this
+ * one is the runner's own text.
+ */
+export const PARKED_NOTE = "run ended and could not record why";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -320,6 +350,7 @@ export function endRun({
   moves,
   reason,
   question,
+  logPath,
 }: RunEnding): void {
   /**
    * Set only where the helper itself refused: a request this run may not replace is standing.
@@ -328,11 +359,35 @@ export function endRun({
    * waiting on an answer. Conflating the two would release a finished artefact as `blocked`.
    */
   let refused = false;
+  /** Whether the reason reached the card. A card that says why is not a parked card. */
+  let said = false;
   try {
     core.comment(cardId, note, memberId);
+    said = true;
     refused = attention.raise(cardId, { to: ownerId(), note, moves }, question) === undefined;
   } catch (error) {
     warn(`skelcrew runner: card ${cardId}: ${note}; and could not say so: ${message(error)}`);
+    // Both failed: the card would go back into the queue with nothing on it saying why this
+    // run ended, and the next scan would claim it again at once — 015's run record measured
+    // that at 186 runs in three seconds. So one more raise, with a note of the runner's own
+    // making, which cannot be what the core refused above. A raise that failed after the
+    // comment landed is *not* this: the card already says why, and the ending goes on as it
+    // did before 019.
+    if (!said) {
+      const parked =
+        logPath === undefined ? PARKED_NOTE : `${PARKED_NOTE}; see the run log at ${logPath}`;
+      try {
+        refused =
+          attention.raise(cardId, { to: ownerId(), note: parked, moves: [] }, question) ===
+          undefined;
+      } catch (inner) {
+        // Nothing can be put on the card at all. Releasing the claim now would hand a silent
+        // card back to the next scan; leaving it lets the lease lapse on its own, which lands
+        // `run_interrupted` as 009 intends — once per lease rather than at once.
+        warn(`skelcrew runner: card ${cardId} not parked: ${message(inner)}`);
+        return;
+      }
+    }
   }
   try {
     // A card whose claim is no longer this run's is not this run's to release; the core would

@@ -7,13 +7,16 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXED_ALLOWLIST } from "./allowlist";
+import { FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
 import {
   CONTROL_COMMAND,
   type CommandOutcome,
   FIXED_LIST_REPRESENTATIVES,
+  LISTS_UNDER_TEST,
+  type ListUnderTest,
   letGo,
   problemsIn,
+  REVIEW_LIST_REPRESENTATIVES,
   type RunState,
   ranTheCommand,
   STUB_API_KEY,
@@ -272,8 +275,12 @@ test("another tool call's result is not this command running", () => {
   expect(ranTheCommand({ type: "assistant", message: { content: [] } }, "t1")).toBe(false);
 });
 
-const clean = (command: string): CommandOutcome => ({
+/** The two lists the check puts through the harness, each with its own representatives. */
+const [CODE_LIST, REVIEW_LIST] = LISTS_UNDER_TEST as [ListUnderTest, ListUnderTest];
+
+const clean = (command: string, list = CODE_LIST.name): CommandOutcome => ({
   command,
+  list,
   control: false,
   executed: true,
   denials: [],
@@ -284,6 +291,7 @@ const clean = (command: string): CommandOutcome => ({
 
 const control: CommandOutcome = {
   command: CONTROL_COMMAND,
+  list: CODE_LIST.name,
   control: true,
   executed: false,
   denials: [{ tool: "Bash", reason: "dontAsk mode" }],
@@ -293,13 +301,15 @@ const control: CommandOutcome = {
 };
 
 /**
- * A whole run of the check with `outcomes` in it: every fixed-list representative ran and the
- * control was denied, which is what a passing run looks like. Each test below puts exactly one
- * thing wrong into it, so the verdict it asserts is the verdict on that one thing.
+ * A whole run of the check with `outcomes` in it: every representative of both lists ran under
+ * its own list and the control was denied, which is what a passing run looks like. Each test
+ * below puts exactly one thing wrong into it, so the verdict it asserts is on that one thing.
  */
 const runWith = (...outcomes: CommandOutcome[]): CommandOutcome[] => [
   ...outcomes,
-  ...FIXED_LIST_REPRESENTATIVES.map((command) => clean(command)),
+  ...LISTS_UNDER_TEST.flatMap((list) =>
+    list.representatives.map((command) => clean(command, list.name)),
+  ),
   control,
 ];
 
@@ -316,11 +326,16 @@ test("a run where every prescribed command executed and the control was denied p
  * meant less than it looked. Every `Bash(...)` entry now has a representative, and an entry
  * without one fails the check rather than being quietly skipped.
  */
-test("every Bash entry of the fixed list has a representative command", () => {
-  expect(unrepresentedEntries()).toEqual([]);
-  const bashEntries = FIXED_ALLOWLIST.filter((entry) => entry.startsWith("Bash("));
-  expect(bashEntries.length).toBeGreaterThan(0);
-  expect(FIXED_LIST_REPRESENTATIVES.length).toBe(bashEntries.length);
+test("every Bash entry of both lists has a representative command", () => {
+  for (const { name, list, representatives } of LISTS_UNDER_TEST) {
+    const bashEntries = list.filter((entry) => entry.startsWith("Bash("));
+    expect([name, unrepresentedEntries(representatives, list)]).toEqual([name, []]);
+    expect(bashEntries.length).toBeGreaterThan(0);
+    expect([name, representatives.length]).toEqual([name, bashEntries.length]);
+  }
+  expect(LISTS_UNDER_TEST.map((entry) => entry.kind)).toEqual(["code", "review"]);
+  expect(CODE_LIST.list).toEqual([...FIXED_ALLOWLIST]);
+  expect(REVIEW_LIST.list).toEqual([...REVIEW_ALLOWLIST]);
 });
 
 test("a fixed-list entry whose representative is missing is named", () => {
@@ -328,11 +343,18 @@ test("a fixed-list entry whose representative is missing is named", () => {
   expect(unrepresentedEntries(short)).toEqual(["Bash(git add *)"]);
   const noExact = FIXED_LIST_REPRESENTATIVES.filter((command) => command !== "git push");
   expect(unrepresentedEntries(noExact)).toEqual(["Bash(git push)"]);
+  const noVerdict = REVIEW_LIST_REPRESENTATIVES.filter(
+    (command) => command !== "skelcrew review 1 approved",
+  );
+  expect(unrepresentedEntries(noVerdict, REVIEW_ALLOWLIST)).toEqual(["Bash(skelcrew review *)"]);
 });
 
 test("a fixed-list entry with no representative fails the check", () => {
   const short = FIXED_LIST_REPRESENTATIVES.filter((command) => !command.startsWith("gh pr create"));
-  const problems = problemsIn([...short.map(clean), control], short);
+  const problems = problemsIn(
+    [...short.map((command) => clean(command)), control],
+    [{ ...CODE_LIST, representatives: short }],
+  );
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain("Bash(gh pr create *)");
 });
@@ -340,7 +362,23 @@ test("a fixed-list entry with no representative fails the check", () => {
 test("a representative the run never put through the harness fails the check", () => {
   const run = runWith().filter((outcome) => outcome.command !== "git add -A");
   expect(problemsIn(run)).toEqual([
-    "`git add -A` is a representative of the fixed list that this run never ran",
+    "`git add -A` is a representative of the Code list that this run never ran",
+  ]);
+});
+
+/**
+ * Criterion 1 of 019. A command that ran under the Code list says nothing about the review
+ * run's grants, which are a different list with deny rules of its own — so coverage is counted
+ * per list, and a review representative that only ever ran under the Code list is a gap.
+ */
+test("a review representative run only under the Code list does not cover the review list", () => {
+  const run = runWith().map((outcome) =>
+    outcome.list === REVIEW_LIST.name && outcome.command === "skelcrew review 1 approved"
+      ? { ...outcome, list: CODE_LIST.name }
+      : outcome,
+  );
+  expect(problemsIn(run)).toEqual([
+    "`skelcrew review 1 approved` is a representative of the review list that this run never ran",
   ]);
 });
 

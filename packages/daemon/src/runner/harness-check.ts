@@ -1,9 +1,14 @@
 /**
  * `bun run check:harness`: every command the playbooks instruct, one representative command per
- * `Bash(...)` entry of the fixed allowlist, and the fenced command a repository's own instructions
- * contribute — each put through the harness that runs them, the pinned binary itself rather than
- * `allowlist.ts`'s model of it, to answer the one question a model cannot be trusted with: does
- * this command stop to ask?
+ * `Bash(...)` entry of the allowlist it runs under, and the fenced command a repository's own
+ * instructions contribute — each put through the harness that runs them, the pinned binary itself
+ * rather than `allowlist.ts`'s model of it, to answer the one question a model cannot be trusted
+ * with: does this command stop to ask?
+ *
+ * **There are two lists and a command is only evidence about the one it ran under** (019). The
+ * two claimable phases are spawned with the Code list; a review run is spawned with a list of its
+ * own and deny rules of its own. So every session carries its list, and coverage — an entry with
+ * no representative, a representative never run — is counted per list. See `LISTS_UNDER_TEST`.
  *
  * Review round 1 of 014 found the Code playbook prescribing a command the harness asks about
  * outright, and nothing in the repository could have caught it: the model in `allowlist.ts` is
@@ -38,11 +43,11 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunOptions } from "./agent";
-import { allowlistFor, FIXED_ALLOWLIST } from "./allowlist";
+import { allowlistFor, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
 import { buildSdkOptions } from "./claude";
 import { createGit } from "./git";
 import { instructedCommands } from "./playbook-commands";
-import { loadPlaybooks, PLAYBOOK_PHASES } from "./playbooks";
+import { loadPlaybooks, PLAYBOOK_PHASES, type PlaybookKind, type Playbooks } from "./playbooks";
 import { agentEnvironment } from "./shim";
 
 /**
@@ -89,6 +94,56 @@ export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
   "gh pr diff --name-only",
   'gh pr comment 1 --body "a comment"',
   "gh repo view --json defaultBranchRef",
+];
+
+/**
+ * The same, for the review run's list (019). A review run is spawned with a different list and
+ * with deny rules of its own, so its entries are exercised in their own sessions under their
+ * own list — a command checked against the Code run's grants says nothing about this one.
+ */
+export const REVIEW_LIST_REPRESENTATIVES: readonly string[] = [
+  "skelcrew show 1",
+  'skelcrew comment 1 "a comment"',
+  'skelcrew attention 1 "a question"',
+  "skelcrew review 1 approved",
+  "gh pr view --json url --jq .url",
+  "gh pr diff --name-only",
+  "gh repo view --json defaultBranchRef",
+];
+
+/** A list the check puts through the harness, with the runs whose commands belong to it. */
+export interface ListUnderTest {
+  /** How a problem line names it. */
+  name: string;
+  /** The run kind whose grants these are: what `allowlistFor` is asked for. */
+  kind: PlaybookKind;
+  /** The fixed part of the list, whose `Bash(...)` entries each need a representative. */
+  list: readonly string[];
+  representatives: readonly string[];
+  /** The playbooks whose instructed commands run under this list. */
+  playbooks: readonly PlaybookKind[];
+}
+
+/**
+ * Both lists, and which playbooks run under each: the two claimable phases are spawned with the
+ * Code list, and the review run with its own. A command is only evidence about the list it was
+ * run under, so each session carries its list and the coverage is counted per list.
+ */
+export const LISTS_UNDER_TEST: readonly ListUnderTest[] = [
+  {
+    name: "the Code list",
+    kind: "code",
+    list: FIXED_ALLOWLIST,
+    representatives: FIXED_LIST_REPRESENTATIVES,
+    playbooks: PLAYBOOK_PHASES,
+  },
+  {
+    name: "the review list",
+    kind: "review",
+    list: REVIEW_ALLOWLIST,
+    representatives: REVIEW_LIST_REPRESENTATIVES,
+    playbooks: ["review"],
+  },
 ];
 
 /**
@@ -335,6 +390,8 @@ export function writeStubExecutables(dir: string, commands: readonly string[]): 
 
 export interface CommandOutcome {
   command: string;
+  /** Which list this session was spawned with, by name: coverage is counted per list. */
+  list: string;
   /**
    * This is the control session, tagged where the control is appended — not inferred from the
    * command's text. A playbook that prescribed `git push origin HEAD:main` would otherwise have
@@ -367,13 +424,13 @@ export interface CommandOutcome {
  */
 export function problemsIn(
   outcomes: readonly CommandOutcome[],
-  representatives: readonly string[] = FIXED_LIST_REPRESENTATIVES,
+  lists: readonly ListUnderTest[] = LISTS_UNDER_TEST,
 ): string[] {
   const problems: string[] = [];
   const controls = outcomes.filter((outcome) => outcome.control);
   const control = controls[0];
   for (const outcome of outcomes) {
-    const at = `\`${outcome.command}\``;
+    const at = `\`${outcome.command}\` under ${outcome.list}`;
     if (outcome.requests === 0) {
       problems.push(`${at}: the stub saw no request — the harness reached something else`);
       continue;
@@ -405,12 +462,14 @@ export function problemsIn(
     }
     if (!outcome.executed) problems.push(`${at}: the harness neither ran it nor denied it`);
   }
-  for (const entry of unrepresentedEntries(representatives)) {
-    problems.push(`the fixed-list entry ${entry} has no representative command: it is never run`);
-  }
-  for (const command of representatives) {
-    if (!outcomes.some((outcome) => outcome.command === command)) {
-      problems.push(`\`${command}\` is a representative of the fixed list that this run never ran`);
+  for (const { name, list, representatives } of lists) {
+    for (const entry of unrepresentedEntries(representatives, list)) {
+      problems.push(`the entry ${entry} of ${name} has no representative command: it is never run`);
+    }
+    for (const command of representatives) {
+      if (!outcomes.some((outcome) => outcome.command === command && outcome.list === name)) {
+        problems.push(`\`${command}\` is a representative of ${name} that this run never ran`);
+      }
     }
   }
   if (controls.length > 1) {
@@ -468,6 +527,8 @@ interface RunContext {
   env: Record<string, string>;
   allowedTools: string[];
   disallowedTools: string[];
+  /** The name of the list those two came from, which the outcome carries. */
+  list: string;
 }
 
 /**
@@ -553,6 +614,7 @@ async function runCommand(
   const credentials = [...new Set(stub.requests.flatMap((request) => request.credentials))];
   return {
     command,
+    list: context.list,
     control: isControl,
     executed,
     denials,
@@ -591,21 +653,26 @@ async function temporaryRepository(root: string): Promise<void> {
   await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
 }
 
-async function main(): Promise<number> {
-  const playbooks = loadPlaybooks();
-  const prescribedCommands = [
+/** What one list contributes to the run: its own commands, each under its own grants. */
+function commandsFor(list: ListUnderTest, playbooks: Playbooks): string[] {
+  return [
     ...new Set([
-      ...PLAYBOOK_PHASES.flatMap((phase) => instructedCommands(playbooks[phase])),
-      ...FIXED_LIST_REPRESENTATIVES,
+      ...list.playbooks.flatMap((kind) => instructedCommands(playbooks[kind])),
+      ...list.representatives,
+      // The repository's fenced command is added to both lists by the scan, and both kinds of
+      // run are told to run it, so it is under test under each.
       SCANNED_COMMAND,
     ]),
   ];
-  // The control is appended, and tagged here rather than recognised by its text later: a playbook
-  // that prescribed it would otherwise have its denial counted as the control's own.
-  const commands: Array<{ command: string; control: boolean }> = [
-    ...prescribedCommands.map((command) => ({ command, control: false })),
-    { command: CONTROL_COMMAND, control: true },
-  ];
+}
+
+async function main(): Promise<number> {
+  const playbooks = loadPlaybooks();
+  const perList = LISTS_UNDER_TEST.map((list) => ({
+    list,
+    commands: commandsFor(list, playbooks),
+  }));
+  const prescribedCount = perList.reduce((total, each) => total + each.commands.length, 0);
 
   // Resolved, the way `runner.ts` resolves its worktrees directory: `editsIn` spells the anchor
   // rule with the path's real name, and a `cwd` spelled the other way would have the harness
@@ -645,10 +712,29 @@ async function main(): Promise<number> {
     await temporaryRepository(repoRoot);
     await git(repoRoot, "branch", "card-1", "main");
     await git(repoRoot, "worktree", "add", worktree, "card-1");
-    const allowlist = await allowlistFor(createGit(), repoRoot, "main", worktree);
+    // One session per command per list, each with that list's own grants — and the control
+    // appended, tagged here rather than recognised by its text later: a playbook that
+    // prescribed it would otherwise have its denial counted as the control's own.
+    const sessions: Array<{ command: string; control: boolean; context: RunContext }> = [];
+    const scannedNotes: string[] = [];
+    for (const { list, commands } of perList) {
+      const allowlist = await allowlistFor(createGit(), repoRoot, "main", worktree, list.kind);
+      scannedNotes.push(`${list.name}: ${allowlist.scanned}`);
+      const context = {
+        cwd: worktree,
+        env: {} as Record<string, string>,
+        allowedTools: allowlist.tools,
+        disallowedTools: allowlist.denied,
+        list: list.name,
+      };
+      for (const command of commands) sessions.push({ command, control: false, context });
+      if (list.kind === "code") {
+        sessions.push({ command: CONTROL_COMMAND, control: true, context });
+      }
+    }
     const words = writeStubExecutables(
       binDir,
-      commands.map((each) => each.command),
+      sessions.map((each) => each.command),
     );
 
     // The run's own environment, with the four overrides that are environment: `HOME` is this
@@ -661,14 +747,17 @@ async function main(): Promise<number> {
     env.PATH = `${binDir}${delimiter}${env.PATH}`;
     env.ANTHROPIC_API_KEY = STUB_API_KEY;
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+    for (const session of sessions) session.context.env = env;
 
-    console.log(`playbooks: ${PLAYBOOK_PHASES.join(", ")}`);
-    console.log(
-      `commands: ${prescribedCommands.length} (the playbooks' own instructions, one ` +
-        `representative per fixed-list entry, and the repository's fenced ` +
-        `\`${SCANNED_COMMAND}\`), plus the control command`,
-    );
-    console.log(`allowlist: ${allowlist.scanned}`);
+    for (const { list, commands } of perList) {
+      console.log(
+        `${list.name} (${list.playbooks.join(", ")}): ${commands.length} commands — those ` +
+          `playbooks' own instructions, one representative per entry, and the repository's ` +
+          `fenced \`${SCANNED_COMMAND}\``,
+      );
+    }
+    console.log(`commands: ${prescribedCount} in all, plus the control command`);
+    for (const note of scannedNotes) console.log(`allowlist: ${note}`);
     console.log(`stub executables: ${words.join(", ")}`);
     console.log(`PATH: ${env.PATH}`);
     console.log(`HOME: ${home}, holding ${readdirSync(home).length} files`);
@@ -684,20 +773,14 @@ async function main(): Promise<number> {
     console.log("");
 
     const outcomes: CommandOutcome[] = [];
-    for (const { command, control } of commands) {
-      const outcome = await runCommand(
-        command,
-        control,
-        { cwd: worktree, env, allowedTools: allowlist.tools, disallowedTools: allowlist.denied },
-        state,
-      );
+    for (const { command, control, context } of sessions) {
+      const outcome = await runCommand(command, control, context, state);
       outcomes.push(outcome);
       // The harness's own words for a refusal, on the line that reports it: a denial with no
       // reason behind it would otherwise look the same as one the harness explained.
       const said = outcome.denials.map((denial) => denial.reason.split(".")[0]).join("; ");
-      console.log(
-        outcome.denials.length > 0 ? `DENIED  ${command} — ${said}` : `ran     ${command}`,
-      );
+      const at = `${command} [${context.list}]`;
+      console.log(outcome.denials.length > 0 ? `DENIED  ${at} — ${said}` : `ran     ${at}`);
     }
 
     const problems = problemsIn(outcomes);
@@ -712,8 +795,9 @@ async function main(): Promise<number> {
     console.log("");
     if (problems.length === 0) {
       console.log(
-        `every one of the ${prescribedCommands.length} commands under test runs unprompted in ` +
-          `the harness, \`${CONTROL_COMMAND}\` is denied, and the repository is unchanged`,
+        `every one of the ${prescribedCount} commands under test runs unprompted in ` +
+          `the harness under its own list, \`${CONTROL_COMMAND}\` is denied, and the ` +
+          `repository is unchanged`,
       );
       return 0;
     }
