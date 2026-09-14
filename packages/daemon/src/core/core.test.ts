@@ -428,6 +428,81 @@ describe("comments", () => {
   });
 });
 
+/**
+ * 019's criterion 2 at the core. A verdict is a primitive of its own rather than a comment
+ * convention, and it carries `comment`'s checks: any member may record one, findings are
+ * required with `changes_requested`, and the text is a multi-line field under the comment cap.
+ */
+describe("reviews", () => {
+  test("a verdict records its verdict, its text and its actor; either kind of member may", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    const requested = core.review(
+      card.id,
+      { verdict: "changes_requested", text: "Critical\n\nthe loop counts the agent's word" },
+      agent.id,
+    );
+    expect(requested).toMatchObject({
+      type: "review_recorded",
+      cardId: card.id,
+      actorId: agent.id,
+      // A multi-line field: the newlines are stored as given.
+      data: {
+        verdict: "changes_requested",
+        text: "Critical\n\nthe loop counts the agent's word",
+      },
+    });
+    const approved = core.review(card.id, { verdict: "approved" }, owner.id);
+    expect(approved).toMatchObject({
+      type: "review_recorded",
+      actorId: owner.id,
+      data: { verdict: "approved", text: "" },
+    });
+    expect(events(card.id, "review_recorded")).toEqual([requested, approved]);
+  });
+
+  test("changes requested needs findings, approved does not, and the cap is the comment's", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    expectCoreError(
+      () => core.review(card.id, { verdict: "changes_requested" }, owner.id),
+      "invalid",
+      "findings",
+    );
+    expectCoreError(
+      () => core.review(card.id, { verdict: "changes_requested", text: "  \n\t" }, owner.id),
+      "invalid",
+      "findings",
+    );
+    core.review(card.id, { verdict: "approved", text: "a".repeat(COMMENT_MAX_BYTES) }, owner.id);
+    expectCoreError(
+      () =>
+        core.review(
+          card.id,
+          { verdict: "approved", text: "a".repeat(COMMENT_MAX_BYTES + 1) },
+          owner.id,
+        ),
+      "invalid",
+    );
+    expect(events(card.id, "review_recorded")).toHaveLength(1);
+  });
+
+  test("an unknown verdict, an archived card and an unknown member are refused", () => {
+    const card = core.createCard({ title: "x" }, owner.id);
+    expectCoreError(
+      () => core.review(card.id, { verdict: "approve" as never, text: "" }, owner.id),
+      "invalid",
+      "verdict",
+    );
+    expectCoreError(() => core.review(card.id, { verdict: "approved" }, 999), "not_found", "999");
+    core.archiveCard(card.id, owner.id);
+    expectCoreError(
+      () => core.review(card.id, { verdict: "approved" }, owner.id),
+      "invalid",
+      "archived",
+    );
+    expect(events(card.id, "review_recorded")).toHaveLength(0);
+  });
+});
+
 describe("references", () => {
   test("setRefs merges and logs the resulting refs", () => {
     const card = core.createCard({ title: "x" }, owner.id);
@@ -1866,6 +1941,11 @@ describe("control characters", () => {
     },
     { name: "body", write: (c, id) => void core.setBody(id, `# Goal${c}here`, owner.id) },
     { name: "comment", write: (c, id) => void core.comment(id, `looks${c}fine`, owner.id) },
+    {
+      name: "review",
+      write: (c, id) =>
+        void core.review(id, { verdict: "changes_requested", text: `looks${c}wrong` }, owner.id),
+    },
     {
       name: "note",
       write: (c, id) =>

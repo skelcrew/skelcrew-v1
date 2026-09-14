@@ -96,6 +96,10 @@ const phase: Check = {
   test: (v) => PHASES.some((p) => p.id === v),
   expected: `one of ${PHASES.map((p) => `"${p.id}"`).join(", ")}`,
 };
+const verdict: Check = {
+  test: (v) => v === "approved" || v === "changes_requested",
+  expected: '"approved" or "changes_requested"',
+};
 const phaseList: Check = {
   test: (v) => Array.isArray(v) && v.every((item) => phase.test(item)),
   expected: `an array of ${phase.expected}`,
@@ -207,6 +211,21 @@ const HANDLERS: { [M in BoundMethod]: Handler<M> } = {
   comment(ctx, params, member) {
     const p = validate("comment", params, { id: { check: integer }, text: { check: string } });
     return ctx.core.comment(p.id as number, p.text as string, member.id);
+  },
+  reviewCard(ctx, params, member) {
+    const p = validate("reviewCard", params, {
+      id: { check: integer },
+      verdict: { check: verdict },
+      text: { check: string, optional: true },
+    });
+    return ctx.core.review(
+      p.id as number,
+      {
+        verdict: p.verdict as Methods["reviewCard"]["params"]["verdict"],
+        text: p.text as string | undefined,
+      },
+      member.id,
+    );
   },
   setRefs(ctx, params, member) {
     const p = validate("setRefs", params, { id: { check: integer }, refs: { check: object } });

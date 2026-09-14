@@ -17,6 +17,8 @@ import {
   deniedTools,
   editsIn,
   FIXED_ALLOWLIST,
+  REVIEW_ALLOWLIST,
+  REVIEW_DENIED_TOOLS,
   runsUnprompted,
   splitEntries,
 } from "./allowlist";
@@ -562,12 +564,12 @@ function worktree(): string {
 
 /** The whole list a run in this repository would be spawned with. */
 async function list(): Promise<string[]> {
-  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree())).tools;
+  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), "code")).tools;
 }
 
 /** The clause the run-start comment carries about the scan. */
 async function scanNote(): Promise<string> {
-  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree())).scanned;
+  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), "code")).scanned;
 }
 
 /** The fixed list plus the run's own anchored file-tool entry: what the scan adds to. */
@@ -818,7 +820,7 @@ test("an instruction file committed locally but not on the remote contributes no
 
 test("a default branch with no remote-tracking head contributes nothing rather than failing", async () => {
   await commit("AGENTS.md", "```\nbun run check\n```\n");
-  const list = await allowlistFor(git, repo, "no-such-branch", worktree());
+  const list = await allowlistFor(git, repo, "no-such-branch", worktree(), "code");
   expect(list.tools).toEqual(floor());
 });
 
@@ -830,7 +832,7 @@ test("a default branch with no remote-tracking head contributes nothing rather t
  * the agent asks for the repository's own check command on every run.
  */
 test("a repository whose instructions the scan could not reach says so, naming the ref", async () => {
-  const list = await allowlistFor(git, repo, "no-such-branch", worktree());
+  const list = await allowlistFor(git, repo, "no-such-branch", worktree(), "code");
   expect(list.scanned).toBe(
     "no refs/remotes/origin/no-such-branch: the repository's own commands will ask",
   );
@@ -845,4 +847,106 @@ test("a repository that documents its check command has it named on the card", a
   expect(await scanNote()).toBe(
     "pre-allowed from the repository's instructions: bun run check, bun test",
   );
+});
+
+// --- the review run's list (019) ---
+
+/** The whole list a *review* run in this repository would be spawned with. */
+async function reviewList(): Promise<string[]> {
+  return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), "review")).tools;
+}
+
+/** The review list, entry by entry: a change to it changes what a reviewer may do unprompted. */
+test("the review list is exactly what the spec names, in its order", () => {
+  expect(REVIEW_ALLOWLIST).toEqual([
+    "Read",
+    "Glob",
+    "Grep",
+    "Agent",
+    "TodoWrite",
+    "Bash(skelcrew show *)",
+    "Bash(skelcrew comment *)",
+    "Bash(skelcrew attention *)",
+    "Bash(skelcrew review *)",
+    "Bash(gh pr view *)",
+    "Bash(gh pr diff *)",
+    "Bash(gh repo view *)",
+  ]);
+  expect(REVIEW_DENIED_TOOLS).toEqual(["Edit", "Write", "NotebookEdit"]);
+});
+
+test("a review run gets the review list and the scan, with no file-tool entry at all", async () => {
+  await commit("AGENTS.md", "# Repo\n\nRun this:\n\n```\nbun run check\n```\n");
+  expect(await reviewList()).toEqual([...REVIEW_ALLOWLIST, "Bash(bun run check *)"]);
+  // The repository's own checks run unprompted here as they do for a Code run: absolutes are
+  // checked by running, which is the reviewer's job.
+  expect(allowsTool("Bash", { command: "bun run check" }, await reviewList())).toBe(true);
+  for (const entry of await reviewList()) expect(entry.startsWith("Edit(")).toBe(false);
+  expect((await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), "review")).denied).toEqual([
+    "Edit",
+    "Write",
+    "NotebookEdit",
+  ]);
+});
+
+/**
+ * Criterion 8's second half, from the list's side: no verb that writes the repository or the
+ * forge is reachable unprompted from a review run, and the file tools are refused outright
+ * rather than asked about — a deny outranks every allow.
+ */
+test("a review run may not write, commit, push or open a pull request", async () => {
+  const tools = await reviewList();
+  const denied = REVIEW_DENIED_TOOLS;
+  for (const command of [
+    "git add -A",
+    'git commit -m "a message"',
+    "git push -u origin HEAD",
+    "git push",
+    'gh pr create --title "t" --body "b"',
+    'gh pr comment 1 --body "c"',
+    "skelcrew body 1 --file a.md",
+    "skelcrew refs 1 --pr https://example.invalid/pull/1",
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, tools, denied)]).toEqual([command, false]);
+  }
+  // What it may do: read the repository, read the card, and record its verdict.
+  for (const command of [
+    "git diff refs/heads/main...refs/heads/skelcrew/1-x",
+    "git status",
+    "skelcrew show 1",
+    "skelcrew review 1 approved",
+    'skelcrew review 1 changes-requested "Critical: …"',
+    'skelcrew comment 1 "what I ran"',
+    'skelcrew attention 1 "the spec contradicts CLAUDE.md"',
+    "gh pr diff --name-only",
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, tools, denied)]).toEqual([command, true]);
+  }
+});
+
+test("every file tool is denied to a review run, on every path", async () => {
+  const tools = await reviewList();
+  for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+    for (const path of [join(worktree(), "src/x.ts"), "/tmp/x", join(repo, "AGENTS.md")]) {
+      expect([
+        tool,
+        path,
+        allowsTool(tool, { file_path: path }, tools, REVIEW_DENIED_TOOLS),
+      ]).toEqual([tool, path, false]);
+    }
+  }
+  // And with no `Edit(…)` rule on the list, a redirection has no target any rule covers.
+  const redirect = { command: `git status > ${join(worktree(), "out.txt")}` };
+  expect(runsUnprompted("Bash", redirect, tools, REVIEW_DENIED_TOOLS)).toBe(false);
+});
+
+/**
+ * The scan narrows against the *Code* list for both kinds, deliberately. Read against the
+ * review list alone, `git` is narrowed by no entry of its own — so a repository documenting a
+ * git write verb would have granted the reviewer exactly what the review list withholds.
+ */
+test("a scanned line naming git grants a review run nothing, as it grants a Code run nothing", async () => {
+  await commit("AGENTS.md", "```\ngit push --force origin HEAD\n```\n");
+  expect(await reviewList()).toEqual([...REVIEW_ALLOWLIST]);
+  expect(await list()).toEqual(floor());
 });

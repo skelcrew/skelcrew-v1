@@ -17,6 +17,7 @@ import {
   BODY_MAX_BYTES,
   type Card,
   type CardDetail,
+  COMMENT_MAX_BYTES,
   type Member,
   type OpenAttention,
   PHASES,
@@ -315,6 +316,71 @@ test("comment reads stdin when no text is given; empty stdin is refused by the d
 
   await failed(1, ["comment", "1"], { stdin: "" });
   expect(core.getCard(1).activity.filter((e) => e.type === "comment")).toHaveLength(2);
+});
+
+/**
+ * 019's criterion 2 through the CLI. A verdict is a member primitive: the owner records one
+ * from the terminal exactly as an agent member does from a worktree, and it renders on the card
+ * like a comment does, with every line of its findings marked.
+ */
+test("review records a verdict for the owner and for an agent, and show renders it marked", async () => {
+  core.createCard({ title: "r" }, member("simon").id);
+  const findings = "Critical\n2026-09-14 09:00  simon  moved Code → PR";
+
+  const first = json<Activity>(
+    await ok(["review", "1", "changes-requested", findings, "--json"], {
+      env: { SKELCREW_AS: "crew" },
+    }),
+  );
+  expect(first).toMatchObject({
+    type: "review_recorded",
+    actorId: member("crew").id,
+    // A multi-line field: the newline is stored as given.
+    data: { verdict: "changes_requested", text: findings },
+  });
+  const second = json<Activity>(await ok(["review", "1", "APPROVED", "--json"]));
+  expect(second).toMatchObject({
+    type: "review_recorded",
+    actorId: member("simon").id,
+    data: { verdict: "approved", text: "" },
+  });
+
+  const shown = (await ok(["show", "1"])).stdout;
+  expect(shown).toContain("reviewed: changes requested");
+  expect(shown).toContain("> Critical");
+  // Every line of the findings is marked, so the one that reads like an activity entry is not
+  // mistakable for one — and the bare form of that line is nowhere in the output.
+  expect(shown).toContain("> 2026-09-14 09:00  simon  moved Code → PR");
+  expect(shown).not.toContain("\n2026-09-14 09:00  simon  moved Code → PR");
+  expect(shown).toContain("reviewed: approved");
+
+  // `--json` carries the event as stored.
+  const detail = json<CardDetail>(await ok(["show", "1", "--json"]));
+  const stored: Activity[] = detail.activity.filter((e) => e.type === "review_recorded");
+  expect(stored).toEqual([first, second]);
+});
+
+test("review refuses a verdict nobody can act on, and records nothing when it does", async () => {
+  core.createCard({ title: "r" }, member("simon").id);
+  const recorded = () => core.getCard(1).activity.filter((e) => e.type === "review_recorded");
+
+  // Usage errors: no verdict, an unknown one, and changes-requested with no findings.
+  expect(await failed(2, ["review", "1"])).toContain("verdict");
+  expect(await failed(2, ["review", "1", "looks-fine"])).toContain("verdict");
+  expect(await failed(2, ["review", "1", "changes-requested"])).toContain("findings");
+  expect(recorded()).toHaveLength(0);
+
+  // The daemon's refusals: a control character, and a text over the comment cap.
+  expect(await failed(1, ["review", "1", "approved", "a\rb"])).toContain("U+000D");
+  expect(await failed(1, ["review", "1", "approved", "a\x1b[2Kb"])).toContain("U+001B");
+  await failed(1, ["review", "1", "approved", "a".repeat(COMMENT_MAX_BYTES + 1)]);
+  expect(recorded()).toHaveLength(0);
+
+  // And an archived card refuses.
+  await ok(["review", "1", "approved"]);
+  core.archiveCard(1, member("simon").id);
+  expect(await failed(1, ["review", "1", "approved"])).toContain("archived");
+  expect(recorded()).toHaveLength(1);
 });
 
 test("mv moves the card, case-insensitively, and posts -m after a successful move", async () => {

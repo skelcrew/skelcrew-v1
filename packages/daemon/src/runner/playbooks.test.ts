@@ -2,9 +2,14 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXED_ALLOWLIST, runsUnprompted } from "./allowlist";
+import {
+  FIXED_ALLOWLIST,
+  REVIEW_ALLOWLIST,
+  REVIEW_DENIED_TOOLS,
+  runsUnprompted,
+} from "./allowlist";
 import { commandsNamed, filled, instructedCommands, prescribed } from "./playbook-commands";
-import { loadPlaybooks, PLAYBOOK_PHASES, type PlaybookPhase } from "./playbooks";
+import { loadPlaybooks, PLAYBOOK_KINDS, PLAYBOOK_PHASES, type PlaybookPhase } from "./playbooks";
 
 let dir: string;
 
@@ -274,7 +279,92 @@ test("the Code playbook says a subprocess reaches the five verbs and the daemon 
 test("an empty playbook is refused at load, naming the file", () => {
   writeFileSync(join(dir, "spec.md"), "   \n");
   writeFileSync(join(dir, "code.md"), "# code\n");
+  writeFileSync(join(dir, "review.md"), "# review\n");
   expect(() => loadPlaybooks(dir)).toThrow(join(dir, "spec.md"));
+});
+
+test("an empty review playbook is refused at load too", () => {
+  writeFileSync(join(dir, "spec.md"), "# spec\n");
+  writeFileSync(join(dir, "code.md"), "# code\n");
+  writeFileSync(join(dir, "review.md"), "\n\n");
+  expect(() => loadPlaybooks(dir)).toThrow(join(dir, "review.md"));
+});
+
+// --- the review playbook (019) ---
+
+/**
+ * A review run is a run kind inside the Code phase rather than a phase of its own, so the
+ * three playbooks load together and the two claimable phases stay two.
+ */
+test("all three playbooks load, are not empty, and the phases are still the two claimable ones", () => {
+  const playbooks = loadPlaybooks();
+  for (const kind of PLAYBOOK_KINDS) {
+    expect([kind, playbooks[kind].trim().length > 0]).toEqual([kind, true]);
+  }
+  expect(PLAYBOOK_KINDS).toEqual(["spec", "code", "review"]);
+  expect(PLAYBOOK_PHASES).toEqual(["spec", "code"]);
+});
+
+test("the review playbook sends the agent to the target repository's own instructions first", () => {
+  const review = loadPlaybooks().review;
+  expect(review).toContain("AGENTS.md");
+  expect(review).toContain("CLAUDE.md");
+  expect(review.toLowerCase()).toContain("first");
+});
+
+/**
+ * Criterion 1, in the model. A review run is spawned with the review list and the three deny
+ * rules, so its commands have to be checked against those and not against the Code run's —
+ * a playbook naming `git commit` here would be instructing a call that is not on this list.
+ * `bun run check:harness` is what runs the same claim through the harness itself.
+ */
+test("every command the review playbook runs goes unprompted on the review list", () => {
+  const commands = instructedCommands(loadPlaybooks().review);
+  expect(commands.length).toBeGreaterThan(0);
+  for (const command of commands) {
+    expect([
+      command,
+      runsUnprompted("Bash", { command }, REVIEW_ALLOWLIST, REVIEW_DENIED_TOOLS),
+    ]).toEqual([command, true]);
+  }
+  // The verdict itself is among them: the run cannot end without it.
+  expect(commands).toContain("skelcrew review PLACEHOLDER approved");
+});
+
+test("the review playbook advertises exactly the review list, entry for entry", () => {
+  const advertised = preAllowedIn(loadPlaybooks().review);
+  expect(advertised.toSorted()).toEqual(REVIEW_ALLOWLIST.map(asAdvertised).toSorted());
+});
+
+/**
+ * The three conditions of the review contract, said in the playbook: the verdict, the branch
+ * left where it was found, and a clean worktree. An agent told only "do not edit" would not
+ * know that a stray file fails the run whatever it concluded.
+ */
+test("the review playbook says a verdict is required and that it may not write anything", () => {
+  const review = unwrapped(loadPlaybooks().review);
+  expect(review).toContain("Report; do not repair");
+  expect(review).toContain("a review run that ends without a verdict is a failed run");
+  expect(review).toContain(
+    "Leave the branch where you found it and the worktree clean: the runner checks both",
+  );
+  // `approved` is a claim about the findings, not a mood.
+  expect(review).toContain("`approved` requires no Critical and no Important findings");
+});
+
+test("the review playbook makes qualifying both branch names a rule where it takes the diff", () => {
+  expect(unwrapped(loadPlaybooks().review)).toContain(
+    "**Name both branches in full wherever you compute a diff or a range**: `refs/heads/<base>` and `refs/heads/<branch>`, never the bare names.",
+  );
+  expect(prescribed(loadPlaybooks().review)).toContain(
+    "git diff refs/heads/<base>...refs/heads/<branch>",
+  );
+});
+
+test("no command the review playbook names carries a shell operator", () => {
+  for (const command of commandsNamed(loadPlaybooks().review)) {
+    expect(command).not.toMatch(/\$\(|`|&&|\|\||\||;/);
+  }
 });
 
 // --- what the Code phase's contract requires of its playbook ---
@@ -301,6 +391,19 @@ test("the Code playbook records the pull request on every run, reading an existi
   // Both prescribed, so the agent copies them rather than composing one with a substitution.
   expect(prescribed(code)).toContain("gh pr view --json url --jq .url");
   expect(prescribed(code)).toContain("skelcrew refs <id> --pr <the URL that printed>");
+});
+
+/**
+ * 019: a fix run's brief is the card, and what makes it a fix run is the verdict on it. The
+ * playbook has to say so, because nothing else tells the agent that the findings are the work.
+ */
+test("the Code playbook makes a changes-requested verdict the brief for the run", () => {
+  const code = unwrapped(loadPlaybooks().code);
+  expect(code).toContain(
+    "**A changes-requested verdict recorded on the card since this branch's last run is the brief for this run.**",
+  );
+  expect(code).toContain("Address every Critical and every Important finding.");
+  expect(code).toContain("answered on the card");
 });
 
 test("the Code playbook makes qualifying both branch names a rule, not an example", () => {

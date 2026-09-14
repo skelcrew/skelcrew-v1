@@ -135,8 +135,13 @@ validation as a comment:
   error.
 - `packages/cli/src/commands/review.ts` in `attention.ts`'s shape: `review <id> <verdict>
   [text]`, where the verdict word is `approved` or `changes-requested`. `render.ts` renders the
-  event as `reviewed: approved` or `reviewed: changes requested`, then the text through the same
-  marked continuation a comment uses. `show --json` carries the event as stored.
+  event as `reviewed: approved` or `reviewed: changes requested` on a line of its own, then the
+  text with every line marked the way a comment's continuation lines are (015). The first line
+  of the findings is marked too, unlike a comment's, because criterion 2 asks for every line and
+  a finding quoting an activity entry is the ordinary case. (The spec as approved said "the same
+  marked continuation a comment uses", which leaves the first line unmarked; the orchestrator
+  aligned this sentence to criterion 2 during development.) `show --json` carries the event as
+  stored.
 
 ### A third playbook, for a run kind rather than a phase
 
@@ -148,6 +153,18 @@ against the code, check absolutes by running, never modify anything, classify fi
 Critical/Important/Minor, and end with exactly one `skelcrew review` call. It says plainly that
 `approved` requires no Critical and no Important findings, and that the reviewer's session ending
 without that call is a failed run.
+
+The findings go on that command line, and a command line is parsed by a shell before the
+harness sees it. Review round 2 ran the playbook's own form against the pinned harness: a
+backtick or a `$(` inside a double-quoted argument is a command substitution, and the harness
+stops to ask about it outright, so a finding written as `` `runner.ts:480` `` turns the one
+required call into a permission question nobody answers overnight. So the playbook prescribes
+the findings **single-quoted**, says to write locations as `path:line` with no backticks, and
+says not to use an apostrophe inside the findings (write "does not", not "doesn't"), because an
+apostrophe ends a single-quoted string. `code.md` carries the same kind of warning for its one
+required call. 017's harness check covers this form: the review list's representative for
+`skelcrew review` carries a backtick inside single quotes, so the check fails if the harness
+ever starts asking about that. (Added by the orchestrator after review round 2.)
 
 `Playbooks` in `playbooks.ts` becomes `Record<"spec" | "code" | "review", string>` and
 `loadPlaybooks` reads all three. `PLAYBOOK_PHASES` stays the two claimable phases: review is a
@@ -179,6 +196,33 @@ takes an ordinal), a `sinceSeq` read from the card just before it starts, and, f
 a `branchHead` re-read from `refs/heads/<branch>` just before it starts, so "moved during this
 run" means this round. Between runs the runner calls the existing `stillHeld()`; a claim lost
 between rounds abandons exactly as one lost during a round does.
+
+A met Code contract starts a review only when nothing is waiting on the owner. If the card
+carries an open request the run may not replace — the agent's own `skelcrew attention`
+question — the Code run ends there with 014's ending for that case: a comment that the
+artefact landed, no move, release `blocked`, the question standing. No review run starts,
+because a reviewer working under a standing request cannot raise a permission question of its
+own (`raiseNext` refuses over a foreign request) and would block until its time limit. Review
+round 1 found the loop starting the review anyway, which criterion 3 read as allowed and
+*Desired behavior* did not; the orchestrator settled it on *Desired behavior* and added this
+paragraph. Criterion 10's case, a question the reviewer itself leaves open, is unchanged.
+
+The same rule binds the review → fix transition, for the same reason: a review run that
+raises its own `skelcrew attention` question and records `changes_requested` ends the loop
+there. The card gets the ending 014 gives a run with a question standing: no move is offered,
+the claim is released `blocked`, and no fix run starts. The comment reads `changes requested;
+the reviewer is waiting on an answer; the work is in <worktree>`, not the Code run's `ready for
+review`, because the reviewer has just said the work is not ready. (Review round 3 found the
+Code run's note reused here; the orchestrator named this note.)
+Answering the question makes the card ready, and the next claim begins a new loop. Review round 2
+found the loop starting the fix run under the reviewer's question; the first version of this
+paragraph named only the Code → review transition, and the orchestrator added this one.
+
+What the guard reads is any open request that is not the run's *own* permission question. The
+run's own question is excluded on purpose: an ending replaces it (013), so a met contract under
+it hands the card on with the offer, and widening the guard would let a run that triggered a
+permission question and then finished skip the review. Whether the harness can end a session
+with an ask still outstanding is unverified; `runner.ts` records the exclusion and the reason.
 
 `runPlaybook` in `run.ts` returns the contract's outcome to the caller when the contract is met,
 rather than ending the card itself. Every other outcome — an unmet contract, a time limit, the
@@ -237,8 +281,12 @@ This spec grants a review run a tool list, so the check applies.
    harness's own flag-by-flag recognition, as for Code runs. `Edit`, `Write` and `NotebookEdit`
    are denied outright, and a deny outranks any allow.
 3. **Composed.** `skelcrew review approved` recorded by anyone other than `crew` during the
-   review run is ignored by the loop; recorded by `crew` during a *Code* run, through a check
-   command or otherwise, it falls outside the review run's `sinceSeq` and is ignored too. A
+   review run is ignored by the loop; recorded by `crew` before the review run starts, during
+   the Code run, it falls outside the review run's `sinceSeq` and is ignored too. What
+   `sinceSeq` does not close is a process the Code run leaves running in the background, which
+   can record a verdict *during* the review window as `crew`: that is 016's open subprocess
+   limit, listed below, not something the window catches. (Review round 3 corrected the first
+   version of this sentence, which claimed the window closed it.) A
    check-command subprocess plus nothing else can commit: the contract's branch-head comparison
    fails the run. A reviewer that approves untruthfully hands the card to the owner with
    `ready for review`, which is what every Code finish did before this spec, so the composition

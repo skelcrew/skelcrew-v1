@@ -218,6 +218,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Git } from "./git";
+import type { PlaybookKind } from "./playbooks";
 
 export const FIXED_ALLOWLIST: readonly string[] = [
   "Read",
@@ -240,6 +241,58 @@ export const FIXED_ALLOWLIST: readonly string[] = [
   "Bash(gh pr comment *)",
   "Bash(gh repo view *)",
 ];
+
+/**
+ * What a **review run** may do without asking: the read-only part of the list above, plus the
+ * one verb that is the whole point of the run. Every rule in the module comment applies here
+ * unchanged — the wildcard goes after the subcommand, each `gh pr` verb is named separately,
+ * the CLI is allowed verb by verb — and two things are different.
+ *
+ * **No write verb is on it.** No `git add`, `git commit`, `git push`, `gh pr create` or
+ * `gh pr comment`; no `skelcrew body` or `skelcrew refs`. A review run reports, and the report
+ * is a verdict on the card. The six read-only git verbs are absent for rule 3's reason and
+ * still run, through the harness's own flag-by-flag check, exactly as they do for a Code run.
+ *
+ * **The file tools are denied outright rather than anchored.** `deniedTools` below narrows a
+ * Code run's writes to its worktree; here there is nowhere a write belongs, so `Edit`, `Write`
+ * and `NotebookEdit` are denied path-lessly by `REVIEW_DENIED_TOOLS` — a deny outranks every
+ * allow, and a refusal comes straight back to the agent rather than stopping the run on a
+ * question the owner would have to answer. With no `Edit(…)` allow rule on the list, a shell
+ * redirection has no target any rule covers, so `>` asks too (`redirectionAllowed`).
+ *
+ * **This is a gate, not a boundary, and it is defeated in three recorded ways, of which the
+ * contract catches one.** The scanned check commands are added to this list as they are to a
+ * Code run's, deliberately, so the reviewer can run the repository's checks — and *What a
+ * subprocess reaches* above is true of that subprocess here too: it can write, commit and push,
+ * and nothing in the permission layer sees it. That is the first way, and the review contract
+ * (`contracts.ts`) is what catches it in the ordinary course, failing a run whose branch moved
+ * or whose worktree is dirty whatever verdict it recorded. The second is a push of another ref,
+ * which nothing here catches, which 013 records for Code runs and which is no wider here. The
+ * third is a reviewer that simply records an untrue `approved`, which reaches exactly what every
+ * Code finish reached before 019: the owner's own review of the pull request.
+ */
+export const REVIEW_ALLOWLIST: readonly string[] = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Agent",
+  "TodoWrite",
+  "Bash(skelcrew show *)",
+  "Bash(skelcrew comment *)",
+  "Bash(skelcrew attention *)",
+  "Bash(skelcrew review *)",
+  "Bash(gh pr view *)",
+  "Bash(gh pr diff *)",
+  "Bash(gh repo view *)",
+];
+
+/**
+ * What a review run may not touch however its list reads: every file tool, on every path.
+ * Spelled without a path because there is no path a review run may write — `Edit` covers every
+ * built-in tool that edits a file, and `Write` and `NotebookEdit` are named beside it because
+ * the spec names all three.
+ */
+export const REVIEW_DENIED_TOOLS: readonly string[] = ["Edit", "Write", "NotebookEdit"];
 
 /** `Tool` or `Tool(content)`; anything else is not an entry this module knows how to read. */
 const ENTRY = /^([A-Za-z][\w-]*)(?:\((.*)\))?$/;
@@ -1146,9 +1199,16 @@ export async function allowlistFor(
   repoRoot: string,
   defaultBranch: string,
   worktreePath: string,
+  kind: PlaybookKind,
 ): Promise<RunAllowlist> {
-  const tools = [...FIXED_ALLOWLIST, editsIn(worktreePath)];
-  const denied = deniedTools(worktreePath);
+  const review = kind === "review";
+  // A review run writes nothing, so it gets no file-tool entry to anchor and every file tool
+  // is denied outright instead. See `REVIEW_ALLOWLIST` and `REVIEW_DENIED_TOOLS`.
+  const tools = review ? [...REVIEW_ALLOWLIST] : [...FIXED_ALLOWLIST, editsIn(worktreePath)];
+  const denied = review ? [...REVIEW_DENIED_TOOLS] : deniedTools(worktreePath);
+  // Read from the Code list for both kinds, and deliberately: the review list narrows no git
+  // verb of its own, so a scanned line naming `git` would otherwise grant a review run exactly
+  // what that list withholds. A word either list narrows contributes nothing to either.
   const narrowed = narrowedCommands();
   const base = scanBase(defaultBranch);
   let reachable = false;

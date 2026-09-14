@@ -1,8 +1,9 @@
 /**
- * The artefact contracts: what must exist for a phase to end. A phase is complete when its
+ * The artefact contracts: what must exist for a run to end well. A phase is complete when its
  * artefact exists, never merely because the agent said the session went well — so a run whose
  * session ended normally and whose claim is still its own is checked here before the card is
- * handed on.
+ * handed on. There are three, chosen by run kind rather than by phase: the Code phase's loop
+ * runs a review between its Code runs, and a review run's artefact is the verdict it recorded.
  *
  * Every check is read-only. What it produces is the run's last word — either what landed, with
  * the move the owner is offered, or every condition that did not, named.
@@ -13,10 +14,10 @@
  * finishes its phases exactly like one that does — its pull request description carries the
  * spec for the reviewer.
  */
-import { type CardRefs, COMMITS_MAX_COUNT, type Phase } from "@skelcrew/shared";
+import { type CardRefs, COMMITS_MAX_COUNT, type Phase, type ReviewVerdict } from "@skelcrew/shared";
 import type { RunCore } from "./ending";
 import type { Git } from "./git";
-import type { PlaybookPhase } from "./playbooks";
+import type { PlaybookKind } from "./playbooks";
 
 export interface ContractOutcome {
   met: boolean;
@@ -26,6 +27,12 @@ export interface ContractOutcome {
   moves: Phase[];
   /** What the run records on the card once the artefact is there. */
   refs?: CardRefs;
+  /**
+   * What a met review contract concluded: the last verdict the review run recorded. The loop
+   * in `runner.ts` acts on this and on nothing else — an unmet contract carries none, so a
+   * verdict recorded by a run that moved the branch or left the worktree dirty is ignored.
+   */
+  verdict?: ReviewVerdict;
 }
 
 export interface ContractInput {
@@ -140,9 +147,70 @@ async function codeContract(input: ContractInput): Promise<ContractOutcome> {
   };
 }
 
-export function checkContract(
-  phase: PlaybookPhase,
-  input: ContractInput,
-): Promise<ContractOutcome> {
-  return phase === "spec" ? Promise.resolve(specContract(input)) : codeContract(input);
+/**
+ * Review: a verdict recorded *by this run*, the branch left where it was found, and a clean
+ * worktree. Every unmet condition is named, in that order.
+ *
+ * The verdict has to be the review run's own — `crew`'s, inside this run's sequence window —
+ * because the loop's budget is the runner's and nothing the agent does may reach it: a verdict
+ * the owner recorded, or one `crew` recorded during the *Code* run, is activity on the card and
+ * nothing more. The last one the run recorded is what it concluded; a run that recorded two has
+ * changed its mind, which is legible, and a run that recorded none has not reviewed anything.
+ *
+ * The other two conditions are what a review run must not have done. They are not a boundary —
+ * a check command's subprocess can commit and push, and no rule in `allowlist.ts` reaches
+ * inside one — but they are what catches it in the ordinary course, and they bite whatever the
+ * verdict says, which is why the verdict is dropped when they do.
+ */
+async function reviewContract(input: ContractInput): Promise<ContractOutcome> {
+  const card = input.core.getCard(input.cardId);
+  const recorded = card.activity.filter(
+    (event) =>
+      event.seq > input.sinceSeq &&
+      event.type === "review_recorded" &&
+      event.actorId === input.memberId,
+  );
+  const last = recorded.at(-1);
+  const head = await input.git.revParse(input.repoRoot, `refs/heads/${input.branch}`);
+  const changed = await input.git.status(input.worktreePath);
+
+  const unmet: string[] = [];
+  if (last === undefined) unmet.push("review run ended without a verdict");
+  if (head === undefined || head !== input.branchHead) {
+    unmet.push("the branch moved during the review run");
+  }
+  if (changed.length > 0) unmet.push("uncommitted changes in the worktree");
+  if (unmet.length > 0 || last?.type !== "review_recorded") {
+    return { met: false, note: withExitRamp(unmet.join("; "), input.worktreePath), moves: [] };
+  }
+  /**
+   * The note the card actually gets is the loop's to compose: what a met review means depends
+   * on the verdict and on the round, which the contract knows nothing about. This one is what
+   * any other caller would post, and it says what the run recorded.
+   *
+   * It is a real note rather than an empty string because `endRun` posts whatever note it is
+   * handed and the core refuses an empty comment: an ending path added later that passed this
+   * outcome straight on would park the card with `run ended and could not record why` instead
+   * of the reason. And a note rather than an optional field on `ContractOutcome`, because every
+   * *other* met outcome has one — an optional note would make all three call sites pick a
+   * fallback for a case only this one has, which is this line, written three times.
+   */
+  const verdict = last.data.verdict;
+  return {
+    met: true,
+    note: `review run recorded: ${verdict === "approved" ? "approved" : "changes requested"}`,
+    moves: [],
+    verdict,
+  };
+}
+
+export function checkContract(kind: PlaybookKind, input: ContractInput): Promise<ContractOutcome> {
+  switch (kind) {
+    case "spec":
+      return Promise.resolve(specContract(input));
+    case "code":
+      return codeContract(input);
+    case "review":
+      return reviewContract(input);
+  }
 }

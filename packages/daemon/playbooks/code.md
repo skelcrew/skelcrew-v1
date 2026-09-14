@@ -84,6 +84,14 @@ card as you go.
    disagree, the data wins and the spec has a bug worth raising.
 5. Run `git status` and `git log` to see what is already on this branch: an earlier run of
    this card may have left work here.
+6. **A changes-requested verdict recorded on the card since this branch's last run is the
+   brief for this run.** A reviewer read this diff and wrote down what is wrong with it;
+   those findings are what this run is for. Address every Critical and every Important
+   finding. A finding you believe is wrong is answered on the card —
+   `skelcrew comment <id> "<why you disagree>"` — and never silently skipped: the next review
+   reads the card too, so an unanswered finding comes back. If you conclude that nothing
+   should change at all, raise that and stop rather than ending a run that commits nothing,
+   which §4 explains.
 
 ## 2. Post the plan
 
