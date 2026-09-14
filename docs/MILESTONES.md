@@ -31,6 +31,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 15 | 018 A merged pull request lands the card in Done (008a) | landed, PR #16 — three review rounds, every Important a claim nobody had run |
 | 16 | 019 Code is reviewed before the owner sees it (008b) | landed, PR #17 — three review rounds; the milestone's premise that the playbook already looped was wrong |
 | 17 | 020 A conflicting pull request asks to go back to Code (008c) | landed, PR #18 — two review rounds; the daemon offers the move and does not make it |
+| 18 | 021 The agent inherits what its login needs | landed, PR #19 — the first real card's finding: the runner stripped `USER`, and the Keychain login needs it |
 | | 005 | dropped |
 
 ## Background
@@ -411,6 +412,10 @@ the run hands back the way 006 does.
   OAuth session, or who is behind a proxy, will have every run fail at authentication with a
   cause that is not discoverable from the card. Whichever spec first meets a non-OAuth login
   decides deliberately what to pass through, rather than discovering this by accident.
+  **Decided by 021**, and by accident after all: the first real card failed at `Not logged in`
+  with an OAuth login, because the Keychain lookup needs `USER`. 021 passes through a fixed
+  short list — `USER`, `LOGNAME`, the four login and endpoint variables, `CLAUDE_CONFIG_DIR` —
+  and nothing else; proxy and CA-bundle variables are left out on purpose and recorded there.
 
 - **Carried from 012, for 013: `settingSources: []` does not close every settings channel.**
   It disables the user, project and local `.claude/settings.json` tiers, which is what stops a
@@ -703,6 +708,39 @@ now keeps one list per run kind, so a Spec playbook line naming either command w
   if the Code list ever gains a verb that moves `refs/heads/`.
 - **`gh`'s conflicting answer was observed on another repository's pull request**, never on one
   of this repository's own, and never through the transition from `UNKNOWN` to `CONFLICTING`.
+
+## 021 — The agent inherits what its login needs
+
+The first real card through a real daemon, 2026-09-14, landed as PR #19. The run ended at
+`run failed: Not logged in` before the agent said a word: the runner handed it `PATH`, `HOME`
+and skelcrew's two variables, and on macOS the Keychain login the harness keeps needs `USER` to
+be found. Measured by hand: the installed binary logs in with `PATH`, `HOME` and `USER`, and
+not without `USER`. The agent now inherits a fixed short list from the daemon's environment —
+`USER`, `LOGNAME`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `CLAUDE_CONFIG_DIR` — verbatim, only when the daemon has them, and an
+empty value counts as absent. Skelcrew still stores no credential. 012's criterion 13 (exactly
+four variables) is superseded, and the 012 finding above is decided.
+
+One review round, approved. Its useful catch: the credential rule went into the Code playbook
+alone, but Spec and review runs get the same login, and a Spec run's card body is exported into
+the repository by the Code run that follows. All three playbooks now carry the rule.
+
+**Carried findings.**
+
+- **A shell-only credential is now readable to the run that uses it.** A stored login always
+  was (`Read` has no path anchor and `HOME` was passed). Every playbook says never to write a
+  credential into the repository, the card or a pull request; that is prose, and the only
+  mitigation.
+- **Proxy and CA variables were left out on purpose.** `HTTPS_PROXY`, `NO_PROXY` and
+  `NODE_EXTRA_CA_CERTS` are not on the list; `ANTHROPIC_BASE_URL` is. The next owner behind a
+  proxy adds them to the same list in `shim.ts`, which is where the harness pin is recorded.
+- **The SDK prints `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` with a stack trace on every run.** It
+  reports the five bare tool names 013 pre-allows on purpose. Noise that buries a real error on
+  the daemon's console, and it read as a crash the first time; silencing it is its own small
+  change.
+- **`USER` alone was verified on one machine.** Whether it suffices on every macOS version, and
+  whether a subprocess can read the Keychain token without a prompt, are unverified. The
+  owner's re-run of card 1 is criterion 7, performed after this landed.
 
 ## Later, deliberately unplanned
 
