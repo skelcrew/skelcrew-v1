@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { VERSION } from "@skelcrew/shared";
-import { agentEnvironment, shimDir, writeShim } from "./shim";
+import { agentEnvironment, INHERITED_VARIABLES, shimDir, writeShim } from "./shim";
 
 let dir: string;
 
@@ -44,12 +44,73 @@ test("writing the shim twice leaves one working shim", async () => {
   expect(await proc.exited).toBe(0);
 });
 
-test("the spawned environment is exactly PATH, HOME, SKELCREW_AS and SKELCREW_DIR", () => {
+/**
+ * 021 supersedes criterion 13 of 012, which read "the spawned agent's environment is exactly
+ * `PATH` (with the shim's directory first), `HOME`, `SKELCREW_AS` and `SKELCREW_DIR`" — and
+ * this case pinned that sentence. It was too narrow to log in with: on macOS the harness reads
+ * its `claude login` out of the Keychain under the user's name, so a run with `HOME` alone ended
+ * at `Not logged in · Please run /login`, and an owner authenticating with a key in their shell
+ * had no path at all. The environment is still a fixed short list rather than a passthrough:
+ * `INHERITED_VARIABLES` is copied verbatim when the daemon has it, and everything else — a
+ * `SECRET`, an `AWS_PROFILE`, an exported `SKELCREW_AS` — is dropped as before.
+ */
+test("the spawned environment is PATH, HOME, the inherited login variables, and the two skelcrew ones", () => {
+  const login = {
+    USER: "simon",
+    LOGNAME: "simon",
+    ANTHROPIC_API_KEY: "sk-ant-key",
+    ANTHROPIC_AUTH_TOKEN: "token",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth",
+    ANTHROPIC_BASE_URL: "https://proxy.invalid",
+    CLAUDE_CONFIG_DIR: "/home/simon/elsewhere",
+  };
+  expect(Object.keys(login).toSorted()).toEqual([...INHERITED_VARIABLES].toSorted());
   const env = agentEnvironment(
-    { PATH: "/usr/bin", HOME: "/home/simon", SECRET: "s", SKELCREW_AS: "someone" },
+    {
+      PATH: "/usr/bin",
+      HOME: "/home/simon",
+      ...login,
+      SECRET: "s",
+      AWS_PROFILE: "work",
+      SKELCREW_AS: "someone",
+    },
     dir,
     "crew",
   );
+  expect(env).toEqual({
+    PATH: `${shimDir(dir)}${delimiter}/usr/bin`,
+    HOME: "/home/simon",
+    ...login,
+    SKELCREW_AS: "crew",
+    SKELCREW_DIR: dir,
+  });
+});
+
+/** A variable the daemon does not have is absent from the agent's, not invented as empty. */
+test("a login variable the daemon's environment lacks is not passed on as an empty string", () => {
+  const env = agentEnvironment({ PATH: "/usr/bin", HOME: "/home/simon" }, dir, "crew");
+  for (const name of INHERITED_VARIABLES) expect([name, name in env]).toEqual([name, false]);
+  expect(env).toEqual({
+    PATH: `${shimDir(dir)}${delimiter}/usr/bin`,
+    HOME: "/home/simon",
+    SKELCREW_AS: "crew",
+    SKELCREW_DIR: dir,
+  });
+});
+
+/**
+ * Review round 1, Minor 2. An exported-but-empty variable is the same thing as an unset one for
+ * a login: `ANTHROPIC_API_KEY=` left in a shell profile is not a key, and handing the harness an
+ * empty one is handing it a login that cannot work while looking like a login that could. `PATH`
+ * has always read `""` as absent; the copied variables read it the same way.
+ */
+test("a login variable the daemon exported empty is absent too, not passed on as an empty string", () => {
+  const env = agentEnvironment(
+    { PATH: "/usr/bin", HOME: "/home/simon", ANTHROPIC_API_KEY: "", USER: "" },
+    dir,
+    "crew",
+  );
+  expect([...INHERITED_VARIABLES].filter((name) => name in env)).toEqual([]);
   expect(env).toEqual({
     PATH: `${shimDir(dir)}${delimiter}/usr/bin`,
     HOME: "/home/simon",

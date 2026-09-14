@@ -116,6 +116,8 @@ interface StartOptions {
   driver: AgentDriver;
   /** The core the runner is given, when a test needs one of its calls to fail. */
   core?: Core;
+  /** The daemon's own environment, when a test is about what the agent inherits from it. */
+  env?: Record<string, string | undefined>;
   summaryMs?: number;
   runLimitMs?: number;
   abortGraceMs?: number;
@@ -133,7 +135,7 @@ function start(options: StartOptions): Runner {
     crew: crewMember,
     warn: (line) => warnings.push(line),
     agent: { driver: options.driver, playbooks },
-    env: { PATH: "/usr/bin", HOME: join(tmp, "home") },
+    env: options.env ?? { PATH: "/usr/bin", HOME: join(tmp, "home") },
     summaryMs: options.summaryMs ?? 60_000,
     runLimitMs: options.runLimitMs ?? 60_000,
     abortGraceMs: options.abortGraceMs ?? 1000,
@@ -286,6 +288,59 @@ test("a Spec run: the log path, the turn, the batched tools, and the handoff, in
   expect(options.env).toEqual(
     agentEnvironment({ PATH: "/usr/bin", HOME: join(tmp, "home") }, dataDir, crewMember.name),
   );
+});
+
+// --- what the agent inherits from the daemon's environment (021) ---
+
+/** The environment the real runner spawned the agent with, from a daemon started under `env`. */
+async function spawnedEnvUnder(
+  env: Record<string, string | undefined>,
+): Promise<Record<string, string>> {
+  await initRepo();
+  let spawned: Record<string, string> | undefined;
+  start({
+    env,
+    driver: fakeDriver(async function* (options) {
+      spawned = options.env;
+      yield { type: "result", ok: true };
+    }),
+  });
+  await runCard("What the login needs");
+  return spawned as Record<string, string>;
+}
+
+/**
+ * Criterion 3. The first card through a real daemon ended at `Not logged in · Please run
+ * /login`: the harness reads its Keychain login under the user's name, and `USER` was among the
+ * variables the runner stripped. What the runner hands the driver is `agentEnvironment` over the
+ * daemon's own environment, so a login the owner's shell has is one the agent has.
+ */
+test("a daemon started with USER and a key hands both to the agent", async () => {
+  const spawned = await spawnedEnvUnder({
+    PATH: "/usr/bin",
+    HOME: join(tmp, "home"),
+    USER: "simon",
+    ANTHROPIC_API_KEY: "sk-ant-key",
+  });
+  expect(spawned).toEqual(
+    agentEnvironment(
+      {
+        PATH: "/usr/bin",
+        HOME: join(tmp, "home"),
+        USER: "simon",
+        ANTHROPIC_API_KEY: "sk-ant-key",
+      },
+      dataDir,
+      crewMember.name,
+    ),
+  );
+  expect([spawned.USER, spawned.ANTHROPIC_API_KEY]).toEqual(["simon", "sk-ant-key"]);
+});
+
+/** And a daemon whose environment has neither invents neither. */
+test("a daemon started without them hands the agent neither", async () => {
+  const spawned = await spawnedEnvUnder({ PATH: "/usr/bin", HOME: join(tmp, "home") });
+  expect(["USER" in spawned, "ANTHROPIC_API_KEY" in spawned]).toEqual([false, false]);
 });
 
 // --- who the agent speaks as (016) ---

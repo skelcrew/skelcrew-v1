@@ -20,7 +20,11 @@ stops stripping the ones the harness needs.
 This is a **gate**, not a boundary. It governs what the agent's environment contains in the
 ordinary course. What it does not do is hide the owner's login from the agent, and it never
 could: an agent that can run a check command can read `~/.claude`, and with `HOME` it already
-could. The passthrough adds convenience for the owner and no new reach for the agent.
+could. For a stored login the passthrough adds convenience for the owner and no new reach for
+the agent. For a credential that lives only in the owner's shell it is new reach: before this
+spec the run could not see it, and after it any pre-allowed check command can print it. That is
+the trade the spec makes, and the playbooks' new rule is its only mitigation. (Review round 1
+corrected the first version of this sentence, which claimed no new reach in every case.)
 
 ## Current behavior
 
@@ -118,7 +122,7 @@ This spec grants the agent the owner's login variables, so the check applies.
 3. **Composed.** With `Edit(//<worktree>/**)` and `git push`: a key written into a committed file
    is pushed to the forge. That composition existed for anything in `~/.claude` already; what
    changes is that reading an environment variable is easier than reading a file. The playbooks
-   say nothing about secrets today; a sentence in `code.md` telling the agent never to write a
+   say nothing about secrets today; a sentence in each playbook telling the agent never to write a
    credential into the repository costs nothing, and criterion 5 asks for it.
 4. **The real enforcer** is the harness's own login lookup. It was run by hand (see *Current
    behavior*): the installed binary with `PATH`, `HOME` and `USER` logs in from the Keychain on
@@ -149,9 +153,12 @@ login needs variables not on this list and is out of scope.
    driver's `options.env`).
 4. `bun run check:harness` passes, and its sessions' environment holds the stub key and no
    variable from the operator's shell: the check's base is still `{ PATH, HOME }`.
-5. `code.md` says, in the rules the list cannot enforce, never to write a credential from the
-   environment into the repository, the card, or a pull request; `playbooks.test.ts` pins the
-   sentence.
+5. Each of the three playbooks — `code.md` in the rules the list cannot enforce, and `spec.md`
+   and `review.md` in the matching place — says never to write a credential from the environment
+   into the repository, the card, or a pull request; `playbooks.test.ts` pins the sentence in
+   all three. All three kinds of run receive the same environment, and a Spec run's card body
+   is later exported into the repository by a Code run, so the door is at every playbook.
+   (Review round 1 found the rule in `code.md` alone; the orchestrator widened this criterion.)
 6. `shim.ts`'s doc names the list, says what each variable is for, says skelcrew stores none of
    them, and names the harness version the list was written against. This spec is named as
    superseding 012's criterion 13, and `shim.test.ts`'s corrected case says so.

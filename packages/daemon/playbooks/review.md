@@ -45,6 +45,12 @@ until the owner is at their machine, so where a pre-allowed way of doing somethi
 use it. If something you genuinely need is refused, say what you needed with
 `skelcrew attention <id> "<what you needed>"` rather than working around it.
 
+One rule no list can enforce, and you must: **Never write a credential into the repository, the
+card, or a pull request.** The environment this run was given may carry the owner's own model
+login — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` — and a value
+from it quoted into your findings or a comment is on the card for good. Never read one, never
+print one, and never copy one into a file, a comment or a description.
+
 ## 1. Ground yourself
 
 1. **Read `AGENTS.md` or `CLAUDE.md` at the repository root in full, first**, if either
