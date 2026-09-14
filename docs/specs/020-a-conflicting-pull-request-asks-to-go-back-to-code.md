@@ -106,7 +106,9 @@ fields as `gh` 2.86.0 renders them.
 
 What is verified and what is not, recorded in `forge.ts`: the three enum values are from the
 schema; a merged pull request answers `UNKNOWN`; the answer for a live conflicting pull request
-was not observed while writing this spec, because none existed. GitHub computes mergeability
+was not observed while writing this spec, because none existed — the implementer then observed
+one (`cli/cli#14285`, `"mergeable":"CONFLICTING"`), and `forge.ts` records the real answer
+(orchestrator's note, added during development). GitHub computes mergeability
 lazily and answers `UNKNOWN` until it has, which is why `unknown` is nothing and the poll simply
 asks again.
 
@@ -176,7 +178,8 @@ rest of the fix in prose that names commands already on the list.
    and the comment; git refuses control characters in ref names, and the note goes through
    `postingCore`.
 
-Open, recorded as such: `mergeable` was not observed on a live conflicting pull request; the
+Open, recorded as such: `mergeable` on a live conflicting pull request was observed once during
+development, not by a test, and never on a pull request of this repository's own; the
 grant uses the runner's default branch name while the note uses the pull request's base, and the
 two can differ; a subprocess reaches past every entry here (016).
 
