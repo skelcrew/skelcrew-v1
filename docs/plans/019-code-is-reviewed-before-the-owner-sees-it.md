@@ -52,10 +52,10 @@ Run record for `docs/specs/019-code-is-reviewed-before-the-owner-sees-it.md`.
 - **Every run in the loop gets its `sinceSeq` just before it starts**, which for the first run
   moves it from the `claimed` event to the run's own start comment. Nothing between the two is
   an event any contract or ending counts.
-- **A met Code contract goes to review even with the agent's own question standing.** The loop's
-  condition is the contract, as the spec words it. The review run's ending then finds that
-  request standing, offers no move and releases `blocked`, which is what criterion 10's last
-  clause asks for one run later.
+- **A met Code contract goes to review even with the agent's own question standing** — as first
+  implemented. **Reversed in review round 1** (Minor 3 below) and the spec amended: a met
+  contract under a standing request the run may not replace ends the loop there, and round 2
+  extended the same rule to the fix run. This bullet is kept as the record of the first decision.
 - **The scan's narrowing is read from the Code list for both kinds.** `narrowedCommands()` is
   unchanged, so a scanned line naming `git`, `gh` or `skelcrew` contributes nothing to a review
   run either — a review list read on its own would not narrow `git` at all, and a repository
