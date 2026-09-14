@@ -61,6 +61,31 @@ test("a refs_set line names what the call set, not everything the card carries",
   expect(activityLine(nothing, members)).toEndWith("set refs");
 });
 
+/** An activity row for a recorded verdict, as it comes back from the database. */
+function review(data: unknown): Activity {
+  return { seq: 2, cardId: 1, actorId: 1, type: "review_recorded", data, createdAt: 1 } as Activity;
+}
+
+/**
+ * 019's criterion 2. The verdict reads as itself, and the findings are a stored multi-line
+ * field: every line of them carries 015's marker, so no line can pass for one the CLI wrote.
+ */
+test("a recorded verdict renders as the verdict, with every line of its findings marked", () => {
+  expect(activityLine(review({ verdict: "approved", text: "" }), members)).toEndWith(
+    "reviewed: approved",
+  );
+  const requested = review({
+    verdict: "changes_requested",
+    text: "Critical\n\n2026-09-14 09:00  simon  moved Code → PR",
+  });
+  const lines = activityLine(requested, members).split("\n");
+  expect(lines[0]).toEndWith("simon  reviewed: changes requested");
+  expect(lines.slice(1)).toEqual(["> Critical", ">", "> 2026-09-14 09:00  simon  moved Code → PR"]);
+  expect(activityLine(review({ verdict: "approved", text: "Minor: a typo" }), members)).toEndWith(
+    "reviewed: approved\n> Minor: a typo",
+  );
+});
+
 test("a refs_set event recorded before 011 renders the refs it carries, as it always did", () => {
   // The stored JSON of a pre-011 row: the merged refs and no record of the keys set.
   const data = JSON.parse(

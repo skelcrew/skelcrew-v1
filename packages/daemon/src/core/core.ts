@@ -30,6 +30,7 @@ import {
   type Phase,
   type PhaseDef,
   PR_URL_MAX_BYTES,
+  type ReviewVerdict,
   SPEC_PATH_MAX_BYTES,
   type TextKind,
   TITLE_MAX_BYTES,
@@ -51,6 +52,12 @@ export interface Core {
   moveCard(id: number, phase: Phase, actorId: number): Card;
   setBody(id: number, body: string, actorId: number): Card;
   comment(id: number, text: string, actorId: number): Activity;
+  /**
+   * Records a verdict on the card. A member primitive like `comment`: any member may record
+   * one, it moves nothing, and the text is a multi-line field under the comment cap. Findings
+   * are required with `changes_requested`; with `approved` the text is optional.
+   */
+  review(id: number, review: { verdict: ReviewVerdict; text?: string }, actorId: number): Activity;
   setRefs(id: number, refs: CardRefs, actorId: number): Card;
   archiveCard(id: number, actorId: number): Card;
 
@@ -124,6 +131,8 @@ interface ActivityRow {
 }
 
 const COMMIT_SHA = /^[0-9a-f]{7,40}$/;
+/** The verdicts a review may record; anything else is not one. */
+const REVIEW_VERDICTS = new Set<ReviewVerdict>(["approved", "changes_requested"]);
 /** In `CardRefs` declaration order: what a `refs_set` event records as the keys it set. */
 const REF_KEYS = new Set<keyof CardRefs>(["branch", "specPath", "commits", "prUrl"]);
 
@@ -662,6 +671,31 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
         readCard(id);
         requireText("comment", "multi-line", text);
         return log(id, actorId, { type: "comment", data: { text } });
+      });
+    },
+
+    review(id, { verdict, text = "" }, actorId) {
+      return mutate((log) => {
+        getMember(actorId);
+        readMutableCard(id);
+        if (!REVIEW_VERDICTS.has(verdict)) {
+          throw new CoreError(
+            "invalid",
+            `verdict must be one of ${[...REVIEW_VERDICTS].join(", ")}`,
+          );
+        }
+        // The control-character check first, like every other field: what the caller is told is
+        // the character. The text is multi-line — findings are a list, not a line.
+        requireNoControl("review", "multi-line", text);
+        if (byteLength(text) > COMMENT_MAX_BYTES) {
+          throw new CoreError("invalid", `review exceeds ${COMMENT_MAX_BYTES} bytes`);
+        }
+        // A verdict nobody can act on is not a verdict: changes requested carries its findings.
+        // `approved` may carry Minor findings, or nothing at all.
+        if (verdict === "changes_requested" && text.trim().length === 0) {
+          throw new CoreError("invalid", "changes requested must carry its findings");
+        }
+        return log(id, actorId, { type: "review_recorded", data: { verdict, text } });
       });
     },
 

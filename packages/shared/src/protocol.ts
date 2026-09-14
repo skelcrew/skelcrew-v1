@@ -6,7 +6,15 @@
  * the core one to one, minus `actorId`.
  */
 import type { Phase } from "./phases";
-import type { Activity, Card, CardDetail, CardRefs, Member, OpenAttention } from "./types";
+import type {
+  Activity,
+  Card,
+  CardDetail,
+  CardRefs,
+  Member,
+  OpenAttention,
+  ReviewVerdict,
+} from "./types";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -36,6 +44,11 @@ export interface Methods {
   moveCard: { params: { id: number; phase: Phase }; result: Card };
   setBody: { params: { id: number; body: string }; result: Card };
   comment: { params: { id: number; text: string }; result: Activity };
+  /**
+   * Records a verdict on the card. `text` is the findings — required with
+   * `changes_requested` — and the core's `review`, whose name this one carries a card on.
+   */
+  reviewCard: { params: { id: number; verdict: ReviewVerdict; text?: string }; result: Activity };
   setRefs: { params: { id: number; refs: CardRefs }; result: Card };
   archiveCard: { params: { id: number }; result: Card };
   activitySince: { params: { seq: number }; result: Activity[] };
@@ -80,6 +93,7 @@ export const METHOD_NAMES: readonly MethodName[] = [
   "moveCard",
   "setBody",
   "comment",
+  "reviewCard",
   "setRefs",
   "archiveCard",
   "activitySince",

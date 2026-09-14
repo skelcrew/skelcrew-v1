@@ -206,6 +206,13 @@ function summary(event: Activity, members: Member[]): string {
       return `set body (${event.data.bytes} bytes)`;
     case "comment":
       return `commented: ${continued(event.data.text)}`;
+    case "review_recorded": {
+      const verdict = event.data.verdict === "approved" ? "approved" : "changes requested";
+      // The findings stand on their own lines and every one of them is marked — the criterion
+      // asks for exactly that, and a finding quoting an activity entry is the ordinary case.
+      const text = event.data.text;
+      return text.length === 0 ? `reviewed: ${verdict}` : `reviewed: ${verdict}\n${marked(text)}`;
+    }
     case "refs_set": {
       // What this call set. An event from before 011 has no record of that and says so by
       // its absence; it renders the merged refs, as it always did.

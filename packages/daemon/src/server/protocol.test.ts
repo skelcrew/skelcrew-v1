@@ -136,12 +136,14 @@ describe("method parity with the core", () => {
   test("every core method has a same-named wire method, or a named stand-in", () => {
     // `hello` is how a member joins (the core's `ensureMember`); `listMembers` covers
     // `getMember`; `close` is the process's, not a member's; `sweepClaims` is the daemon's
-    // timer, not a member action, so it has no wire method.
+    // timer, not a member action, so it has no wire method. `review` is on the wire as
+    // `reviewCard`, the way every other method naming a card is spelled there.
     const standIns: Record<string, MethodName | null> = {
       ensureMember: "hello",
       getMember: "listMembers",
       close: null,
       sweepClaims: null,
+      review: "reviewCard",
     };
     const wireMethods: readonly string[] = METHOD_NAMES;
     const coreMethods = Object.keys(core);
@@ -172,10 +174,14 @@ describe("method parity with the core", () => {
     expect(wireMethods).toContain("hello");
     expect(wireMethods).toContain("unsubscribe");
     const coreMethods = new Set(Object.keys(core));
+    // The three wire methods with no core method of the same name: the two the connection
+    // itself owns, and `reviewCard`, which is the core's `review`.
+    const wireOnly = new Set<MethodName>(["hello", "unsubscribe", "reviewCard"]);
     for (const name of METHOD_NAMES) {
-      if (name === "hello" || name === "unsubscribe") continue;
+      if (wireOnly.has(name)) continue;
       expect(coreMethods.has(name)).toBe(true);
     }
+    expect(coreMethods.has("review")).toBe(true);
   });
 
   test("the error table is the spec's", () => {
@@ -379,6 +385,53 @@ describe("methods through the shared client", () => {
     const detail = await ownerClient.call("getCard", { id: card.id });
     const comments: Activity[] = detail.activity.filter((e) => e.type === "comment");
     expect(comments).toEqual([event]);
+    await ownerClient.close();
+    await agentClient.close();
+  });
+
+  /**
+   * 019's criterion 2 over the socket. A verdict is a member primitive: an agent records one,
+   * the owner records one, and a `changes_requested` with no findings is refused by the core
+   * rather than stored.
+   */
+  test("reviewCard records a verdict for an agent and for the owner, and refuses empty findings", async () => {
+    const ownerClient = await asOwner();
+    const agentClient = await asAgent("crew");
+    const agent = core.listMembers().find((m) => m.name === "crew") as Member;
+    const card = await ownerClient.call("createCard", { title: "x" });
+
+    const requested = await agentClient.call("reviewCard", {
+      id: card.id,
+      verdict: "changes_requested",
+      text: "Critical\nthe count is the agent's",
+    });
+    expect(requested).toMatchObject({
+      type: "review_recorded",
+      actorId: agent.id,
+      data: { verdict: "changes_requested", text: "Critical\nthe count is the agent's" },
+    });
+    const approved = await ownerClient.call("reviewCard", { id: card.id, verdict: "approved" });
+    expect(approved).toMatchObject({
+      type: "review_recorded",
+      actorId: owner.id,
+      data: { verdict: "approved", text: "" },
+    });
+
+    await expectRpcError(
+      agentClient.call("reviewCard", { id: card.id, verdict: "changes_requested" }),
+      -32002,
+      "invalid",
+      "findings",
+    );
+    await expectRpcError(
+      agentClient.call("reviewCard", { id: card.id, verdict: "approved", text: "a\rb" }),
+      -32002,
+      "invalid",
+      "U+000D",
+    );
+    const detail = await ownerClient.call("getCard", { id: card.id });
+    const recorded: Activity[] = detail.activity.filter((e) => e.type === "review_recorded");
+    expect(recorded).toEqual([requested, approved]);
     await ownerClient.close();
     await agentClient.close();
   });

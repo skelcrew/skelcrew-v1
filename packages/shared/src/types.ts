@@ -92,6 +92,12 @@ export const CLAIM_TTL_MIN_SECONDS = 10;
 /** The longest lease a claim may ask for; a larger TTL is lowered to this. */
 export const CLAIM_TTL_MAX_SECONDS = 3600;
 
+/**
+ * What a review run — or any member — concluded about the work on a card. `approved` means no
+ * Critical and no Important findings; `changes_requested` carries them as its text.
+ */
+export type ReviewVerdict = "approved" | "changes_requested";
+
 export type ActivityEvent =
   | { type: "member_joined"; data: { name: string; kind: MemberKind } }
   | { type: "card_created"; data: { title: string } }
@@ -99,6 +105,12 @@ export type ActivityEvent =
   | { type: "move_rejected"; data: { from: Phase; to: Phase; reason: string } }
   | { type: "body_set"; data: { bytes: number } }
   | { type: "comment"; data: { text: string } }
+  /**
+   * A verdict on the work, recorded by whoever reviewed it. The text is the findings: required
+   * with `changes_requested`, and empty or the Minor findings with `approved`. It is a record
+   * like a comment — it moves nothing by itself; the runner's review loop is what acts on one.
+   */
+  | { type: "review_recorded"; data: { verdict: ReviewVerdict; text: string } }
   /**
    * The card's refs after the call, and the keys the call itself set — in `CardRefs`
    * declaration order, empty when it set nothing. `set` is absent on events recorded before

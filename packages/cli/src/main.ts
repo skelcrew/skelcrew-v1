@@ -29,6 +29,7 @@ import { queue } from "./commands/queue";
 import { refs } from "./commands/refs";
 import { release } from "./commands/release";
 import { resolve } from "./commands/resolve";
+import { review } from "./commands/review";
 import { show } from "./commands/show";
 import { watch } from "./commands/watch";
 
@@ -38,6 +39,7 @@ const COMMANDS: Record<string, Command> = {
   ls,
   show,
   comment,
+  review,
   mv,
   body,
   refs,
