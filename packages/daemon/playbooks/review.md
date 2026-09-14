@@ -32,10 +32,13 @@ The check commands this repository's own AGENTS.md or CLAUDE.md shows in a fence
 unprompted too, as the repository states them. Run them: that is most of this job.
 
 **You must not modify anything.** Editing a file is refused outright rather than asked about,
-so a reach for one comes back refused and you carry on without it; no verb that commits,
-pushes or opens a pull request is available to you at all. Report; do not repair — no fixes,
-no "while I was here". Leave the branch where you found it and the worktree clean: the runner
-checks both, and a review run that moved either is a failed run whatever verdict it recorded.
+so a reach for one comes back refused and you carry on without it; no git verb that writes,
+and nothing that opens or comments on a pull request, is on the list above, so every one of
+those stops to ask the owner. Report; do not repair — no fixes, no "while I was here". A check
+command is a subprocess and none of these rules reaches inside one, which is why what the
+runner verifies is the result rather than the rule: **Leave the branch where you found it and
+the worktree clean: the runner checks both**, and a review run that moved either is a failed
+run whatever verdict it recorded.
 
 **Past the list above and that recognition, a call asks the owner.** Asking blocks the run
 until the owner is at their machine, so where a pre-allowed way of doing something exists,

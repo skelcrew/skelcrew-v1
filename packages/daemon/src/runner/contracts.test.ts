@@ -1338,10 +1338,13 @@ async function worktreeKept(id: number): Promise<boolean> {
 test("a met Code contract is reviewed under the same claim, and an approval hands the card on", async () => {
   await initRepo();
   const seen: AgentRunOptions[] = [];
+  /** Who held the claim inside each run, read by the agent itself. */
+  const held: Array<number | undefined> = [];
   start({
     driver: scripted(
       async function* (options) {
         seen.push(options);
+        held.push(core.getCard(1).claim?.by);
         yield { type: "text", text: "implemented it" };
         await commitIn(options.cwd, "feature.ts");
         core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
@@ -1349,6 +1352,7 @@ test("a met Code contract is reviewed under the same claim, and an approval hand
       },
       async function* (options) {
         seen.push(options);
+        held.push(core.getCard(1).claim?.by);
         yield { type: "text", text: "read the whole diff" };
         core.review(1, { verdict: "approved" }, crewMember.id);
         yield { type: "result", ok: true };
@@ -1356,6 +1360,9 @@ test("a met Code contract is reviewed under the same claim, and an approval hand
     ),
   });
   await runCard("Reviewed first", "code");
+
+  // The claim was the runner's inside both runs, not only at the ends.
+  expect(held).toEqual([runnerMember.id, runnerMember.id]);
 
   const said = comments(1);
   const round = said.findIndex((text) => text.startsWith("review round 1 of 3 starting"));
