@@ -183,9 +183,25 @@ async function reviewContract(input: ContractInput): Promise<ContractOutcome> {
   if (unmet.length > 0 || last?.type !== "review_recorded") {
     return { met: false, note: withExitRamp(unmet.join("; "), input.worktreePath), moves: [] };
   }
-  // The note is the loop's to compose: what a met review means depends on the verdict and on
-  // the round, which the contract knows nothing about.
-  return { met: true, note: "", moves: [], verdict: last.data.verdict };
+  /**
+   * The note the card actually gets is the loop's to compose: what a met review means depends
+   * on the verdict and on the round, which the contract knows nothing about. This one is what
+   * any other caller would post, and it says what the run recorded.
+   *
+   * It is a real note rather than an empty string because `endRun` posts whatever note it is
+   * handed and the core refuses an empty comment: an ending path added later that passed this
+   * outcome straight on would park the card with `run ended and could not record why` instead
+   * of the reason. And a note rather than an optional field on `ContractOutcome`, because every
+   * *other* met outcome has one — an optional note would make all three call sites pick a
+   * fallback for a case only this one has, which is this line, written three times.
+   */
+  const verdict = last.data.verdict;
+  return {
+    met: true,
+    note: `review run recorded: ${verdict === "approved" ? "approved" : "changes requested"}`,
+    moves: [],
+    verdict,
+  };
 }
 
 export function checkContract(kind: PlaybookKind, input: ContractInput): Promise<ContractOutcome> {

@@ -478,9 +478,15 @@ export function startRunner(options: RunnerOptions): Runner {
        * either kind of run — is answered before anything else makes sense, and the next run
        * could raise no permission question of its own under it (`raiseNext` refuses over a
        * foreign request) and would block until its time limit. So the loop ends here with 014's
-       * ending for a met artefact under a standing question: the artefact named, no move, the
-       * question standing, released blocked — which is what `endRun` makes of this call, because
-       * the raise it tries is refused for the same reason.
+       * ending for a met artefact under a standing question: no move, the question standing,
+       * released blocked — which is what `endRun` makes of this call, because the raise it tries
+       * is refused for the same reason.
+       *
+       * The note is the caller's, because what the card's last word should be depends on where
+       * the loop stopped: before a review the Code run's own note says the artefact landed
+       * (014), while before a fix run the reviewer has just said the work is *not* ready, so
+       * repeating `ready for review` there would have the card's last comment contradict the
+       * verdict above it.
        *
        * What this reads is any open request that is not the run's *own* permission question.
        * That one is excluded on purpose: an ending replaces it (013), so a met contract under it
@@ -490,16 +496,17 @@ export function startRunner(options: RunnerOptions): Runner {
        *
        * Answers whether the loop ended here.
        */
-      const endedUnderAStandingQuestion = (): boolean => {
+      const endedUnderAStandingQuestion = (note: string, moves: Phase[]): boolean => {
         const standing = core.getCard(id).attention;
         if (standing === null || question.isOpen(standing)) return false;
-        end(met.note, met.moves, "finished");
+        end(note, moves, "finished");
         return true;
       };
       for (let round = 1; round <= REVIEW_ROUNDS_MAX; round += 1) {
         stillHeld();
-        // Before a review: the Code run that just met its contract may have asked something.
-        if (endedUnderAStandingQuestion()) return;
+        // Before a review: the Code run that just met its contract may have asked something,
+        // and its own note is what 014 has the card say — the artefact landed.
+        if (endedUnderAStandingQuestion(met.note, met.moves)) return;
         const reviewed = await runOnce(
           "review",
           (log) => `review round ${round} of ${REVIEW_ROUNDS_MAX} starting; run log at ${log}`,
@@ -523,8 +530,16 @@ export function startRunner(options: RunnerOptions): Runner {
         }
         stillHeld();
         // And before a fix run: a review run that raised its own question and recorded
-        // `changes_requested` — both of which its playbook instructs — ends the loop here.
-        if (endedUnderAStandingQuestion()) return;
+        // `changes_requested` — both of which its playbook instructs — ends the loop here,
+        // saying what the card is waiting on rather than repeating the Code run's note.
+        if (
+          endedUnderAStandingQuestion(
+            `changes requested; the reviewer is waiting on an answer; the work is in ${path}`,
+            [],
+          )
+        ) {
+          return;
+        }
         // The fix run's brief is the card: the findings are on it as the last verdict. The
         // Code contract applies to it unchanged, so a fix run that commits nothing fails the
         // way any Code run does and the loop ends there.

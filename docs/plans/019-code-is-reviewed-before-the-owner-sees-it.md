@@ -240,3 +240,44 @@ paragraph is superseded by this one.
 every one ran unprompted, including the verdict representative with its backtick in single
 quotes; `git push origin HEAD:main` was denied under each list; the temporary repository was
 unchanged.
+
+## Review round 3, and what each finding became
+
+APPROVED, with three Minors. Two touch code and both are fixed; the third was a wording fix in
+the spec, made by the orchestrator (`docs:` commit `cbcb371`) before this round started. Only
+the first changes behaviour, and it was driven red first.
+
+- **Minor 1 — the card's last comment contradicted the verdict above it.** At the review → fix
+  guard the loop ended with `met.note`, the *Code* run's note, so a reviewer that left its own
+  question open and recorded `changes_requested` left the card reading `ready for review: <url>`
+  directly under `reviewed: changes requested`. Nothing dangerous followed — no move was offered
+  and the owner's queue showed the reviewer's question — but the comment stream said the work was
+  ready when the reviewer had just said it was not. `endedUnderAStandingQuestion` now takes the
+  note and the moves from its caller: the Code → review guard keeps the Code run's note, which is
+  014's "comments that the artefact landed", and the review → fix guard passes the note the
+  amended spec names, `changes requested; the reviewer is waiting on an answer; the work is in
+  <worktree>`, with no moves. The release is `blocked` either way, as before, because `endRun`'s
+  raise is refused under the standing question. Red first, in the existing case: *Expected:
+  "changes requested; the reviewer is waiting on an answer; the work is in …/worktrees/1" /
+  Received: "ready for review: https://example.invalid/skelcrew/pull/1"*. That case now also
+  asserts no comment on the card starts with `ready for review`.
+- **Minor 2 — the red-team's `sinceSeq` claim was too strong.** Item 3 said a verdict `crew`
+  recorded through a check command during a Code run falls outside the review window, which is
+  true only of a process that has exited: one the Code run leaves running in the background can
+  record during the review window. That is 016's open subprocess limit, already listed as open,
+  not something the window closes. Spec fix by the orchestrator; nothing in the code says
+  otherwise, and nothing here changed.
+- **Minor 3 — a met review contract returned `note: ""`.** Only `runner.ts` knew not to post it.
+  An ending path added later that passed the outcome to `endRun` would have had `core.comment`
+  throw on the empty text, and the card would be parked with `run ended and could not record why`
+  instead of the real reason. The outcome now carries `review run recorded: approved` or
+  `review run recorded: changes requested` — true, non-empty, and safe to post. The reason for
+  that over an optional `note` on `ContractOutcome` is written beside it: every other met outcome
+  has a note, so making the field optional would push a fallback onto all three call sites for a
+  case only this one has. No test: the loop composes its own note for each of its endings, so
+  this one reaches no card, and a test asserting it would assert an internal value rather than
+  what a member sees.
+
+**Checks after the round.** `bun run fix` — no fixes applied. `bun run check` — 714 tests, green
+(the same 714 as round 2; this round tightened an existing case rather than adding one).
+`bun run check:harness` was not re-run: no playbook and no allowlist entry changed.

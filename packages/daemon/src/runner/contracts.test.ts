@@ -1475,7 +1475,12 @@ test("a reviewer's own standing question ends the loop: no fix run starts", asyn
   expect(verdicts(1)).toEqual([`${crewMember.id}:changes_requested`]);
 
   const card = core.getCard(1);
-  expect(said.at(-1)).toBe(`ready for review: ${PR_URL}`);
+  // The reviewer has just said the work is not ready, so the Code run's note is not what the
+  // card's last word may be: the comment says what the card is waiting on instead.
+  expect(said.at(-1)).toBe(
+    `changes requested; the reviewer is waiting on an answer; the work is in ${worktreePath(1)}`,
+  );
+  expect(said.some((text) => text.startsWith("ready for review"))).toBe(false);
   expect(card.attention?.note).toBe("is the second half this card's, or a card of its own?");
   expect(card.attention?.moves).toEqual([]);
   expect(lastRelease(1)).toBe("blocked");
