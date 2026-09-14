@@ -95,6 +95,71 @@ Green came from the four-line copy loop in `agentEnvironment` and the fourth bul
   `USER` set, and it is not there). The check's base is still `{ PATH, HOME }`; `harness-check.ts`
   is unchanged by this run.
 
+## Review round 1
+
+Verdict: approved, with five Minor findings. Four are fixed here; the fifth (the MILESTONES
+entry) is the orchestrator's at landing. The spec was amended at `94d0012` first: criterion 5
+now asks for the credential rule in all three playbooks, and the Goal's "no new reach" sentence
+is narrowed to stored logins.
+
+- **Minor 1 — the comment at `shim.ts` naming the wrong reason.** It said the `SKELCREW_AS`
+  assignment sits after the copy loop "so a `SKELCREW_AS` the owner exported cannot survive",
+  which the ordering does not do: `SKELCREW_AS` is not in `INHERITED_VARIABLES`, so the loop
+  never writes it, and the reviewer moved the assignment above the loop with every shim test
+  still green. The comment now names the enumerated list as the reason and calls the ordering
+  belt-and-braces. Prose only; no test change.
+
+- **Minor 2 — an exported-but-empty variable was forwarded as an empty string.** `PATH` one
+  line above already read `""` as absent, so an owner with `ANTHROPIC_API_KEY=` in a shell
+  profile handed the agent an empty key. Red first, in `shim.test.ts`:
+
+  ```
+  expect([...INHERITED_VARIABLES].filter((name) => name in env)).toEqual([]);
+  - []
+  + [ "USER", "ANTHROPIC_API_KEY" ]
+  (fail) a login variable the daemon exported empty is absent too, not passed on as an empty string
+  ```
+
+  Green from one condition in the copy loop — `value !== undefined && value !== ""` — and the
+  doc says so. `HOME`'s own handling is untouched: the finding names the loop, and widening it
+  would be a change nothing asked for.
+
+- **Minor 3 — the credential rule was in `code.md` alone.** All three kinds of run get the same
+  environment, and a Spec run writes the card body that a later Code run exports into the
+  repository and pushes. The same rule is now in `spec.md` (at the end of §3, where the phase's
+  other prohibitions are — no bullet list there, so no "Four rules" lead-in) and in `review.md`
+  (after the paragraph on what asks the owner, which is where `code.md` has it). The middle
+  sentence is adapted per playbook: the card body's export for Spec, findings that stay on the
+  card for review. Red first, in `playbooks.test.ts`, which pins the rule and its closing
+  sentence in all three:
+
+  ```
+  expect([kind, text.includes(CREDENTIAL_RULE)]).toEqual([kind, true]);
+    "spec",
+  - true,
+  + false,
+  (fail) every playbook says never to write a credential from the environment anywhere
+  ```
+
+  The existing `code.md`-only assertion is kept as it was. **The new sentence harvests no
+  command**, checked by `instructedCommands` per playbook before and after the edit: spec 6,
+  code 25, review 12 both times, with identical command sets. `bun run check:harness` still
+  reports 71 commands under test, the same number as the first round.
+
+- **Minor 4 — the doc claimed the passthrough hides nothing the agent could not already
+  reach.** True of a stored login, false of a credential that lives only in the owner's shell:
+  before this change the run could not see it, and now `echo $ANTHROPIC_API_KEY` from any
+  pre-allowed check command prints it. The sentence is narrowed to stored logins and says the
+  playbooks' rule is the only mitigation, matching the amended Goal. Prose only.
+
+Checks for this round: `bun run fix` (no fixes applied), `bun run check` — `biome ci .` clean
+over 90 files, `tsc` clean in all three packages, `749 pass / 0 fail` across 29 files — and
+`bun run check:harness`, exit 0, "every one of the 71 commands under test runs unprompted in the
+harness under its own list, `git push origin HEAD:main` is denied under each list, and the
+repository is unchanged". Its sessions' environment line is unchanged: `ANTHROPIC_API_KEY,
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, HOME, PATH, SKELCREW_AS, SKELCREW_DIR, and the stub's
+ANTHROPIC_BASE_URL`.
+
 ## Criterion 7 — the owner's card run
 
 **Not performed in this run.** It is the owner's, after merge: card 1 (`Write the README`)

@@ -98,6 +98,27 @@ test("a login variable the daemon's environment lacks is not passed on as an emp
   });
 });
 
+/**
+ * Review round 1, Minor 2. An exported-but-empty variable is the same thing as an unset one for
+ * a login: `ANTHROPIC_API_KEY=` left in a shell profile is not a key, and handing the harness an
+ * empty one is handing it a login that cannot work while looking like a login that could. `PATH`
+ * has always read `""` as absent; the copied variables read it the same way.
+ */
+test("a login variable the daemon exported empty is absent too, not passed on as an empty string", () => {
+  const env = agentEnvironment(
+    { PATH: "/usr/bin", HOME: "/home/simon", ANTHROPIC_API_KEY: "", USER: "" },
+    dir,
+    "crew",
+  );
+  expect([...INHERITED_VARIABLES].filter((name) => name in env)).toEqual([]);
+  expect(env).toEqual({
+    PATH: `${shimDir(dir)}${delimiter}/usr/bin`,
+    HOME: "/home/simon",
+    SKELCREW_AS: "crew",
+    SKELCREW_DIR: dir,
+  });
+});
+
 test("with no PATH to inherit the shim's directory is the whole PATH, and an absent HOME is not invented", () => {
   expect(agentEnvironment({}, dir, "crew")).toEqual({
     PATH: shimDir(dir),

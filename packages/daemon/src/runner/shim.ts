@@ -73,13 +73,18 @@ export const INHERITED_VARIABLES = [
  * one that answers, `INHERITED_VARIABLES` where the daemon has them so that login can actually
  * be read, and the two variables that say who the agent speaks as and which daemon it reaches.
  * Nothing else from the daemon's own environment is passed on — a `SECRET`, an `AWS_PROFILE`,
- * an exported `SKELCREW_AS` — and a listed variable the daemon lacks is absent here rather than
- * invented as empty.
+ * an exported `SKELCREW_AS` — and a listed variable the daemon lacks, or exported empty, is
+ * absent here rather than passed on as an empty string: an `ANTHROPIC_API_KEY=` left in a shell
+ * profile is not a login, and `PATH` has always read `""` the same way.
  *
  * This supersedes criterion 13 of 012, which asked for exactly `PATH`, `HOME`, `SKELCREW_AS` and
- * `SKELCREW_DIR`: that environment cannot log in. It is still a gate rather than a boundary, and
- * hides nothing from the agent that it could not already reach — with `HOME` it can read
- * `~/.claude` from a check command, which 016 records.
+ * `SKELCREW_DIR`: that environment cannot log in. It is still a gate rather than a boundary. For
+ * a login the harness has **stored**, it hides nothing the agent could not already reach — with
+ * `HOME` it can read `~/.claude` from a check command, which 016 records. For a credential that
+ * lives only in the owner's shell it is new reach: before 021 the run could not see it, and now
+ * `echo $ANTHROPIC_API_KEY` from any pre-allowed check command prints it. The playbooks' rule
+ * against writing a credential into the repository, the card or a pull request is the only
+ * mitigation, and it is a rule rather than a gate.
  *
  * `memberName` is who the agent is, and it is not the member holding the card's claim: the
  * runner claims as itself and spawns the agent as `crew`, so every gate the core keeps —
@@ -99,9 +104,11 @@ export function agentEnvironment(
   if (base.HOME !== undefined) env.HOME = base.HOME;
   for (const name of INHERITED_VARIABLES) {
     const value = base[name];
-    if (value !== undefined) env[name] = value;
+    if (value !== undefined && value !== "") env[name] = value;
   }
-  // After the copy, so a `SKELCREW_AS` the owner exported cannot survive into the run.
+  // What keeps an exported `SKELCREW_AS` out of the run is that it is not in
+  // `INHERITED_VARIABLES`, so the copy above never writes it; these two lines are the runner's
+  // own, and sit after the copy as belt-and-braces rather than as the thing that prevents it.
   env.SKELCREW_AS = memberName;
   env.SKELCREW_DIR = dataDir;
   return env;

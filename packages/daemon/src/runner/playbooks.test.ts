@@ -282,6 +282,29 @@ test("the Code playbook says never to write a credential from the environment an
   );
 });
 
+/**
+ * Review round 1, Minor 3, and the amended criterion 5. All three kinds of run are spawned with
+ * the same environment, so all three carry the owner's login — and the door is not only the Code
+ * run's commit: a Spec run writes the card's body, which a later Code run exports into the
+ * repository and pushes, and a review run's findings stay on the card. The rule is therefore the
+ * same rule in all three playbooks, and this pins the parts that do not vary: the rule itself, the
+ * variables it names, and what the run may never do with one.
+ */
+const CREDENTIAL_RULE =
+  "**Never write a credential into the repository, the card, or a pull request.** The environment this run was given may carry the owner's own model login — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` —";
+
+const CREDENTIAL_RULE_TAIL =
+  "Never read one, never print one, and never copy one into a file, a comment or a description.";
+
+test("every playbook says never to write a credential from the environment anywhere", () => {
+  const playbooks = loadPlaybooks();
+  for (const kind of PLAYBOOK_KINDS) {
+    const text = unwrapped(playbooks[kind]);
+    expect([kind, text.includes(CREDENTIAL_RULE)]).toEqual([kind, true]);
+    expect([kind, text.includes(CREDENTIAL_RULE_TAIL)]).toEqual([kind, true]);
+  }
+});
+
 test("the Code playbook says what runs unprompted and what the owner is asked for", () => {
   const code = loadPlaybooks().code.toLowerCase();
   expect(code).toContain("asks the owner");

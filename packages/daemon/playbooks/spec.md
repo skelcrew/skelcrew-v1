@@ -71,6 +71,13 @@ Rules that make a spec good here:
 Do not create branches, commits, source edits or dependency changes. This phase writes
 nothing into the repository.
 
+One rule no permission list can enforce, and you must: **Never write a credential into the
+repository, the card, or a pull request.** The environment this run was given may carry the
+owner's own model login — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`CLAUDE_CODE_OAUTH_TOKEN` — and a value from it that reaches the card's body is exported into
+the repository and pushed by the Code run that follows. Never read one, never print one, and
+never copy one into a file, a comment or a description.
+
 ## 4. Report, or say why you could not
 
 Post one comment with `skelcrew comment <id> "<text>"`: goal, the approach in one sentence,
