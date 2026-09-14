@@ -5,10 +5,10 @@
  * rather than `allowlist.ts`'s model of it, to answer the one question a model cannot be trusted
  * with: does this command stop to ask?
  *
- * **There are two lists and a command is only evidence about the one it ran under** (019). The
- * two claimable phases are spawned with the Code list; a review run is spawned with a list of its
- * own and deny rules of its own. So every session carries its list, and coverage — an entry with
- * no representative, a representative never run — is counted per list. See `LISTS_UNDER_TEST`.
+ * **A command is only evidence about the list it ran under** (019), and there are three of them:
+ * a Spec run, a Code run and a review run are each spawned with their own. So every session
+ * carries its list, and coverage — an entry with no representative, a representative never run —
+ * is counted per list. See `LISTS_UNDER_TEST`.
  *
  * Review round 1 of 014 found the Code playbook prescribing a command the harness asks about
  * outright, and nothing in the repository could have caught it: the model in `allowlist.ts` is
@@ -43,11 +43,11 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunOptions } from "./agent";
-import { allowlistFor, baseBranchGrants, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
+import { allowlistFor, FIXED_ALLOWLIST, fixedListFor } from "./allowlist";
 import { buildSdkOptions } from "./claude";
 import { createGit } from "./git";
 import { FILLED_BASE, instructedCommands } from "./playbook-commands";
-import { loadPlaybooks, PLAYBOOK_PHASES, type PlaybookKind, type Playbooks } from "./playbooks";
+import { loadPlaybooks, type PlaybookKind, type Playbooks } from "./playbooks";
 import { agentEnvironment } from "./shim";
 
 /**
@@ -91,9 +91,8 @@ const BASE_BRANCH = FILLED_BASE;
  * They are arguments a playbook's agent would plausibly write, and nothing here has an effect:
  * every command word is a stub executable that exits 0.
  *
- * The last two are **exact** entries rather than wildcards (020), so their representative is the
- * entry itself — there is no argument to choose — and it is the same string the Code playbook
- * instructs once `<base>` is filled. One session covers both roles.
+ * This is the **Spec** list's full set, `FIXED_ALLOWLIST` being what a Spec run is spawned with;
+ * a Code run's list adds two entries and `CODE_LIST_REPRESENTATIVES` adds their representatives.
  */
 export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
   "skelcrew show 1",
@@ -110,6 +109,18 @@ export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
   "gh pr diff --name-only",
   'gh pr comment 1 --body "a comment"',
   "gh repo view --json defaultBranchRef",
+];
+
+/**
+ * The Code list's representatives: the fixed list's, and one for each of the two entries
+ * `allowlistFor` composes from the base branch's name for a **Code** run alone (020).
+ *
+ * Those two are **exact** entries rather than wildcards, so their representative is the entry
+ * itself — there is no argument to choose — and it is the same string the Code playbook instructs
+ * once `<base>` is filled. One session covers both roles.
+ */
+export const CODE_LIST_REPRESENTATIVES: readonly string[] = [
+  ...FIXED_LIST_REPRESENTATIVES,
   `git fetch origin ${BASE_BRANCH}`,
   `git merge --no-edit refs/remotes/origin/${BASE_BRANCH}`,
 ];
@@ -150,26 +161,42 @@ export interface ListUnderTest {
 }
 
 /**
- * Both lists, and which playbooks run under each: the two claimable phases are spawned with the
- * Code list, and the review run with its own. A command is only evidence about the list it was
- * run under, so each session carries its list and the coverage is counted per list.
+ * The three lists, and which playbook runs under each — **one per run kind**, because that is
+ * what a run is really spawned with. A command is only evidence about the list it was run under,
+ * so each session carries its list and the coverage is counted per list.
+ *
+ * The two claimable phases shared an entry here until 020's review round 2: the Code-only
+ * base-branch grants were on the list the Spec playbook's commands were checked against, so the
+ * check had stopped modelling a Spec run. No Spec playbook line names either command today, so
+ * nothing passed that should not have — but a line that did would have passed the check and
+ * stopped a real run. The price is one more session per fixed-list entry and one more control,
+ * and it buys the Spec run its own evidence.
  */
 export const LISTS_UNDER_TEST: readonly ListUnderTest[] = [
   {
+    name: "the Spec list",
+    kind: "spec",
+    // What a Spec run is spawned with: the fixed list and nothing composed. The file-tool entry
+    // and the scan's are not here for the same reason they never were — this is the part every
+    // run shares, and the session below is given the whole list `allowlistFor` returns for the
+    // kind, which is where the difference between these two lists really comes from.
+    list: fixedListFor("spec", BASE_BRANCH),
+    representatives: FIXED_LIST_REPRESENTATIVES,
+    playbooks: ["spec"],
+  },
+  {
     name: "the Code list",
     kind: "code",
-    // What a Code run is spawned with: the fixed list, and the two entries `allowlistFor`
-    // composes from the base branch's name (020). The file-tool entry and the scan's are not
-    // here for the same reason they never were — this is the part every run shares, and the
-    // session below is given the whole list `allowlistFor` returns.
-    list: [...FIXED_ALLOWLIST, ...baseBranchGrants(BASE_BRANCH)],
-    representatives: FIXED_LIST_REPRESENTATIVES,
-    playbooks: PLAYBOOK_PHASES,
+    // The fixed list, and the two entries `allowlistFor` composes from the base branch's name for
+    // a Code run (020).
+    list: fixedListFor("code", BASE_BRANCH),
+    representatives: CODE_LIST_REPRESENTATIVES,
+    playbooks: ["code"],
   },
   {
     name: "the review list",
     kind: "review",
-    list: REVIEW_ALLOWLIST,
+    list: fixedListFor("review", BASE_BRANCH),
     representatives: REVIEW_LIST_REPRESENTATIVES,
     playbooks: ["review"],
   },

@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  baseBranchGrants,
   FIXED_ALLOWLIST,
+  fixedListFor,
   REVIEW_ALLOWLIST,
   REVIEW_DENIED_TOOLS,
   runsUnprompted,
@@ -66,31 +66,58 @@ test("the Code playbook reads the body for export through --json", () => {
 });
 
 /**
+ * The list a phase's own run is spawned with, from `allowlist.ts` rather than composed a second
+ * time here — the two checkers of this claim (this file, against `allowlist.ts`'s model, and
+ * `harness-check.ts`, against the harness) composed it twice and composed it the same wrong way,
+ * which is review round 2's Minor 3. `<base>` fills with `FILLED_BASE`, which is what makes an
+ * instructed command and the exact entry composed for it the same string.
+ */
+function listFor(phase: PlaybookPhase): readonly string[] {
+  return fixedListFor(phase, FILLED_BASE);
+}
+
+/**
  * Criterion 11, and it asks about *asking*, not about the list: a playbook's `git log` runs
  * unprompted through the harness's own read-only check rather than through an entry, since the
  * six read-only git verbs came off the list once `--output` proved a trailing wildcard could
  * not exclude a write-capable flag. `runsUnprompted` is the list plus that check.
  *
- * The list checked against is the fixed one **plus the two entries composed from the base
- * branch's name** (020), because that is what a run is spawned with: those two are exact entries
- * built per run rather than written into `FIXED_ALLOWLIST`, so the commands they cover are only
- * unprompted against a list composed the same way — with the branch name the playbook's `<base>`
- * fills with, which is what makes the command and the entry the same string.
+ * **Per phase, because the two phases are no longer spawned with the same list** (020, review
+ * round 2): a Code run gets the two entries composed from the base branch's name and a Spec run
+ * does not, so checking the Spec playbook against a list carrying them would pass a Spec-playbook
+ * line that a real Spec run stops on. The Code list's two are exact entries built per run rather
+ * than written into `FIXED_ALLOWLIST`, and the name they are built from is the one the playbook's
+ * `<base>` fills with — which is what makes the command and the entry the same string.
  */
 test("every command the playbooks run goes unprompted, so none of them stops to ask", () => {
   const playbooks = loadPlaybooks();
-  const list = [...FIXED_ALLOWLIST, ...baseBranchGrants(FILLED_BASE)];
   for (const phase of PLAYBOOK_PHASES) {
     const commands = instructedCommands(playbooks[phase]);
     expect(commands.length).toBeGreaterThan(0);
     for (const command of commands) {
-      expect([phase, command, runsUnprompted("Bash", { command }, list)]).toEqual([
+      expect([phase, command, runsUnprompted("Bash", { command }, listFor(phase))]).toEqual([
         phase,
         command,
         true,
       ]);
     }
   }
+});
+
+/**
+ * Minor 3 of review round 2. Both checkers ran the Spec playbook's commands against a list that
+ * included the two Code-only entries, so the check had stopped modelling a Spec run: no Spec
+ * playbook line names either command today, and a line that did would have passed here and stopped
+ * a real run. The scratch playbook below is that line, and it has to be reported as asking.
+ */
+test("a Spec playbook instructing the base-branch commands would be caught by the Spec list", () => {
+  const scratch = "Bring the base in:\n\n```\ngit fetch origin <base>\n```\n";
+  const commands = instructedCommands(scratch);
+  expect(commands).toEqual([`git fetch origin ${FILLED_BASE}`]);
+  const command = commands[0] as string;
+  expect([command, runsUnprompted("Bash", { command }, listFor("spec"))]).toEqual([command, false]);
+  // And the Code list, whose run is the one the entries are composed for, runs it unprompted.
+  expect([command, runsUnprompted("Bash", { command }, listFor("code"))]).toEqual([command, true]);
 });
 
 /**

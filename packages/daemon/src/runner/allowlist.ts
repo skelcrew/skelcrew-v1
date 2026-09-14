@@ -1126,11 +1126,26 @@ function scanBase(defaultBranch: string): string {
 }
 
 /**
- * `LINE_CHARS` with no space in it: one word of the same characters. A branch name is one word
- * (git refuses a space in a ref name), and this is what decides whether the two entries below
- * can be written at all.
+ * Whether a branch name can be written into a `Bash(...)` entry at all, which is what decides
+ * whether the two entries below exist. **Two parsers have to accept it, not one.**
+ *
+ * The first is the harness's entry syntax, and the test against it is `LINE_CHARS` itself with no
+ * space in it: one word of the same characters. Read off `LINE_CHARS` rather than spelled a second
+ * time — a single space is the only separator that pattern allows, so "one word of it" is exactly
+ * "matches it and holds no space", and there is no second character class to drift from the first.
+ *
+ * The second is **git**, which reads the entry's arguments as a command line: a name beginning
+ * with `-` is an option there rather than a branch, and `Bash(git fetch origin
+ * --upload-pack=/tmp/evil)` — built from a name that passes every character check — is a grant to
+ * run that program. `git branch` refuses such a name, but `git update-ref` writes it and
+ * `git check-ref-format` accepts it, so the ref can exist and `origin/HEAD` can name it. Review
+ * round 2 of 020 built that entry; the amended spec refuses a leading `-` for this reason.
  */
-const LINE_WORD = /^[A-Za-z0-9._/@+:=-]+$/;
+function writableInRule(defaultBranch: string): boolean {
+  return (
+    LINE_CHARS.test(defaultBranch) && !defaultBranch.includes(" ") && !defaultBranch.startsWith("-")
+  );
+}
 
 /**
  * What a **Code** run may do to bring its base branch in, without asking: exactly these two
@@ -1158,9 +1173,13 @@ const LINE_WORD = /^[A-Za-z0-9._/@+:=-]+$/;
  * every entry character by character (`splitEntries`): a `)` in the name would close the rule
  * early and the rest of the entry would open further ones, and a comma or a space starts another
  * rule outright. A branch name may hold any of those. So the name has to be one word of
- * `LINE_CHARS` — the same allowlist a scanned line goes through, for the same reason — and when
- * it is not, this returns nothing, `allowlistFor` says so in the run-start comment, and the two
- * commands ask like anything else. Failing loudly and closed is the only safe direction here.
+ * `LINE_CHARS` — the same allowlist a scanned line goes through, for the same reason — **and it
+ * may not begin with `-`**, because git reads the entry's arguments as a command line and a name
+ * beginning with `-` is an option to git rather than a branch: review round 2 built
+ * `Bash(git fetch origin --upload-pack=/tmp/evil)` from one. `writableInRule` is both tests. When
+ * a name fails either, this returns nothing, `allowlistFor` says so in the run-start comment, and
+ * the two commands ask like anything else. Failing loudly and closed is the only safe direction
+ * here.
  *
  * **A limit this grant causes, measured by 020's review round 1 and not fixed here: after a fix
  * run merges the base in, the next review's diff is wide.** The merge takes
@@ -1176,11 +1195,27 @@ const LINE_WORD = /^[A-Za-z0-9._/@+:=-]+$/;
  * Open list.
  */
 export function baseBranchGrants(defaultBranch: string): string[] {
-  if (!LINE_WORD.test(defaultBranch)) return [];
+  if (!writableInRule(defaultBranch)) return [];
   return [
     `Bash(git fetch origin ${defaultBranch})`,
     `Bash(git merge --no-edit refs/remotes/origin/${defaultBranch})`,
   ];
+}
+
+/**
+ * The entries a run of `kind` is spawned with, before its own worktree anchor and whatever the
+ * scan adds: the review run's own list, or the fixed list — plus, for a **Code** run alone, the
+ * two composed from the base branch's name.
+ *
+ * Here rather than in each checker because the two that check this claim — `playbooks.test.ts`,
+ * against the model, and `harness-check.ts`, against the harness — composed it twice and composed
+ * it the same wrong way, running the Spec playbook's commands against a list carrying the
+ * Code-only entries (020, review round 2). One declaration of what a kind's list holds, and both
+ * read it; `allowlist.test.ts` pins it to what `allowlistFor` really returns.
+ */
+export function fixedListFor(kind: PlaybookKind, defaultBranch: string): string[] {
+  if (kind === "review") return [...REVIEW_ALLOWLIST];
+  return [...FIXED_ALLOWLIST, ...(kind === "code" ? baseBranchGrants(defaultBranch) : [])];
 }
 
 /** What the run-start comment says when the base branch's name cannot be written into a rule. */

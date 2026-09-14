@@ -33,6 +33,7 @@ Run record for `docs/specs/020-a-conflicting-pull-request-asks-to-go-back-to-cod
 3. **`allowlist.ts`** — `allowlistFor` composes `Bash(git fetch origin <base>)` and
    `Bash(git merge --no-edit refs/remotes/origin/<base>)` for a Code run, only when the base
    name is one word of `LINE_CHARS`; otherwise nothing is added and the `scanned` clause says so.
+   (Review round 2 added the second condition: the name may not begin with `-` either.)
 4. **`code.md`** — a *When the card says the pull request conflicts* section with the two
    commands fenced, and never rebase.
 5. **`harness-check.ts`** — the Code list under test gains the two entries composed for `main`,
@@ -60,11 +61,16 @@ Run record for `docs/specs/020-a-conflicting-pull-request-asks-to-go-back-to-cod
   base branch is what the note names and there is nothing to degrade to that a card could be told
   (`conflicts with ` reads as a defect). In practice neither branch is reachable: `gh` rejects a
   field it does not know with a non-zero exit, so a partial answer is not a shape it produces.
-- **The two entries are a Code run's, not a review run's.** The spec's implementation section
+- **The two entries are a Code run's, and a Code run's alone.** The spec's implementation section
   puts no `kind` condition on `allowlistFor`, and criterion 9 says "a Code run's `allowedTools`".
   A review run writes nothing — no `git add`, `git commit` or `git push` on its list, and its
-  contract fails a run whose branch moved — so `git merge` there would contradict 019. A Spec run
-  does get them, because the "Code list" is the list both claimable phases share.
+  contract fails a run whose branch moved — so `git merge` there would contradict 019. A **Spec**
+  run gets neither entry either: it shares the fixed list with a Code run, but it has no conflict
+  to fix and its playbook instructs neither command.
+  ([This bullet first said the opposite — "A Spec run does get them, because the 'Code list' is
+  the list both claimable phases share". **Superseded by review round 1's Minor 4 below**, which
+  is where the decision was made and the spec amended.] Review round 2's Minor 3 carried the same
+  decision into the two checkers.)
 - **The `scanned` clause is two clauses joined by `; `**, base branch first, so the run-start
   comment says what the scan did as well. `RunAllowlist` is unchanged in shape, as the spec asks.
 - **`<base>` fills with a branch name, not with `PLACEHOLDER`** (`FILLED_BASE` in
@@ -200,3 +206,95 @@ One Important, four Minor, no Critical. The spec was amended first (`docs:` comm
   assertion in both files is unchanged. `harness-check.ts`'s Code list stays composed with the two
   entries: it is the Code list under test.
 - **Minor 5 — the run record had no definition-of-done section.** Added above, in 019's shape.
+
+## Review round 2 — the plan
+
+Four findings to fix (the fifth, carrying the wide-diff limit to MILESTONES, is the
+orchestrator's at landing). The spec was amended first (`3f754f6`).
+
+1. `forge.ts` — correct the `MERGEABILITY` comment: the tolerant mapping covers a future enum
+   value, not an older `gh`.
+2. `allowlist.ts` — `baseBranchGrants` also refuses a name beginning with `-`, and `LINE_WORD`
+   is derived from `LINE_CHARS` so the two cannot drift.
+3. `harness-check.ts` and `playbooks.test.ts` — compose the list per phase, so the Spec
+   playbook's commands are checked against the Spec run's own list.
+4. This record — correct the superseded bullet under *What the spec left open*.
+
+Files: `packages/daemon/src/runner/forge.ts`, `allowlist.ts`, `allowlist.test.ts`,
+`harness-check.ts`, `harness-check.test.ts`, `playbooks.test.ts`, and this record.
+
+## Review round 2, and what each finding became
+
+APPROVED with five Minor, no Critical and no Important. The spec was amended first (`3f754f6`):
+a base branch name beginning with `-` gets no entries, and the single-word check is derived from
+`LINE_CHARS` or tied to it by a test. Minor 5 — carrying the wide-diff limit to
+`docs/MILESTONES.md` — is the orchestrator's at landing and is not in this diff. Two findings
+change behaviour (Minor 2 and Minor 3); both were driven red first. Minor 1 is prose, Minor 4 is
+this record.
+
+- **Minor 1 — `forge.ts` claimed the lenient `mergeable` mapping covered an older `gh`.** It
+  cannot: `mergeable` is in `PR_FIELDS`, and `gh pr view <url> --json <unknown field>` exits 1
+  with `Unknown JSON field` before it calls the API, so an older `gh` fails the whole call and
+  `parsePullRequest` is never reached. The comment at `MERGEABILITY` now says what the tolerant
+  mapping really covers — a fourth enum value a later schema adds — and that adding a field to
+  `PR_FIELDS` is the change an older `gh` fails on, whole. Prose only; no test, and none weakened.
+- **Minor 2 — the character check accepted a base branch name that is itself an option.**
+  `baseBranchGrants("--upload-pack=/tmp/evil")` returned
+  `Bash(git fetch origin --upload-pack=/tmp/evil)`, which is a grant to run that program. Two
+  parsers read the entry and only the first was checked: the harness's entry syntax, and then git,
+  which reads the entry's arguments as a command line. Re-measured here, in a scratch repository:
+  `git check-ref-format "refs/heads/--upload-pack=/tmp/evil"` exits 0, `git update-ref
+  "refs/heads/--upload-pack=/tmp/evil" HEAD` creates it (`for-each-ref` lists it beside `main`),
+  and `git branch -- "--upload-pack=/tmp/evil2"` answers *`fatal: '--upload-pack=/tmp/evil2' is
+  not a valid branch name`* — so the ref can exist, `origin/HEAD` can name it, and only the
+  friendly porcelain refuses to make it. The check now refuses a leading `-`, and the amended spec's other half is met by
+  **deleting** `LINE_WORD` rather than deriving it: `writableInRule` asks `LINE_CHARS` itself and
+  then that the name holds no space — a single space is the only separator that pattern allows, so
+  "one word of it" is exactly that, and there is no second character class left to drift. Red
+  first: *`[ "--upload-pack=/tmp/evil", [] ]` expected, received `[ "--upload-pack=/tmp/evil",
+  ["Bash(git fetch origin --upload-pack=/tmp/evil)", "Bash(git merge --no-edit
+  refs/remotes/origin/--upload-pack=/tmp/evil)"] ]`*, and the same for `-x`. The new case also
+  asserts the `scanned` clause and that `runsUnprompted` refuses `git fetch origin
+  --upload-pack=/tmp/evil` on the list composed for that name; the existing character-check case
+  gained both names; the criterion-11 record case gained the two assertions that pin the second
+  parser in `allowlist.ts`'s record.
+- **Minor 3 — both checkers ran the Spec playbook's commands against a list holding the two
+  Code-only entries.** No false pass today (no Spec-playbook line names either command), but a
+  line that did would have passed the check and stopped a real run. The list is now composed per
+  kind, from one declaration: `fixedListFor(kind, defaultBranch)` in `allowlist.ts`, read by
+  `harness-check.ts`'s `LISTS_UNDER_TEST` and by `playbooks.test.ts`'s `listFor`. Red first, in
+  `playbooks.test.ts`: a scratch Spec playbook fencing `git fetch origin <base>` — *`[ "git fetch
+  origin main", false ]` expected, received `[ "git fetch origin main", true ]`*.
+  - **Why the declaration sits in `allowlist.ts` and not in `harness-check.ts`.** The first
+    attempt had `playbooks.test.ts` read `LISTS_UNDER_TEST`, and `claude.test.ts`'s "nothing the
+    daemon runs imports the harness check" failed on it — that check's list of importers is exact,
+    and loosening it to admit a second test file is not a trade this finding asks for. The
+    composition belongs to the module that owns the lists anyway.
+  - **`LISTS_UNDER_TEST` gains a Spec entry** (`kind: "spec"`, the fixed list, the fixed list's
+    representatives, `playbooks: ["spec"]`), the Code entry runs the Code playbook alone, and
+    `FIXED_LIST_REPRESENTATIVES` is again one command per `FIXED_ALLOWLIST` entry — the two
+    base-branch commands moved to `CODE_LIST_REPRESENTATIVES`. So `unrepresentedEntries` and its
+    defaults stay coherent (14 entries, 14 representatives), and the control-per-list rule now
+    requires three denials instead of two. The price is one more session per fixed-list entry.
+  - **Existing assertions were re-aimed, not weakened.** `harness-check.test.ts`'s `runWith` gains
+    a Spec control; "a fixed-list entry with no representative" builds its short list from
+    `CODE_LIST.representatives` (the list it passes is the Code list); and "a representative the
+    run never put through the harness" drops `git add -A` **under the Code list only**, because
+    that command now stands for `Bash(git add *)` on two lists and dropping it everywhere is two
+    problems, not one. Two new cases assert the Spec list is the fixed list alone with neither
+    grant on it, that each list runs its own playbook, and — in `allowlist.test.ts` — that
+    `fixedListFor` is entry-for-entry what `allowlistFor` returns for that kind, worktree anchor
+    aside. That last one is what keeps the checkers' list tied to the real one.
+- **Minor 4 — the record's *What the spec left open* still carried the reversed bullet.**
+  Corrected above, with the superseded sentence quoted and marked as superseded by review round
+  1's Minor 4, which is where the decision was made.
+
+### Checks
+
+- `bun run check` — 743 tests, green.
+- `bun run check:harness` — 71 commands under test plus the control under each of the three
+  lists: 20 under the Spec list, 32 under the Code list, 19 under the review list.
+  `git fetch origin main` and `git merge --no-edit refs/remotes/origin/main` ran unprompted under
+  **the Code list**, each as a list representative and as a command the Code playbook instructs;
+  neither is on the Spec list. `git push origin HEAD:main` was denied under each of the three
+  lists; the temporary repository was unchanged.

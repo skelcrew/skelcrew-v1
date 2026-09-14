@@ -106,8 +106,16 @@ const STATES: Record<string, PullRequest["state"]> = {
 
 /**
  * `gh`'s own spelling of mergeability. Everything else — `UNKNOWN`, a value a later schema adds,
- * an absent field — is `unknown`, so a `gh` that does not answer this degrades to "nothing on the
- * card" rather than to a parse failure that would stop a merge from landing.
+ * an absent field — is `unknown`, so a **value this map does not know** degrades to "nothing on
+ * the card" rather than to a parse failure that would stop a merge from landing. A fourth enum
+ * value added to the schema later is what that covers.
+ *
+ * It is **not** what covers an older `gh`, and review round 2 of 020 corrected the claim that it
+ * was: `mergeable` is in `PR_FIELDS`, and `gh pr view <url> --json <unknown field>` exits 1 with
+ * `Unknown JSON field` before it calls the API at all. So a `gh` that does not know a field fails
+ * the whole call — "cannot answer", the path a logged-out `gh` already takes — and nothing here is
+ * reached. Adding a field to `PR_FIELDS` is the change an older `gh` fails on, and it fails on it
+ * whole.
  */
 const MERGEABILITY: Record<string, PullRequest["mergeable"]> = {
   MERGEABLE: "mergeable",

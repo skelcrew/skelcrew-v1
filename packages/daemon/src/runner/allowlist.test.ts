@@ -18,6 +18,7 @@ import {
   deniedTools,
   editsIn,
   FIXED_ALLOWLIST,
+  fixedListFor,
   REVIEW_ALLOWLIST,
   REVIEW_DENIED_TOOLS,
   runsUnprompted,
@@ -939,6 +940,10 @@ test("the record says the two entries are a gate, what defeats it, and what they
   expect(record).toContain("gate, not a boundary");
   expect(record).toContain("subprocess");
   expect(record).toContain("no wildcard");
+  // And the second parser behind the entry syntax, which review round 2 found: git reads the
+  // entry's arguments as a command line, so a name beginning with `-` is an option to it.
+  expect(record).toContain("may not begin with `-`");
+  expect(record).toContain("Bash(git fetch origin --upload-pack=/tmp/evil)");
   // And the limit review round 1 measured, recorded beside the grant that causes it: the run
   // merges the remote-tracking base while every run is measured against the local one.
   expect(record).toContain("the next review's diff is wide");
@@ -966,7 +971,15 @@ test("no wildcard form of either entry is on any list a run is spawned with", as
  * off, the run-start comment says so, and the two commands ask like anything else.
  */
 test("a base branch name that cannot be written into a rule contributes no entry", async () => {
-  for (const base of ["main)", "main,x", "main x", "ma(in", "main*"]) {
+  for (const base of [
+    "main)",
+    "main,x",
+    "main x",
+    "ma(in",
+    "main*",
+    "-x",
+    "--upload-pack=/tmp/evil",
+  ]) {
     const built = await allowlistFor(git, repo, base, worktree(), "code");
     expect([base, built.tools.filter((entry) => entry.includes("git fetch"))]).toEqual([base, []]);
     expect([base, built.tools.filter((entry) => entry.includes("git merge"))]).toEqual([base, []]);
@@ -976,6 +989,25 @@ test("a base branch name that cannot be written into a rule contributes no entry
     ]);
     const command = `git fetch origin ${base}`;
     expect([base, runsUnprompted("Bash", { command }, built.tools)]).toEqual([base, false]);
+  }
+});
+
+/**
+ * Minor 2 of review round 2, and the second half of the amended spec's rule. A second parser sits
+ * behind the entry syntax: git reads the entry's arguments as a command line, so a name beginning
+ * with `-` is an option to git rather than a branch. `--upload-pack=/tmp/evil` passes every
+ * character check — it is one word of `LINE_CHARS` — and `Bash(git fetch origin
+ * --upload-pack=/tmp/evil)` is a grant to run that program. `git branch` refuses such a name, but
+ * `git update-ref` writes it and `git check-ref-format` accepts it, so `origin/HEAD` can name it
+ * and `defaultBranch` can read it back. A leading `-` is refused for that reason.
+ */
+test("a base branch name shaped like an option contributes no entry", async () => {
+  for (const base of ["--upload-pack=/tmp/evil", "-x"]) {
+    expect([base, baseBranchGrants(base)]).toEqual([base, []]);
+    const built = await allowlistFor(git, repo, base, worktree(), "code");
+    expect([base, built.scanned.includes("cannot be written into a rule")]).toEqual([base, true]);
+    const command = `git fetch origin ${base}`;
+    expect([command, runsUnprompted("Bash", { command }, built.tools)]).toEqual([command, false]);
   }
 });
 
@@ -989,6 +1021,25 @@ test("the run-start comment carries the base-branch clause and the scan's togeth
     'base branch "main)" cannot be written into a rule: git fetch and git merge will ask; ' +
       "pre-allowed from the repository's instructions: bun run check",
   );
+});
+
+/**
+ * Minor 3 of review round 2. Both checkers of "no playbook command stops to ask" composed the
+ * list they check against by hand, and both composed the Spec phase's wrongly — with the two
+ * Code-only entries on it. `fixedListFor` is the one declaration they now read, so it has to be
+ * what a run of that kind is really spawned with: entry for entry, once the worktree anchor this
+ * repository's run would carry is taken out. Compared sorted, because the anchor's position in
+ * `allowlistFor`'s list is not what this is about.
+ */
+test("what a checker composes per kind is what a run of that kind is spawned with", async () => {
+  for (const kind of ["spec", "code", "review"] as const) {
+    const built = await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), kind);
+    const withoutAnchor = built.tools.filter((entry) => entry !== editsIn(worktree()));
+    expect([kind, withoutAnchor.toSorted()]).toEqual([
+      kind,
+      fixedListFor(kind, DEFAULT_BRANCH).toSorted(),
+    ]);
+  }
 });
 
 // --- the review run's list (019) ---
