@@ -27,7 +27,11 @@
  * must argue against this paragraph.** What it has to establish is what is established here: a
  * gesture the owner has already made, somewhere the daemon can verify it; one transition, one
  * call site; and a record of the cause on the card immediately before the action. Convenience
- * is not one of those things.
+ * is not one of those things. **020 is the first spec to argue against it and decline the
+ * exception**: a conflicting pull request has exactly the shape of a case for bouncing the card
+ * to Code as the owner, and it fails the first test — the gesture that moved the base was the
+ * owner merging *another card's* pull request, which is not a gesture about this card. So the
+ * move is offered in the request below (`moves: ["code"]`) and the owner makes it; see point 6.
  *
  * **2. The branch compared is the one a run or a human recorded, not `refs.branch`.** `setRefs`
  * has no actor restriction, so `crew` writes `branch` as well as `prUrl`: comparing the forge's
@@ -76,6 +80,32 @@
  * redirecting repository is still on this forge, and which repository the pull request is in is
  * what the comparison in `mismatch` then reads off `gh`'s canonical `url`. No repository URL — or
  * one with no origin to read — is the warned-once path, and nothing is dialled there either.
+ *
+ * **6. An open pull request that conflicts is offered back to Code, never sent** (020). When the
+ * owner merges one card's pull request the default branch moves, and another card's can stop
+ * being mergeable; the forge says so in `mergeable`, on the call this poll already makes. What
+ * the card gets is an attention request to the owner carrying the move (`moves: ["code"]`) and
+ * the fix spelled out, and the card stays in PR. The daemon does not make that move itself, and
+ * point 1 above is the paragraph that says why: the only gesture behind it is the owner merging
+ * *another* card's work, which is not a gesture about this one. One gesture on the owner's side —
+ * `skelcrew mv <id> code` — resolves the request as `moved` and starts the fix run, which merges
+ * the base in (`allowlist.ts` grants that run those two commands) and pushes to the same pull
+ * request.
+ *
+ * Three things this path does not do. It never speaks about a pull request that is not this
+ * card's own work by point 2's check, so `mismatch` decides here as it decides the merge, and an
+ * open answer that fails it is nothing on the card — not even the mismatch comment, which says
+ * "is merged" and would be false. It says nothing about `unknown`, which is not "no": GitHub
+ * computes mergeability lazily and answers `UNKNOWN` until it has, so the next tick asks again.
+ * And when the conflict clears while the request is open it comments once and leaves the request
+ * standing, because the core refuses a non-human actor resolving a request addressed to the
+ * owner — so the card says what changed and the owner still decides.
+ *
+ * Which branch name the note uses is the pull request's `baseRefName`, because that is what the
+ * forge merged it against. The grant in `allowlist.ts` uses the *runner's* default branch,
+ * because that is what the runner knows before any forge is asked. In a repository where the two
+ * differ the note and the grant disagree and the fix run's two commands ask like anything else:
+ * recorded as a limit, not handled.
  */
 import type { Attention, Card, CardDetail } from "@skelcrew/shared";
 import type { Core } from "./core/core";
@@ -197,6 +227,21 @@ function mismatch(
   return `pull request ${pr.url} is merged, but it is not this card's work: ${reasons.join("; ")}`;
 }
 
+/**
+ * What the card is told about a conflict, and what the request offers the move for: the pull
+ * request, the base it no longer merges into, and the one thing that fixes it. The branch named
+ * is the forge's `headRefName`, which is the branch a run recorded for this card — the caller
+ * has already established that through `mismatch`.
+ */
+function conflictNote(pr: PullRequest): string {
+  return `pull request ${pr.url} conflicts with ${pr.baseRefName}; ${pr.headRefName} needs refs/remotes/origin/${pr.baseRefName} merged in`;
+}
+
+/** And what it is told when the conflict is gone; the request itself is not the poll's to clear. */
+function clearedNote(pr: PullRequest): string {
+  return `pull request ${pr.url} no longer conflicts with ${pr.baseRefName}`;
+}
+
 export function mergePoll({
   core,
   forge,
@@ -314,6 +359,35 @@ export function mergePoll({
     return current ? card : undefined;
   }
 
+  /**
+   * An open pull request of this card's own work (doc, point 6). Conflicting: the owner is asked,
+   * once per entry into PR, with the move to Code attached — in the closed path's shape, and for
+   * its reasons. Mergeable while the poll's own conflict request is open: one comment saying so,
+   * and the request stands. `unknown`: nothing, and the next tick asks again.
+   */
+  function conflict(card: CardDetail, pr: PullRequest): void {
+    if (pr.mergeable === "conflicting") {
+      const note = conflictNote(pr);
+      // The comment is what the once-rule reads, so it comes after a raise that took.
+      if (saidSince(card, note)) return;
+      const raised = attention.raise(
+        card.id,
+        { to: ownerId(), note, moves: ["code"] },
+        ownRequest(note),
+      );
+      if (raised === undefined) return;
+      posting.comment(card.id, note, runnerId);
+      return;
+    }
+    if (pr.mergeable !== "mergeable") return;
+    // The conflict cleared. Only over the poll's own request for this pull request, and only as a
+    // comment: `resolveAttention` refuses the runner clearing what is addressed to the owner, so
+    // what the card can carry is what changed.
+    const open = card.attention;
+    if (open === null || !ownRequest(conflictNote(pr)).isOpen(open)) return;
+    record(card, clearedNote(pr));
+  }
+
   async function visit(listed: Card, repoUrl: string, home: string): Promise<void> {
     const url = listed.refs.prUrl;
     if (url === undefined) return;
@@ -331,9 +405,15 @@ export function mergePoll({
       cannotAnswerPullRequest(url);
       return;
     }
-    if (pr.state === "open") return;
     const card = stillWatched(listed.id, url);
     if (card === undefined) return;
+    // Whether this pull request is this card's own work, by point 2's check. Asked for every
+    // state: only its answer is read here, never its text, which says "is merged".
+    const wrong = mismatch(card, pr, repoUrl, binds);
+    if (pr.state === "open") {
+      if (wrong === undefined) conflict(card, pr);
+      return;
+    }
     if (pr.state === "closed") {
       // Closed without merging: a judgement, not a move. Sending it back to Code or archiving
       // it is the owner's call, so the card is handed over with no move attached.
@@ -351,7 +431,6 @@ export function mergePoll({
       posting.comment(card.id, note, runnerId);
       return;
     }
-    const wrong = mismatch(card, pr, repoUrl, binds);
     if (wrong !== undefined) {
       record(card, wrong);
       return;

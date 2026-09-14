@@ -427,7 +427,7 @@ const GH_SHIM = `#!/bin/sh
 echo "$@" >> "$GH_LOG"
 case "$1 $2" in
 "repo view") echo '{"url":"https://example.invalid/o/r"}' ;;
-"pr view") echo '{"headRefName":"x","mergedAt":null,"state":"OPEN","url":"https://example.invalid/o/r/pull/1"}' ;;
+"pr view") echo '{"baseRefName":"main","headRefName":"x","mergeable":"MERGEABLE","mergedAt":null,"state":"OPEN","url":"https://example.invalid/o/r/pull/1"}' ;;
 *) exit 1 ;;
 esac
 `;

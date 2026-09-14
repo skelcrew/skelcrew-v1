@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
+import { baseBranchGrants, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
 import {
   CONTROL_COMMAND,
   type CommandOutcome,
@@ -24,6 +24,8 @@ import {
   unrepresentedEntries,
   writeStubExecutables,
 } from "./harness-check";
+import { FILLED_BASE, instructedCommands } from "./playbook-commands";
+import { loadPlaybooks } from "./playbooks";
 
 let dir: string;
 
@@ -338,8 +340,29 @@ test("every Bash entry of both lists has a representative command", () => {
     expect([name, representatives.length]).toEqual([name, bashEntries.length]);
   }
   expect(LISTS_UNDER_TEST.map((entry) => entry.kind)).toEqual(["code", "review"]);
-  expect(CODE_LIST.list).toEqual([...FIXED_ALLOWLIST]);
+  // The Code list under test is what a Code run is really spawned with, which since 020 is the
+  // fixed list plus the two entries composed from the base branch's name — the same name the
+  // playbook's `<base>` fills with, and the same one the temporary repository is created on.
+  expect(CODE_LIST.list).toEqual([...FIXED_ALLOWLIST, ...baseBranchGrants(FILLED_BASE)]);
   expect(REVIEW_LIST.list).toEqual([...REVIEW_ALLOWLIST]);
+});
+
+/**
+ * 020, criterion 1. An exact entry's representative is the entry itself: there is no argument to
+ * choose, and the command the playbook instructs is that same string once `<base>` is filled. So
+ * both are under test, and `unrepresentedEntries` would name either one left off.
+ */
+test("the two base-branch entries are representatives of the Code list, as themselves", () => {
+  for (const command of [
+    `git fetch origin ${FILLED_BASE}`,
+    `git merge --no-edit refs/remotes/origin/${FILLED_BASE}`,
+  ]) {
+    expect([command, FIXED_LIST_REPRESENTATIVES.includes(command)]).toEqual([command, true]);
+    expect([command, instructedCommands(loadPlaybooks().code).includes(command)]).toEqual([
+      command,
+      true,
+    ]);
+  }
 });
 
 test("a fixed-list entry whose representative is missing is named", () => {

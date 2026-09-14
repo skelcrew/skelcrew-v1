@@ -572,9 +572,17 @@ async function scanNote(): Promise<string> {
   return (await allowlistFor(git, repo, DEFAULT_BRANCH, worktree(), "code")).scanned;
 }
 
-/** The fixed list plus the run's own anchored file-tool entry: what the scan adds to. */
-function floor(): string[] {
-  return [...FIXED_ALLOWLIST, editsIn(worktree())];
+/**
+ * The fixed list, the run's own anchored file-tool entry, and the two entries composed from the
+ * base branch's name (020): what the scan adds to.
+ */
+function floor(base: string = DEFAULT_BRANCH): string[] {
+  return [
+    ...FIXED_ALLOWLIST,
+    editsIn(worktree()),
+    `Bash(git fetch origin ${base})`,
+    `Bash(git merge --no-edit refs/remotes/origin/${base})`,
+  ];
 }
 
 /** What the scan added, in order: everything past the fixed list. */
@@ -821,7 +829,9 @@ test("an instruction file committed locally but not on the remote contributes no
 test("a default branch with no remote-tracking head contributes nothing rather than failing", async () => {
   await commit("AGENTS.md", "```\nbun run check\n```\n");
   const list = await allowlistFor(git, repo, "no-such-branch", worktree(), "code");
-  expect(list.tools).toEqual(floor());
+  // The two base-branch entries are composed from the name, not from the ref existing: a run
+  // whose base has no remote-tracking head can still fetch it, which is how it gets one.
+  expect(list.tools).toEqual(floor("no-such-branch"));
 });
 
 // --- what the run-start comment says the scan did ---
@@ -846,6 +856,114 @@ test("a repository that documents its check command has it named on the card", a
   await commit("AGENTS.md", "```\nbun run check\n```\n\n```\nbun test\n```\n");
   expect(await scanNote()).toBe(
     "pre-allowed from the repository's instructions: bun run check, bun test",
+  );
+});
+
+// --- bringing the base branch in (020) ---
+
+/**
+ * Criterion 9. A card whose pull request conflicts goes back to Code, and the fix is to merge the
+ * base in — so a Code run gets those two commands as **exact** entries composed from the base
+ * branch's name, and nothing wider. The grant is a gate rather than a boundary: a check
+ * subprocess could already fetch, merge and force-push (016), and what this decides is that the
+ * fix run does not stop on a permission question for the two commands its brief tells it to run.
+ */
+test("a Code run may fetch and merge its own base branch without asking", async () => {
+  const tools = await list();
+  expect(tools).toContain(`Bash(git fetch origin ${DEFAULT_BRANCH})`);
+  expect(tools).toContain(`Bash(git merge --no-edit refs/remotes/origin/${DEFAULT_BRANCH})`);
+  for (const command of [
+    `git fetch origin ${DEFAULT_BRANCH}`,
+    `git merge --no-edit refs/remotes/origin/${DEFAULT_BRANCH}`,
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, tools)]).toEqual([command, true]);
+    // And the fixed list alone does not: the entries are composed per run, from a name the
+    // runner resolved, not written into the list.
+    expect([command, runsUnprompted("Bash", { command })]).toEqual([command, false]);
+  }
+});
+
+/**
+ * Exact means exact: the entries carry no wildcard, so nothing but those two command lines is
+ * covered by them. `git fetch` chooses no refspec and reaches no `--upload-pack`; `git merge`
+ * names no strategy, which `-s <name>` would turn into running `git-merge-<name>` from `PATH`.
+ */
+test("neither entry covers another ref, another remote, or a flag of its own", async () => {
+  const tools = await list();
+  for (const command of [
+    "git fetch",
+    "git fetch origin",
+    "git fetch origin other-branch",
+    `git fetch origin ${DEFAULT_BRANCH} --upload-pack=/tmp/evil`,
+    `git fetch elsewhere ${DEFAULT_BRANCH}`,
+    "git merge --no-edit refs/remotes/origin/other-branch",
+    `git merge refs/remotes/origin/${DEFAULT_BRANCH}`,
+    `git merge --no-edit -s evil refs/remotes/origin/${DEFAULT_BRANCH}`,
+    `git rebase refs/remotes/origin/${DEFAULT_BRANCH}`,
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, tools)]).toEqual([command, false]);
+  }
+});
+
+/**
+ * Criterion 11. Every claim this file makes about a boundary has been wrong once, so a new grant
+ * carries its own record: what it is (a gate), what defeats it (a subprocess, 016), and what it
+ * changes about the one ref the scan reads — which this file used to call unwritable by any tool
+ * call, and which `git fetch origin <base>` now writes, to origin's own value and no other.
+ */
+test("the record says the two entries are a gate, what defeats it, and what they change", () => {
+  const source = readFileSync(fileURLToPath(new URL("./allowlist.ts", import.meta.url)), "utf8");
+  const at = source.indexOf("export function baseBranchGrants");
+  expect(at).toBeGreaterThanOrEqual(0);
+  const record = source.slice(source.lastIndexOf("/**", at), at).replace(/\s+\*\s+/g, " ");
+  expect(record).toContain("gate, not a boundary");
+  expect(record).toContain("subprocess");
+  expect(record).toContain("no wildcard");
+  // And the sentence about the ref the scan reads says what is now true of it.
+  const scanRef = source.slice(source.indexOf("**The files are read from a commit"));
+  const paragraph = scanRef.slice(0, scanRef.indexOf("*/")).replace(/\s+\*\s+/g, " ");
+  expect(paragraph).toContain("git fetch origin <base>");
+  expect(paragraph).toContain("origin's own value");
+  expect(paragraph).not.toContain("No unprompted *tool call* runs a command that writes it");
+});
+
+test("no wildcard form of either entry is on any list a run is spawned with", async () => {
+  for (const entries of [FIXED_ALLOWLIST, REVIEW_ALLOWLIST, await list(), await reviewList()]) {
+    for (const entry of entries) {
+      expect(entry).not.toMatch(/^Bash\(git (fetch|merge)\b.*\*\)$/);
+    }
+  }
+});
+
+/**
+ * A branch name may hold a `)`, and a `)` inside a `Bash(...)` entry ends that rule early —
+ * `splitEntries` is where that is transcribed — so the rest of the entry would open rules of its
+ * own. A name that cannot be written into a rule is not written into one: the entries are left
+ * off, the run-start comment says so, and the two commands ask like anything else.
+ */
+test("a base branch name that cannot be written into a rule contributes no entry", async () => {
+  for (const base of ["main)", "main,x", "main x", "ma(in", "main*"]) {
+    const built = await allowlistFor(git, repo, base, worktree(), "code");
+    expect([base, built.tools.filter((entry) => entry.includes("git fetch"))]).toEqual([base, []]);
+    expect([base, built.tools.filter((entry) => entry.includes("git merge"))]).toEqual([base, []]);
+    expect([base, built.scanned]).toEqual([
+      base,
+      `base branch "${base}" cannot be written into a rule: git fetch and git merge will ask; no refs/remotes/origin/${base}: the repository's own commands will ask`,
+    ]);
+    const command = `git fetch origin ${base}`;
+    expect([base, runsUnprompted("Bash", { command }, built.tools)]).toEqual([base, false]);
+  }
+});
+
+/** And the clause sits beside what the scan did rather than replacing it. */
+test("the run-start comment carries the base-branch clause and the scan's together", async () => {
+  await commit("AGENTS.md", "```\nbun run check\n```\n");
+  await sh("branch", "main)", DEFAULT_BRANCH);
+  await sh("push", "-q", "origin", "main)");
+  const built = await allowlistFor(git, repo, "main)", worktree(), "code");
+  expect(built.scanned).toBe(
+    'base branch "main)" cannot be written into a rule: git fetch and git merge will ask; ' +
+      "pre-allowed from the repository's instructions: bun run check",
   );
 });
 
@@ -921,6 +1039,24 @@ test("a review run may not write, commit, push or open a pull request", async ()
     "gh pr diff --name-only",
   ]) {
     expect([command, runsUnprompted("Bash", { command }, tools, denied)]).toEqual([command, true]);
+  }
+});
+
+/**
+ * 020's two entries are a Code run's: a review run reports and writes nothing, so it gets no
+ * entry that moves a branch head or touches the worktree.
+ */
+test("a review run may not fetch or merge the base branch either", async () => {
+  const tools = await reviewList();
+  expect(tools).toEqual([...REVIEW_ALLOWLIST]);
+  for (const command of [
+    `git fetch origin ${DEFAULT_BRANCH}`,
+    `git merge --no-edit refs/remotes/origin/${DEFAULT_BRANCH}`,
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, tools, REVIEW_DENIED_TOOLS)]).toEqual([
+      command,
+      false,
+    ]);
   }
 });
 

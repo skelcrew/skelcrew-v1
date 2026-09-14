@@ -10,7 +10,14 @@ import { join } from "node:path";
 import { type Activity, COMMENT_MAX_BYTES, type Member, worktreesDir } from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
 import type { AgentDriver, AgentEvent, AgentRunOptions, ToolDecision } from "./agent";
-import { allowsTool, deniedTools, editsIn, FIXED_ALLOWLIST, runsUnprompted } from "./allowlist";
+import {
+  allowsTool,
+  baseBranchGrants,
+  deniedTools,
+  editsIn,
+  FIXED_ALLOWLIST,
+  runsUnprompted,
+} from "./allowlist";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
 import { createRunLog, runLimitFromEnv, TEXT_EXCERPT_BYTES } from "./run";
@@ -187,10 +194,11 @@ function logPathFrom(comment: string): string {
 
 /**
  * The list a run working in `cwd` is spawned with: the fixed list, the one file-tool entry
- * anchored at its own worktree, and then whatever the repository's instructions added.
+ * anchored at its own worktree, the two entries composed from the base branch's name (020), and
+ * then whatever the repository's instructions added.
  */
 function spawnedWith(cwd: string, ...scanned: string[]): string[] {
-  return [...FIXED_ALLOWLIST, editsIn(cwd), ...scanned];
+  return [...FIXED_ALLOWLIST, editsIn(cwd), ...baseBranchGrants("main"), ...scanned];
 }
 
 /** Files a card as the owner, moves it into spec, and waits for the run to end. */
@@ -1281,6 +1289,41 @@ test("the run-start comment says when the scan had no base to read, and names th
   );
   // And the log path is still where it was: the clause goes before it, not after.
   expect(logPathFrom(comments(id)[0] as string)).toEndWith(".jsonl");
+});
+
+/**
+ * 020, criterion 9. A branch name may hold a `)`, which closes a `Bash(...)` rule early — so the
+ * two entries that let a fix run bring its base in are left off, and the run-start comment says
+ * so rather than leaving the owner to wonder why the agent asked. Loud and closed.
+ */
+test("a base branch that cannot be written into a rule is said on the card, and grants nothing", async () => {
+  await sh(repo, "init", "-q", "-b", "main)");
+  await sh(repo, "commit", "-q", "--allow-empty", "-m", "init");
+  // `origin/HEAD` is how the runner resolves a default branch that is neither main nor master.
+  await sh(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main)");
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      seen.push(options);
+      yield { type: "result", ok: true };
+    }),
+  });
+  const id = await runCard("A base nobody can write into a rule");
+
+  expect(comments(id)[0]).toContain(
+    'base branch "main)" cannot be written into a rule: git fetch and git merge will ask',
+  );
+  const options = seen[0] as AgentRunOptions;
+  expect(options.allowedTools.filter((entry) => /git (fetch|merge)/.test(entry))).toEqual([]);
+  for (const command of [
+    "git fetch origin main)",
+    "git merge --no-edit refs/remotes/origin/main)",
+  ]) {
+    expect([command, runsUnprompted("Bash", { command }, options.allowedTools)]).toEqual([
+      command,
+      false,
+    ]);
+  }
 });
 
 /**

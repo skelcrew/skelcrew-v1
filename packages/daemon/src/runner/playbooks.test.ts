@@ -3,12 +3,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  baseBranchGrants,
   FIXED_ALLOWLIST,
   REVIEW_ALLOWLIST,
   REVIEW_DENIED_TOOLS,
   runsUnprompted,
 } from "./allowlist";
-import { commandsNamed, filled, instructedCommands, prescribed } from "./playbook-commands";
+import {
+  commandsNamed,
+  FILLED_BASE,
+  filled,
+  instructedCommands,
+  prescribed,
+} from "./playbook-commands";
 import { loadPlaybooks, PLAYBOOK_KINDS, PLAYBOOK_PHASES, type PlaybookPhase } from "./playbooks";
 
 let dir: string;
@@ -63,14 +70,25 @@ test("the Code playbook reads the body for export through --json", () => {
  * unprompted through the harness's own read-only check rather than through an entry, since the
  * six read-only git verbs came off the list once `--output` proved a trailing wildcard could
  * not exclude a write-capable flag. `runsUnprompted` is the list plus that check.
+ *
+ * The list checked against is the fixed one **plus the two entries composed from the base
+ * branch's name** (020), because that is what a run is spawned with: those two are exact entries
+ * built per run rather than written into `FIXED_ALLOWLIST`, so the commands they cover are only
+ * unprompted against a list composed the same way — with the branch name the playbook's `<base>`
+ * fills with, which is what makes the command and the entry the same string.
  */
 test("every command the playbooks run goes unprompted, so none of them stops to ask", () => {
   const playbooks = loadPlaybooks();
+  const list = [...FIXED_ALLOWLIST, ...baseBranchGrants(FILLED_BASE)];
   for (const phase of PLAYBOOK_PHASES) {
     const commands = instructedCommands(playbooks[phase]);
     expect(commands.length).toBeGreaterThan(0);
     for (const command of commands) {
-      expect([phase, command, runsUnprompted("Bash", { command })]).toEqual([phase, command, true]);
+      expect([phase, command, runsUnprompted("Bash", { command }, list)]).toEqual([
+        phase,
+        command,
+        true,
+      ]);
     }
   }
 });
@@ -404,6 +422,24 @@ test("the Code playbook makes a changes-requested verdict the brief for the run"
   );
   expect(code).toContain("Address every Critical and every Important finding.");
   expect(code).toContain("answered on the card");
+});
+
+/**
+ * 020, criterion 10. A card sent back to Code because its pull request conflicts is sent back
+ * for exactly two commands, and they are fenced so the agent copies them rather than composing
+ * something the entries composed for its base branch do not cover. Rebasing is ruled out in the
+ * playbook because the list cannot rule it out: a rebase needs a force-push, which asks.
+ */
+test("the Code playbook tells a conflicted run to merge its base in, and never to rebase", () => {
+  const code = loadPlaybooks().code;
+  expect(prescribed(code)).toContain("git fetch origin <base>");
+  expect(prescribed(code)).toContain("git merge --no-edit refs/remotes/origin/<base>");
+  const commands = instructedCommands(code);
+  expect(commands).toContain(`git fetch origin ${FILLED_BASE}`);
+  expect(commands).toContain(`git merge --no-edit refs/remotes/origin/${FILLED_BASE}`);
+  expect(unwrapped(code)).toContain(
+    "**Never rebase this branch.** A rebase needs a force-push, which asks",
+  );
 });
 
 test("the Code playbook makes qualifying both branch names a rule, not an example", () => {

@@ -43,10 +43,10 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRunOptions } from "./agent";
-import { allowlistFor, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
+import { allowlistFor, baseBranchGrants, FIXED_ALLOWLIST, REVIEW_ALLOWLIST } from "./allowlist";
 import { buildSdkOptions } from "./claude";
 import { createGit } from "./git";
-import { instructedCommands } from "./playbook-commands";
+import { FILLED_BASE, instructedCommands } from "./playbook-commands";
 import { loadPlaybooks, PLAYBOOK_PHASES, type PlaybookKind, type Playbooks } from "./playbooks";
 import { agentEnvironment } from "./shim";
 
@@ -70,6 +70,14 @@ export const CONTROL_COMMAND = "git push origin HEAD:main";
 const SCANNED_COMMAND = "bun run check";
 
 /**
+ * The default branch of the temporary repository, and so the name the two base-branch entries
+ * are composed from (020). It is `FILLED_BASE` — the name the playbooks' `<base>` fills with —
+ * and it has to be: those entries are exact, so an instructed `git fetch origin <base>` is only
+ * the command the entry covers when the two names are the same string.
+ */
+const BASE_BRANCH = FILLED_BASE;
+
+/**
  * One command per `Bash(...)` entry of the fixed list: a representative argument for a wildcard
  * entry, the command itself for an exact one.
  *
@@ -82,6 +90,10 @@ const SCANNED_COMMAND = "bun run check";
  *
  * They are arguments a playbook's agent would plausibly write, and nothing here has an effect:
  * every command word is a stub executable that exits 0.
+ *
+ * The last two are **exact** entries rather than wildcards (020), so their representative is the
+ * entry itself — there is no argument to choose — and it is the same string the Code playbook
+ * instructs once `<base>` is filled. One session covers both roles.
  */
 export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
   "skelcrew show 1",
@@ -98,6 +110,8 @@ export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
   "gh pr diff --name-only",
   'gh pr comment 1 --body "a comment"',
   "gh repo view --json defaultBranchRef",
+  `git fetch origin ${BASE_BRANCH}`,
+  `git merge --no-edit refs/remotes/origin/${BASE_BRANCH}`,
 ];
 
 /**
@@ -144,7 +158,11 @@ export const LISTS_UNDER_TEST: readonly ListUnderTest[] = [
   {
     name: "the Code list",
     kind: "code",
-    list: FIXED_ALLOWLIST,
+    // What a Code run is spawned with: the fixed list, and the two entries `allowlistFor`
+    // composes from the base branch's name (020). The file-tool entry and the scan's are not
+    // here for the same reason they never were — this is the part every run shares, and the
+    // session below is given the whole list `allowlistFor` returns.
+    list: [...FIXED_ALLOWLIST, ...baseBranchGrants(BASE_BRANCH)],
     representatives: FIXED_LIST_REPRESENTATIVES,
     playbooks: PLAYBOOK_PHASES,
   },
@@ -658,7 +676,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
  * `bun run check`, and the remote-tracking head the scan reads from.
  */
 async function temporaryRepository(root: string): Promise<void> {
-  await git(root, "init", "-b", "main");
+  await git(root, "init", "-b", BASE_BRANCH);
   await git(root, "config", "user.email", "harness-check@skelcrew.invalid");
   await git(root, "config", "user.name", "harness check");
   writeFileSync(
@@ -667,7 +685,7 @@ async function temporaryRepository(root: string): Promise<void> {
   );
   await git(root, "add", "AGENTS.md");
   await git(root, "commit", "-m", "the repository's own instructions");
-  await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  await git(root, "update-ref", `refs/remotes/origin/${BASE_BRANCH}`, "HEAD");
 }
 
 /** What one list contributes to the run: its own commands, each under its own grants. */
@@ -727,7 +745,7 @@ async function main(): Promise<number> {
 
   try {
     await temporaryRepository(repoRoot);
-    await git(repoRoot, "branch", "card-1", "main");
+    await git(repoRoot, "branch", "card-1", BASE_BRANCH);
     await git(repoRoot, "worktree", "add", worktree, "card-1");
     // One session per command per list, each with that list's own grants — and the control
     // appended to each list, tagged here rather than recognised by its text later: a playbook
@@ -735,7 +753,7 @@ async function main(): Promise<number> {
     const sessions: Array<{ command: string; control: boolean; context: RunContext }> = [];
     const scannedNotes: string[] = [];
     for (const { list, commands } of perList) {
-      const allowlist = await allowlistFor(createGit(), repoRoot, "main", worktree, list.kind);
+      const allowlist = await allowlistFor(createGit(), repoRoot, BASE_BRANCH, worktree, list.kind);
       scannedNotes.push(`${list.name}: ${allowlist.scanned}`);
       const context = {
         cwd: worktree,

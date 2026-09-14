@@ -74,13 +74,39 @@ const PROHIBITION = /\*\*Never [^*]*\*\*/g;
 const INSTRUCTION = new RegExp(`^(?:${COMMAND_WORDS.join("|")}) \\S`);
 
 /**
+ * The branch name `<base>` is filled with, where every other placeholder becomes the word
+ * `PLACEHOLDER` (020).
+ *
+ * It is a branch name rather than the generic word because of what a checker does with the
+ * result. Since 020 a run's list carries two **exact** entries composed from its base branch's
+ * name — `Bash(git fetch origin <base>)` and `Bash(git merge --no-edit
+ * refs/remotes/origin/<base>)` — and the Code playbook instructs exactly those two commands. An
+ * exact entry matches one string, so "does this command ask" can only be asked of a command and
+ * an entry built from the *same* name: filled with `PLACEHOLDER`, the instructed command would
+ * be denied under a list composed for a real branch, and the check would be reporting a
+ * substitution of its own making rather than anything about the playbook.
+ *
+ * So both checkers — `playbooks.test.ts`, against `allowlist.ts`'s model, and `harness-check.ts`,
+ * against the harness itself with a temporary repository whose default branch is this name —
+ * compose their list for this value, and it is one constant so the two cannot drift.
+ */
+export const FILLED_BASE = "main";
+
+/**
  * A playbook's `<id>`-style placeholders replaced with a word, which is what makes a template
  * into the command an agent would run. Exported so that what `instructedCommands` *drops*
  * relative to `commandsNamed` can be compared like with like, rather than by a second copy of
  * this rule in a test.
+ *
+ * `<base>` is the one placeholder filled with something other than `PLACEHOLDER`; `FILLED_BASE`
+ * says why.
  */
 export function filled(command: string): string {
-  return command.trim().replaceAll(/<[^<>]*>/g, "PLACEHOLDER");
+  return command
+    .trim()
+    .replaceAll(/<[^<>]*>/g, (placeholder) =>
+      placeholder === "<base>" ? FILLED_BASE : "PLACEHOLDER",
+    );
 }
 
 /**

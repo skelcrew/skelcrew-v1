@@ -1125,9 +1125,62 @@ function scanBase(defaultBranch: string): string {
   return `refs/remotes/origin/${defaultBranch}`;
 }
 
+/**
+ * `LINE_CHARS` with no space in it: one word of the same characters. A branch name is one word
+ * (git refuses a space in a ref name), and this is what decides whether the two entries below
+ * can be written at all.
+ */
+const LINE_WORD = /^[A-Za-z0-9._/@+:=-]+$/;
+
+/**
+ * What a **Code** run may do to bring its base branch in, without asking: exactly these two
+ * commands, composed from the base branch's own name (020). A card whose pull request stopped
+ * being mergeable — because the owner merged something else — goes back to Code with the fix on
+ * it, and these are the two commands `code.md` tells that run to run. A run that had to ask for
+ * them would stop unattended on the one step the phase was re-entered for.
+ *
+ * **This is a gate, not a boundary, and what defeats it is the same thing that defeats the rest
+ * of this file**: a check command is a subprocess, and a subprocess can already fetch, merge,
+ * rebase and force-push whatever any rule here says (see *What a subprocess reaches*). So these
+ * entries add nothing to what a run can reach; what they decide is what it does *in the ordinary
+ * course*, visibly, without stopping on a question nobody is awake to answer.
+ *
+ * Both are **exact** entries, with no wildcard anywhere, and rule 2 is why: a trailing wildcard is
+ * the command's entire flag surface. Written out, what each reaches is what is written —
+ * `git fetch origin <base>` updates `refs/remotes/origin/<base>` from origin and chooses no
+ * refspec and no `--upload-pack`; `git merge --no-edit refs/remotes/origin/<base>` writes the
+ * worktree and the branch head, runs the repository's own merge hooks and merge drivers, and
+ * cannot name a strategy (`-s <name>` runs `git-merge-<name>` from `PATH`, which is exactly why
+ * no wildcard form of this entry exists). `--no-edit` is in the entry so the command never waits
+ * on an editor.
+ *
+ * **A name that cannot be written into a rule is not written into one.** The harness re-reads
+ * every entry character by character (`splitEntries`): a `)` in the name would close the rule
+ * early and the rest of the entry would open further ones, and a comma or a space starts another
+ * rule outright. A branch name may hold any of those. So the name has to be one word of
+ * `LINE_CHARS` — the same allowlist a scanned line goes through, for the same reason — and when
+ * it is not, this returns nothing, `allowlistFor` says so in the run-start comment, and the two
+ * commands ask like anything else. Failing loudly and closed is the only safe direction here.
+ */
+export function baseBranchGrants(defaultBranch: string): string[] {
+  if (!LINE_WORD.test(defaultBranch)) return [];
+  return [
+    `Bash(git fetch origin ${defaultBranch})`,
+    `Bash(git merge --no-edit refs/remotes/origin/${defaultBranch})`,
+  ];
+}
+
+/** What the run-start comment says when the base branch's name cannot be written into a rule. */
+function unwritableBase(defaultBranch: string): string {
+  return `base branch "${defaultBranch}" cannot be written into a rule: git fetch and git merge will ask`;
+}
+
 /** What one run may do without asking, what it may not touch, and what the card is told. */
 export interface RunAllowlist {
-  /** The entries the run is spawned with: the fixed list, its worktree, and the scan's. */
+  /**
+   * The entries the run is spawned with: the fixed list, its worktree, the two composed from the
+   * base branch's name (`baseBranchGrants`), and the scan's.
+   */
   tools: string[];
   /** Deny rules, which outrank every entry in `tools`. */
   denied: string[];
@@ -1158,22 +1211,26 @@ export interface RunAllowlist {
  * widening its successor's boundary, so a file that is untracked, or modified relative to that
  * commit, contributes nothing.
  *
- * **And the commit is named by a ref no unprompted *tool call* on the fixed list can write**:
- * `scanBase`, the remote-tracking head of `defaultBranch`. A local branch name would not do,
- * however carefully the fixed list is drawn — `refs/heads/` is shared by the main checkout and
- * every linked worktree, so a run able to create or move a branch could point the name its
- * successor reads at a commit it authored. Two things keep `refs/remotes/origin/<default>` out
- * of reach, and both are needed:
+ * **And the commit is named by a ref no unprompted *tool call* can put a commit of its own
+ * into**: `scanBase`, the remote-tracking head of `defaultBranch`. A local branch name would not
+ * do, however carefully the fixed list is drawn — `refs/heads/` is shared by the main checkout
+ * and every linked worktree, so a run able to create or move a branch could point the name its
+ * successor reads at a commit it authored. Three things hold `refs/remotes/origin/<default>` to
+ * what the owner pushed there, and every one of them is needed:
  *
- * - **No unprompted *tool call* runs a command that writes it.** Only `git fetch`, `git pull`,
- *   `git remote` and `git push` write those refs, of which only `push` is listed, and only as
- *   `git push -u origin HEAD` and a bare `git push`. The first pushes the worktree's HEAD — the
- *   card branch `skelcrew/<id>-…`, named by the runner — and so writes that branch's
- *   remote-tracking ref and no other. The second, under a repo-level `push.default = matching`,
- *   pushes every local branch with a counterpart on the remote, the default branch included;
- *   but it pushes each at the value it already holds, and nothing unprompted can change that
- *   value: a run's commits land on its own HEAD, and `git branch` is off the list precisely so
- *   nothing else can move a `refs/heads/` entry.
+ * - **One unprompted *tool call* writes it, and only to what origin already holds.** `git fetch`,
+ *   `git pull`, `git remote` and `git push` are what write those refs. Since 020 `baseBranchGrants`
+ *   puts `git fetch origin <base>` on a Code run's list as an exact entry, so a run *can* update
+ *   `refs/remotes/origin/<base>` — to whatever origin has on that branch and to nothing else: the
+ *   entry chooses no refspec, and what puts content on origin's `<base>` is the owner merging.
+ *   That is the same authority the ref had before, arriving sooner. Of the rest only `push` is
+ *   listed, and only as `git push -u origin HEAD` and a bare `git push`. The first pushes the
+ *   worktree's HEAD — the card branch `skelcrew/<id>-…`, named by the runner — and so writes that
+ *   branch's remote-tracking ref and no other. The second, under a repo-level
+ *   `push.default = matching`, pushes every local branch with a counterpart on the remote, the
+ *   default branch included; but it pushes each at the value it already holds, and nothing
+ *   unprompted can change that value: a run's commits land on its own HEAD, and `git branch` is
+ *   off the list precisely so nothing else can move a `refs/heads/` entry.
  * - **No unprompted *tool* writes it either.** A ref is a plain file. While a file tool sat on
  *   the list bare, a run could author a commit, name the git common directory with
  *   `git rev-parse --git-common-dir`, and write that sha straight into the ref — and a loose
@@ -1185,7 +1242,9 @@ export interface RunAllowlist {
  *   refuses the flag. That is the third leg, and all three are needed.
  *
  * So no *tool call* on the **fixed list** can make the scan read a commit the owner has not
- * pushed to the default branch. Three legs hold that up, and two things step over all three.
+ * pushed to the default branch — nor can the two base-branch entries composed beside it, whose
+ * `git fetch origin <base>` writes that ref to origin's own value, which is that same commit.
+ * Three legs hold that up, and two things step over all three.
  * A subprocess does: the check command this function itself pre-allows can write the ref
  * directly, and *What a subprocess reaches* above is where that is recorded. And the scanned
  * entries are not the fixed list — they are command lines the target repository chose, so a
@@ -1206,6 +1265,14 @@ export async function allowlistFor(
   // is denied outright instead. See `REVIEW_ALLOWLIST` and `REVIEW_DENIED_TOOLS`.
   const tools = review ? [...REVIEW_ALLOWLIST] : [...FIXED_ALLOWLIST, editsIn(worktreePath)];
   const denied = review ? [...REVIEW_DENIED_TOOLS] : deniedTools(worktreePath);
+  // The two commands a fix run brings its base in with (020), composed from the base branch's
+  // name — a Code run's, since a review run writes nothing. A name no rule can hold adds
+  // nothing and says so, which is the clause below.
+  const grants = review ? [] : baseBranchGrants(defaultBranch);
+  tools.push(...grants);
+  const clauses = !review && grants.length === 0 ? [unwritableBase(defaultBranch)] : [];
+  /** The run-start comment's clauses, in order: the base branch, then what the scan did. */
+  const said = (scan: string): string => [...clauses, scan].join("; ");
   // Read from the Code list for both kinds, and deliberately: the review list narrows no git
   // verb of its own, so a scanned line naming `git` would otherwise grant a review run exactly
   // what that list withholds. A word either list narrows contributes nothing to either.
@@ -1218,7 +1285,7 @@ export async function allowlistFor(
     // A git that cannot run at all: the scan contributes nothing and the run goes on.
   }
   if (!reachable) {
-    return { tools, denied, scanned: `no ${base}: the repository's own commands will ask` };
+    return { tools, denied, scanned: said(`no ${base}: the repository's own commands will ask`) };
   }
   const lines: string[] = [];
   for (const name of INSTRUCTION_FILES) {
@@ -1240,9 +1307,10 @@ export async function allowlistFor(
   return {
     tools,
     denied,
-    scanned:
+    scanned: said(
       lines.length === 0
         ? "the repository's instructions name no commands: they will ask"
         : `pre-allowed from the repository's instructions: ${lines.join(", ")}`,
+    ),
   };
 }
