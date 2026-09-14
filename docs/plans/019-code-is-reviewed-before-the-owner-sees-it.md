@@ -182,3 +182,61 @@ widening the rule the spec states.
 **Checks after the round.** `bun run check` — 709 tests, green (706 before, plus the three new
 cases). `bun run check:harness` — 49 commands under test plus the control, all unprompted,
 `git push origin HEAD:main` denied, the temporary repository unchanged.
+
+## Review round 2, and what each finding became
+
+One Critical, one Important, three Minor. Every finding is fixed. The spec was amended first
+(`docs:` commit `6a6b644`) and the amended wording is what the code now matches. Three of the
+five change behaviour, and each of those was driven red first. The Critical is the case round 1
+named as **knowingly unchanged** above: the orchestrator settled it the other way, and that
+paragraph is superseded by this one.
+
+- **Critical 1 — the guard ran at the top of the round, so it bound the Code → review
+  transition and not the review → fix one.** A reviewer that raised its own `skelcrew attention`
+  question and recorded `changes_requested` — both of which its playbook instructs — left the
+  loop free to start a fix run under that unanswered request, and that run could raise no
+  permission question of its own and would block until its time limit. The check is now one
+  helper, `endedUnderAStandingQuestion()` in `runner.ts`, called at both transitions; it ends
+  with the same `end(met.note, met.moves, "finished")`, which `endRun` turns into the comment,
+  no move and `blocked`. Red first, in the finding's own shape: *Expected: false Received: true*
+  on "no `fix run starting` comment". The new case also asserts two system prompts and no more,
+  the reviewer's question still the card's request, and `blocked`.
+- **Important 1 — the playbook prescribed the findings double-quoted.** Against the pinned
+  harness a backtick or a `$(` inside double quotes is a command substitution and is asked about
+  outright, and `.claude/agents/reviewer.md` — the source of this playbook — writes locations in
+  backticks, so backticked findings are the ordinary case. Unattended that costs the whole round:
+  nobody answers, the run burns its time limit and the contract fails with `review run ended
+  without a verdict`. §5 now prescribes `skelcrew review <id> changes-requested '<the findings,
+  Critical first>'` with the reason and two rules — write locations as `path:line` with no
+  backticks, and never an apostrophe in the findings, because an apostrophe ends the string —
+  the way `code.md` §4 warns about its own one required call. The check could not have caught it:
+  the playbook's template fills to a bare `'PLACEHOLDER'`. So the review list's representative for
+  `Bash(skelcrew review *)` is now ``skelcrew review 1 changes-requested 'Critical: runner.ts:480
+  calls `endRun()` too late'`` — a backtick inside single quotes — and `check:harness` reports it
+  `ran` unprompted.
+- **Minor 3 — the control command was appended to the Code list's sessions alone.** A
+  review-list session that allowed everything would still have passed on the strength of the
+  Code list's one denial. The control is now appended to every list under test and `problemsIn`
+  requires one denial per list, for the same reason coverage is counted per list: a command is
+  only evidence about the list it ran under. Red first, on two new cases — a list with no
+  control of its own, and a list whose control the harness allowed — each failing with the old
+  whole-run rule (*Expected: 1 Received: 2*, the second control read as a duplicate).
+- **Minor 4 — the guard excludes the run's own permission question.** Kept, as the amended spec
+  says, with the reason now in `runner.ts` beside the check: an ending replaces that question
+  (013), so a met contract under it hands the card on with the offer, and widening the guard
+  would let a run that triggered a permission question and then finished skip the review.
+  Whether the harness can end a session with an ask outstanding is recorded there as unverified.
+  Prose only.
+- **Minor 5 — `logPath` survived from one round to the next.** A review run whose
+  `allowlistFor` or `revParse` threw before it opened its own log parked the card pointing at the
+  *Code* run's log. `runOnce` now clears `logPath` first, so the parked note is
+  `run ended and could not record why` with no path rather than a wrong one. Red first, with the
+  round-1 branch-head failure and a core that refuses that ending's comment and request:
+  *Expected to not contain "…/runs/1-…jsonl" / Received: "run ended and could not record why; see
+  the run log at …/runs/1-…jsonl"*.
+
+**Checks after the round.** `bun run check` — 714 tests, green (709 before, plus five new cases).
+`bun run check:harness` — 49 commands under test plus the control under each of the two lists;
+every one ran unprompted, including the verdict representative with its backtick in single
+quotes; `git push origin HEAD:main` was denied under each list; the temporary repository was
+unchanged.

@@ -141,8 +141,19 @@ skelcrew review <id> approved
 ```
 
 ```
-skelcrew review <id> changes-requested "<the findings, Critical first>"
+skelcrew review <id> changes-requested '<the findings, Critical first>'
 ```
+
+**Quote the findings in single quotes, and put nothing inside them a shell reads.** A backtick
+or a `$(` inside a *double*-quoted argument is a command substitution, and a command substitution
+is asked about **outright**, whatever the pre-allowed list above says — so findings that quote a
+location the way this document does would stop the run on a permission question to make the one
+call the phase depends on. Two rules, and they are enough:
+
+- **Write each location as `path:line`, with no backticks around it** — `runner.ts:480`, not a
+  backticked span.
+- **Never put an apostrophe in the findings.** Write "does not", not "doesn't": an apostrophe
+  ends the single-quoted string, and the rest of the findings is then the shell's to read.
 
 `approved` requires no Critical and no Important findings. Outstanding Minor findings are
 compatible with it — put them in the text, and they travel to the owner with the card.

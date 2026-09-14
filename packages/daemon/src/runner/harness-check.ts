@@ -54,6 +54,10 @@ import { agentEnvironment } from "./shim";
  * The command that must ask, on every run. 013 names it as the example of what the owner's own
  * gate holds back, and it is on no list. A check that cannot fail is decoration; this is how
  * this one proves its teeth each time it runs.
+ *
+ * It is appended to **every** list under test, not to one of them: a denial under the Code list
+ * is evidence about the Code list, and a review-list session that allowed everything would
+ * otherwise still pass (019, review round 2).
  */
 export const CONTROL_COMMAND = "git push origin HEAD:main";
 
@@ -100,12 +104,19 @@ export const FIXED_LIST_REPRESENTATIVES: readonly string[] = [
  * The same, for the review run's list (019). A review run is spawned with a different list and
  * with deny rules of its own, so its entries are exercised in their own sessions under their
  * own list — a command checked against the Code run's grants says nothing about this one.
+ *
+ * The `skelcrew review` representative carries a **backtick inside single quotes**, which is the
+ * shape the review playbook prescribes its findings in. Review round 2 measured the alternative:
+ * the same backtick inside *double* quotes is a command substitution and the harness asks about
+ * it outright, which would burn a whole review round on a question nobody answers overnight. The
+ * playbook's own template fills to a bare `'PLACEHOLDER'` with no metacharacter in it, so this
+ * entry is the only thing here that would notice the harness starting to ask about that form.
  */
 export const REVIEW_LIST_REPRESENTATIVES: readonly string[] = [
   "skelcrew show 1",
   'skelcrew comment 1 "a comment"',
   'skelcrew attention 1 "a question"',
-  "skelcrew review 1 approved",
+  "skelcrew review 1 changes-requested 'Critical: runner.ts:480 calls `endRun()` too late'",
   "gh pr view --json url --jq .url",
   "gh pr diff --name-only",
   "gh repo view --json defaultBranchRef",
@@ -417,18 +428,19 @@ export interface CommandOutcome {
 /**
  * What is wrong with a run of the check, one line each; empty means it passed. Every condition
  * here is a way the check could otherwise pass while proving nothing — a command denied, the
- * control command *not* denied, a session that never reached the stub, a `canUseTool` call
- * (under `dontAsk` a prompt is a denial, so reaching the callback means the mode was not
- * honoured), a session that neither ran the command nor denied it, a fixed-list entry with no
- * representative, and a representative this run did not put through the harness.
+ * control command *not* denied under some list, a session that never reached the stub, a
+ * `canUseTool` call (under `dontAsk` a prompt is a denial, so reaching the callback means the
+ * mode was not honoured), a session that neither ran the command nor denied it, a fixed-list
+ * entry with no representative, and a representative this run did not put through the harness.
+ *
+ * Coverage *and* the control are counted per list, for the one reason: a command is only
+ * evidence about the list it ran under.
  */
 export function problemsIn(
   outcomes: readonly CommandOutcome[],
   lists: readonly ListUnderTest[] = LISTS_UNDER_TEST,
 ): string[] {
   const problems: string[] = [];
-  const controls = outcomes.filter((outcome) => outcome.control);
-  const control = controls[0];
   for (const outcome of outcomes) {
     const at = `\`${outcome.command}\` under ${outcome.list}`;
     if (outcome.requests === 0) {
@@ -471,19 +483,24 @@ export function problemsIn(
         problems.push(`\`${command}\` is a representative of ${name} that this run never ran`);
       }
     }
-  }
-  if (controls.length > 1) {
-    problems.push(
-      `${controls.length} sessions are tagged as the control: it is appended once, so this run is not the one it describes`,
-    );
-  } else if (control === undefined) {
-    problems.push(
-      `the control command \`${CONTROL_COMMAND}\` was not run: the check proves nothing`,
-    );
-  } else if (control.denials.length === 0) {
-    problems.push(
-      `the control command \`${CONTROL_COMMAND}\` was not denied: the check cannot fail, so it proves nothing`,
-    );
+    // Per list, because a denial under one list says nothing about another's grants — the same
+    // reason coverage is counted per list. A list with no control of its own could allow
+    // everything and still pass on the strength of another list's one denial.
+    const controls = outcomes.filter((outcome) => outcome.control && outcome.list === name);
+    const control = controls[0];
+    if (controls.length > 1) {
+      problems.push(
+        `${controls.length} sessions of ${name} are tagged as the control \`${CONTROL_COMMAND}\`: it is appended once per list, so this run is not the one it describes`,
+      );
+    } else if (control === undefined) {
+      problems.push(
+        `the control command \`${CONTROL_COMMAND}\` was not run under ${name}: the check proves nothing about that list`,
+      );
+    } else if (control.denials.length === 0) {
+      problems.push(
+        `the control command \`${CONTROL_COMMAND}\` was not denied under ${name}: the check cannot fail there, so it proves nothing about that list`,
+      );
+    }
   }
   return problems;
 }
@@ -713,8 +730,8 @@ async function main(): Promise<number> {
     await git(repoRoot, "branch", "card-1", "main");
     await git(repoRoot, "worktree", "add", worktree, "card-1");
     // One session per command per list, each with that list's own grants — and the control
-    // appended, tagged here rather than recognised by its text later: a playbook that
-    // prescribed it would otherwise have its denial counted as the control's own.
+    // appended to each list, tagged here rather than recognised by its text later: a playbook
+    // that prescribed it would otherwise have its denial counted as the control's own.
     const sessions: Array<{ command: string; control: boolean; context: RunContext }> = [];
     const scannedNotes: string[] = [];
     for (const { list, commands } of perList) {
@@ -728,9 +745,7 @@ async function main(): Promise<number> {
         list: list.name,
       };
       for (const command of commands) sessions.push({ command, control: false, context });
-      if (list.kind === "code") {
-        sessions.push({ command: CONTROL_COMMAND, control: true, context });
-      }
+      sessions.push({ command: CONTROL_COMMAND, control: true, context });
     }
     const words = writeStubExecutables(
       binDir,
@@ -756,7 +771,10 @@ async function main(): Promise<number> {
           `fenced \`${SCANNED_COMMAND}\``,
       );
     }
-    console.log(`commands: ${prescribedCount} in all, plus the control command`);
+    console.log(
+      `commands: ${prescribedCount} in all, plus the control command under each of the ` +
+        `${perList.length} lists`,
+    );
     for (const note of scannedNotes) console.log(`allowlist: ${note}`);
     console.log(`stub executables: ${words.join(", ")}`);
     console.log(`PATH: ${env.PATH}`);
@@ -796,8 +814,8 @@ async function main(): Promise<number> {
     if (problems.length === 0) {
       console.log(
         `every one of the ${prescribedCount} commands under test runs unprompted in ` +
-          `the harness under its own list, \`${CONTROL_COMMAND}\` is denied, and the ` +
-          `repository is unchanged`,
+          `the harness under its own list, \`${CONTROL_COMMAND}\` is denied under each list, ` +
+          `and the repository is unchanged`,
       );
       return 0;
     }

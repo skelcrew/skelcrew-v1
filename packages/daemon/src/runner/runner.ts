@@ -388,6 +388,9 @@ export function startRunner(options: RunnerOptions): Runner {
         kind: PlaybookKind,
         opening: (log: string, scanned: string) => string,
       ): Promise<ContractOutcome | undefined> => {
+        // The previous round's log is not this run's: a step below that throws before this run
+        // opens one would otherwise park the card pointing at a file holding none of this.
+        logPath = undefined;
         step = `read the ${kind} allowlist`;
         // Read from the remote-tracking head of the default branch — a ref no *tool call* on
         // the fixed list can write — so an instruction file a run writes, commits, or points a
@@ -469,23 +472,34 @@ export function startRunner(options: RunnerOptions): Runner {
        * that is a recorded limit of this spec, not a feature.
        */
       let met = first;
+      /**
+       * **The next run starts only when nothing is waiting on the owner.** A request the run
+       * that just ended may not replace — an agent's own `skelcrew attention` question, from
+       * either kind of run — is answered before anything else makes sense, and the next run
+       * could raise no permission question of its own under it (`raiseNext` refuses over a
+       * foreign request) and would block until its time limit. So the loop ends here with 014's
+       * ending for a met artefact under a standing question: the artefact named, no move, the
+       * question standing, released blocked — which is what `endRun` makes of this call, because
+       * the raise it tries is refused for the same reason.
+       *
+       * What this reads is any open request that is not the run's *own* permission question.
+       * That one is excluded on purpose: an ending replaces it (013), so a met contract under it
+       * hands the card on with the offer, and widening this would let a run that triggered a
+       * permission question and then finished skip the review. Whether the harness can end a
+       * session with an ask still outstanding is unverified.
+       *
+       * Answers whether the loop ended here.
+       */
+      const endedUnderAStandingQuestion = (): boolean => {
+        const standing = core.getCard(id).attention;
+        if (standing === null || question.isOpen(standing)) return false;
+        end(met.note, met.moves, "finished");
+        return true;
+      };
       for (let round = 1; round <= REVIEW_ROUNDS_MAX; round += 1) {
         stillHeld();
-        /**
-         * A met Code contract starts a review **only when nothing is waiting on the owner**. A
-         * request this run may not replace — the agent's own `skelcrew attention` question — is
-         * answered before anything else makes sense, and a reviewer working under it could
-         * raise no permission question of its own (`raiseNext` refuses over a foreign request)
-         * and would block until its time limit. So the Code run ends here with 014's ending for
-         * a met artefact under a standing question: the artefact named, no move, the question
-         * standing, released blocked — which is what `endRun` makes of this call, because the
-         * raise it tries is refused for the same reason.
-         */
-        const standing = core.getCard(id).attention;
-        if (standing !== null && !question.isOpen(standing)) {
-          end(met.note, met.moves, "finished");
-          return;
-        }
+        // Before a review: the Code run that just met its contract may have asked something.
+        if (endedUnderAStandingQuestion()) return;
         const reviewed = await runOnce(
           "review",
           (log) => `review round ${round} of ${REVIEW_ROUNDS_MAX} starting; run log at ${log}`,
@@ -508,6 +522,9 @@ export function startRunner(options: RunnerOptions): Runner {
           return;
         }
         stillHeld();
+        // And before a fix run: a review run that raised its own question and recorded
+        // `changes_requested` — both of which its playbook instructs — ends the loop here.
+        if (endedUnderAStandingQuestion()) return;
         // The fix run's brief is the card: the findings are on it as the last verdict. The
         // Code contract applies to it unchanged, so a fix run that commits nothing fails the
         // way any Code run does and the loop ends there.

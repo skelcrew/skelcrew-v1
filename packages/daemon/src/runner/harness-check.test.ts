@@ -300,10 +300,13 @@ const control: CommandOutcome = {
   credentials: [STUB_API_KEY],
 };
 
+/** The same control, under the review list: every list under test carries one of its own. */
+const reviewControl: CommandOutcome = { ...control, list: REVIEW_LIST.name };
+
 /**
  * A whole run of the check with `outcomes` in it: every representative of both lists ran under
- * its own list and the control was denied, which is what a passing run looks like. Each test
- * below puts exactly one thing wrong into it, so the verdict it asserts is on that one thing.
+ * its own list and each list's control was denied, which is what a passing run looks like. Each
+ * test below puts exactly one thing wrong into it, so the verdict it asserts is on that one thing.
  */
 const runWith = (...outcomes: CommandOutcome[]): CommandOutcome[] => [
   ...outcomes,
@@ -311,6 +314,7 @@ const runWith = (...outcomes: CommandOutcome[]): CommandOutcome[] => [
     list.representatives.map((command) => clean(command, list.name)),
   ),
   control,
+  reviewControl,
 ];
 
 test("a run where every prescribed command executed and the control was denied passes", () => {
@@ -344,7 +348,7 @@ test("a fixed-list entry whose representative is missing is named", () => {
   const noExact = FIXED_LIST_REPRESENTATIVES.filter((command) => command !== "git push");
   expect(unrepresentedEntries(noExact)).toEqual(["Bash(git push)"]);
   const noVerdict = REVIEW_LIST_REPRESENTATIVES.filter(
-    (command) => command !== "skelcrew review 1 approved",
+    (command) => !command.startsWith("skelcrew review "),
   );
   expect(unrepresentedEntries(noVerdict, REVIEW_ALLOWLIST)).toEqual(["Bash(skelcrew review *)"]);
 });
@@ -372,14 +376,33 @@ test("a representative the run never put through the harness fails the check", (
  * per list, and a review representative that only ever ran under the Code list is a gap.
  */
 test("a review representative run only under the Code list does not cover the review list", () => {
+  const verdict = REVIEW_LIST_REPRESENTATIVES.find((command) =>
+    command.startsWith("skelcrew review "),
+  ) as string;
   const run = runWith().map((outcome) =>
-    outcome.list === REVIEW_LIST.name && outcome.command === "skelcrew review 1 approved"
+    outcome.list === REVIEW_LIST.name && outcome.command === verdict
       ? { ...outcome, list: CODE_LIST.name }
       : outcome,
   );
   expect(problemsIn(run)).toEqual([
-    "`skelcrew review 1 approved` is a representative of the review list that this run never ran",
+    `\`${verdict}\` is a representative of the review list that this run never ran`,
   ]);
+});
+
+/**
+ * Important 1 of review round 2. The one call the review contract depends on carries the findings
+ * on its command line, and a backtick inside *double* quotes is a command substitution the pinned
+ * harness asks about outright — so the representative that stands for `Bash(skelcrew review *)` is
+ * written the way the playbook prescribes the findings, single-quoted with a backtick inside, and
+ * `bun run check:harness` is what answers whether the harness asks about it.
+ */
+test("the review verdict's representative carries a backtick inside single quotes", () => {
+  const verdict = REVIEW_LIST_REPRESENTATIVES.find((command) =>
+    command.startsWith("skelcrew review "),
+  ) as string;
+  const quoted = /'[^']*`[^']*'/.exec(verdict);
+  expect([verdict, quoted !== null]).toEqual([verdict, true]);
+  expect(verdict).not.toContain('"');
 });
 
 test("a prescribed command the harness denied fails the check, naming it and the reason", () => {
@@ -431,6 +454,29 @@ test("a check that never ran the control command fails", () => {
   const problems = problemsIn(runWith().filter((outcome) => outcome !== control));
   expect(problems.length).toBe(1);
   expect(problems[0]).toContain(CONTROL_COMMAND);
+});
+
+/**
+ * Minor 3 of review round 2. The control used to be appended to the Code list's sessions alone,
+ * so the one denial the whole check rests on was evidence about that list only: a review-list
+ * session that allowed everything would still have passed. Every list under test carries its own.
+ */
+test("a list whose control command was never run fails, naming that list", () => {
+  const problems = problemsIn(runWith().filter((outcome) => outcome !== reviewControl));
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain(CONTROL_COMMAND);
+  expect(problems[0]).toContain(REVIEW_LIST.name);
+});
+
+test("a list whose control command the harness did not deny fails, naming that list", () => {
+  const allowed = { ...reviewControl, executed: true, denials: [] };
+  const problems = problemsIn([
+    ...runWith().filter((outcome) => outcome !== reviewControl),
+    allowed,
+  ]);
+  expect(problems.length).toBe(1);
+  expect(problems[0]).toContain(CONTROL_COMMAND);
+  expect(problems[0]).toContain(REVIEW_LIST.name);
 });
 
 test("a command the stub saw no request for fails the check, however it ended", () => {

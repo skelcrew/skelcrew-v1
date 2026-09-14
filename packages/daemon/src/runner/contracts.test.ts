@@ -1437,6 +1437,51 @@ test("a met Code contract under the agent's own standing question starts no revi
   expect(card.phase).toBe("code");
 });
 
+/**
+ * *The loop runs under one claim*: **the same rule binds the review → fix transition**. Here the
+ * reviewer raised its own `skelcrew attention` question and then recorded `changes_requested` —
+ * both of which its playbook instructs — and the loop ends there rather than starting a fix run
+ * that could raise no permission question of its own and would block until its time limit.
+ */
+test("a reviewer's own standing question ends the loop: no fix run starts", async () => {
+  await initRepo();
+  const seen: AgentRunOptions[] = [];
+  start({
+    driver: scripted(
+      async function* (options) {
+        seen.push(options);
+        await commitIn(options.cwd, "feature.ts");
+        core.setRefs(1, { prUrl: PR_URL }, crewMember.id);
+        yield { type: "result", ok: true };
+      },
+      async function* (options) {
+        seen.push(options);
+        agentAsks(1, "is the second half this card's, or a card of its own?");
+        core.review(
+          1,
+          { verdict: "changes_requested", text: "Critical: the second half" },
+          crewMember.id,
+        );
+        yield { type: "result", ok: true };
+      },
+    ),
+  });
+  await runCard("Reviewed, and asked", "code");
+
+  const said = comments(1);
+  expect(said.some((text) => text.startsWith("fix run starting"))).toBe(false);
+  // Two runs in the loop, the Code run and the review: the driver saw two system prompts.
+  expect(seen.map((options) => options.systemPrompt)).toEqual([playbooks.code, playbooks.review]);
+  expect(verdicts(1)).toEqual([`${crewMember.id}:changes_requested`]);
+
+  const card = core.getCard(1);
+  expect(said.at(-1)).toBe(`ready for review: ${PR_URL}`);
+  expect(card.attention?.note).toBe("is the second half this card's, or a card of its own?");
+  expect(card.attention?.moves).toEqual([]);
+  expect(lastRelease(1)).toBe("blocked");
+  expect(card.phase).toBe("code");
+});
+
 /** Criterion 5. The findings are on the card, and the card is the fix run's brief. */
 test("changes requested starts a fix run whose brief is the card, then a second review", async () => {
   await initRepo();
@@ -1652,6 +1697,55 @@ test("a branch head that cannot be read before the review run names that step, n
   expect(said).toContain("fatal: ambiguous argument");
   expect(said).not.toContain("run log");
   expect(lastRelease(1)).toBe("failed");
+});
+
+/**
+ * The same failure, parked: a run that ends before it has opened a log of its own must not name
+ * the *previous* run's log. `logPath` is a value the loop reuses across rounds, and a parked note
+ * pointing at the Code run's log would send the owner to a file holding none of this.
+ */
+test("a run that ends before its log exists parks the card without naming another run's log", async () => {
+  await initRepo();
+  const failing: Git = {
+    ...git,
+    async revParse(root, ref) {
+      const recorded = core
+        .getCard(1)
+        .activity.some(
+          (e) =>
+            e.type === "refs_set" &&
+            e.actorId === runnerMember.id &&
+            (e.data.set ?? []).includes("commits"),
+        );
+      if (recorded && ref.startsWith("refs/heads/skelcrew/")) {
+        throw new Error("fatal: ambiguous argument");
+      }
+      return git.revParse(root, ref);
+    },
+  };
+  const failed = (text: string): boolean => text.startsWith("read the review branch head failed");
+  const refuses: Core = {
+    ...core,
+    comment(id, text, actorId) {
+      if (failed(text)) throw new Error("comment is down");
+      return core.comment(id, text, actorId);
+    },
+    requestAttention(id, request, actorId) {
+      if (failed(request.note)) throw new Error("attention is down");
+      return core.requestAttention(id, request, actorId);
+    },
+  };
+  start({ core: refuses, driver: scripted(implementing()), git: failing });
+  await runCard("Parked before its log", "code");
+
+  const card = core.getCard(1);
+  const note = card.attention?.note as string;
+  const codeRunLog = logPathFrom(
+    comments(1).find((text) => text.includes("run log at ")) as string,
+  );
+  expect(note).not.toContain(codeRunLog);
+  expect(note).toBe("run ended and could not record why");
+  expect(card.attention?.moves).toEqual([]);
 });
 
 test("a review run that moved the branch fails naming it, and its verdict is ignored", async () => {
