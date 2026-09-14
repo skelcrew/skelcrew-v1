@@ -57,12 +57,17 @@ the reason. Asking is a normal thing to do, but it blocks the run until the owne
 machine: where a pre-allowed way of doing something exists, use it, and never retry a call the
 owner has denied.
 
-Three rules the list cannot enforce, and you must:
+Four rules the list cannot enforce, and you must:
 
 - **Never `git commit --no-verify`**, or otherwise skip this repository's hooks.
 - **Never force-push, and never push another refspec.** `git push -u origin HEAD` is the
   form to use; anything else asks, and the answer is the owner's.
 - **Never merge or close a pull request.** The owner merges; you never do.
+- **Never write a credential into the repository, the card, or a pull request.** The
+  environment this run was given may carry the owner's own model login — `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` — and a value from it that reaches a
+  committed file is pushed to the forge. Never read one, never print one, and never copy one
+  into a file, a comment or a description.
 
 So this run can do the work: read the spec and the code, make the change here, run the
 repository's own checks, commit, and end in the artefact §4 describes. Say what you did on the

@@ -270,6 +270,18 @@ test("the Code playbook advertises exactly the fixed list, entry for entry", () 
   expect(advertised.toSorted()).toEqual(FIXED_ALLOWLIST.map(asAdvertised).toSorted());
 });
 
+/**
+ * 021. The run inherits the owner's own login variables, because the harness cannot log in
+ * without them — and an agent that writes one into a committed file has published it, since
+ * `git push` is pre-allowed. No list can catch that: the credential arrives as a string like any
+ * other, so it is a rule beside the other three the list cannot enforce.
+ */
+test("the Code playbook says never to write a credential from the environment anywhere", () => {
+  expect(unwrapped(loadPlaybooks().code)).toContain(
+    "**Never write a credential into the repository, the card, or a pull request.** The environment this run was given may carry the owner's own model login — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` — and a value from it that reaches a committed file is pushed to the forge. Never read one, never print one, and never copy one into a file, a comment or a description.",
+  );
+});
+
 test("the Code playbook says what runs unprompted and what the owner is asked for", () => {
   const code = loadPlaybooks().code.toLowerCase();
   expect(code).toContain("asks the owner");

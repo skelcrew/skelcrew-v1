@@ -32,11 +32,54 @@ export function writeShim(dataDir: string, cliMain: string = CLI_MAIN): string {
 }
 
 /**
+ * What the agent inherits from the daemon's environment, verbatim and only when the daemon has
+ * it, so that the owner's own harness login is one the spawned agent can use:
+ *
+ * - `USER` and `LOGNAME` — the names a macOS Keychain lookup reads a stored `claude login`
+ *   under. `HOME` alone is not enough: a run given only `PATH` and `HOME` ends at
+ *   `Not logged in · Please run /login`, which is how the first real card through a real daemon
+ *   failed (021).
+ * - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` — the three
+ *   variables the harness reads a login from, for an owner who authenticates in their shell
+ *   rather than with a stored login.
+ * - `ANTHROPIC_BASE_URL` — the endpoint the harness talks to, so an owner routing through a
+ *   proxy has the agent route the same way.
+ * - `CLAUDE_CONFIG_DIR` — where the harness keeps its configuration, for an owner who moved it
+ *   off `~/.claude` and keeps their login there.
+ *
+ * **Skelcrew stores none of them.** Each is read from the process the owner started and written
+ * into the process the owner's harness runs, and nowhere else; no credential is held, logged or
+ * persisted. This list is deliberately enumerated rather than a blanket passthrough, which would
+ * hand the agent whatever the owner's shell happened to hold.
+ *
+ * It is written against the pinned harness — `claude` 2.1.266, SDK 0.3.266 — and its documented
+ * login and endpoint inputs, plus the two the Keychain needs. When the pin moves and a login
+ * stops working, this list is the place to look; `claude.test.ts`'s version pin is what says the
+ * pin moved. A Bedrock or Vertex login needs variables that are not here.
+ */
+export const INHERITED_VARIABLES = [
+  "USER",
+  "LOGNAME",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "CLAUDE_CONFIG_DIR",
+] as const;
+
+/**
  * The environment a spawned agent gets, and nothing else: the shim's directory first on
  * `PATH` so `skelcrew` is this daemon's CLI, `HOME` so the owner's own harness login is the
- * one that answers, and the two variables that say who the agent speaks as and which
- * daemon it reaches. The daemon's own environment is not passed on — skelcrew holds no
- * credentials, and what it does hold is none of the agent's business.
+ * one that answers, `INHERITED_VARIABLES` where the daemon has them so that login can actually
+ * be read, and the two variables that say who the agent speaks as and which daemon it reaches.
+ * Nothing else from the daemon's own environment is passed on — a `SECRET`, an `AWS_PROFILE`,
+ * an exported `SKELCREW_AS` — and a listed variable the daemon lacks is absent here rather than
+ * invented as empty.
+ *
+ * This supersedes criterion 13 of 012, which asked for exactly `PATH`, `HOME`, `SKELCREW_AS` and
+ * `SKELCREW_DIR`: that environment cannot log in. It is still a gate rather than a boundary, and
+ * hides nothing from the agent that it could not already reach — with `HOME` it can read
+ * `~/.claude` from a check command, which 016 records.
  *
  * `memberName` is who the agent is, and it is not the member holding the card's claim: the
  * runner claims as itself and spawns the agent as `crew`, so every gate the core keeps —
@@ -54,6 +97,11 @@ export function agentEnvironment(
     PATH: path === undefined || path === "" ? dir : `${dir}${delimiter}${path}`,
   };
   if (base.HOME !== undefined) env.HOME = base.HOME;
+  for (const name of INHERITED_VARIABLES) {
+    const value = base[name];
+    if (value !== undefined) env[name] = value;
+  }
+  // After the copy, so a `SKELCREW_AS` the owner exported cannot survive into the run.
   env.SKELCREW_AS = memberName;
   env.SKELCREW_DIR = dataDir;
   return env;
