@@ -185,6 +185,16 @@ a `branchHead` re-read from `refs/heads/<branch>` just before it starts, so "mov
 run" means this round. Between runs the runner calls the existing `stillHeld()`; a claim lost
 between rounds abandons exactly as one lost during a round does.
 
+A met Code contract starts a review only when nothing is waiting on the owner. If the card
+carries an open request the run may not replace — the agent's own `skelcrew attention`
+question — the Code run ends there with 014's ending for that case: a comment that the
+artefact landed, no move, release `blocked`, the question standing. No review run starts,
+because a reviewer working under a standing request cannot raise a permission question of its
+own (`raiseNext` refuses over a foreign request) and would block until its time limit. Review
+round 1 found the loop starting the review anyway, which criterion 3 read as allowed and
+*Desired behavior* did not; the orchestrator settled it on *Desired behavior* and added this
+paragraph. Criterion 10's case, a question the reviewer itself leaves open, is unchanged.
+
 `runPlaybook` in `run.ts` returns the contract's outcome to the caller when the contract is met,
 rather than ending the card itself. Every other outcome — an unmet contract, a time limit, the
 daemon stopping, a driver error, a self-action, a stop, an abandonment — still ends the card
