@@ -209,8 +209,11 @@ paragraph. Criterion 10's case, a question the reviewer itself leaves open, is u
 
 The same rule binds the review → fix transition, for the same reason: a review run that
 raises its own `skelcrew attention` question and records `changes_requested` ends the loop
-there. The card gets the ending 014 gives a run with a question standing (the comment says
-what landed, no move is offered, the claim is released `blocked`), and no fix run starts.
+there. The card gets the ending 014 gives a run with a question standing: no move is offered,
+the claim is released `blocked`, and no fix run starts. The comment reads `changes requested;
+the reviewer is waiting on an answer; the work is in <worktree>`, not the Code run's `ready for
+review`, because the reviewer has just said the work is not ready. (Review round 3 found the
+Code run's note reused here; the orchestrator named this note.)
 Answering the question makes the card ready, and the next claim begins a new loop. Review round 2
 found the loop starting the fix run under the reviewer's question; the first version of this
 paragraph named only the Code → review transition, and the orchestrator added this one.
@@ -278,8 +281,12 @@ This spec grants a review run a tool list, so the check applies.
    harness's own flag-by-flag recognition, as for Code runs. `Edit`, `Write` and `NotebookEdit`
    are denied outright, and a deny outranks any allow.
 3. **Composed.** `skelcrew review approved` recorded by anyone other than `crew` during the
-   review run is ignored by the loop; recorded by `crew` during a *Code* run, through a check
-   command or otherwise, it falls outside the review run's `sinceSeq` and is ignored too. A
+   review run is ignored by the loop; recorded by `crew` before the review run starts, during
+   the Code run, it falls outside the review run's `sinceSeq` and is ignored too. What
+   `sinceSeq` does not close is a process the Code run leaves running in the background, which
+   can record a verdict *during* the review window as `crew`: that is 016's open subprocess
+   limit, listed below, not something the window catches. (Review round 3 corrected the first
+   version of this sentence, which claimed the window closed it.) A
    check-command subprocess plus nothing else can commit: the contract's branch-head comparison
    fails the run. A reviewer that approves untruthfully hands the card to the owner with
    `ready for review`, which is what every Code finish did before this spec, so the composition
