@@ -81,7 +81,9 @@ starts with the card as its first user message, the conflict note on it.
 **The Code run can bring the base in without asking.** Two exact commands run unprompted in a
 Code run: `git fetch origin <base>` and `git merge --no-edit refs/remotes/origin/<base>`, where
 `<base>` is the runner's default branch name. `code.md` tells a run whose card carries a conflict
-note to run exactly those two, resolve what conflicts, `git add`, `git commit`, `git push`, and
+note to run exactly those two, resolve what conflicts, `git add`, `git commit --no-edit` (the
+merge's prepared message; a bare `git commit` opens an editor and hangs an unattended run, which
+review round 1 measured), `git push`, and
 record the pull request again as §4 already requires. It says never to rebase, because a rebase
 needs a force-push, which asks and which the run never does. The Code contract applies
 unchanged: the merge commit moves the branch, the worktree is clean, the pull request is
@@ -135,9 +137,12 @@ take the exception.
 
 `allowlist.ts`: `allowlistFor` already receives the default branch name. It adds
 `Bash(git fetch origin <base>)` and `Bash(git merge --no-edit refs/remotes/origin/<base>)` as
-exact entries, no wildcard, only when `<base>` matches the single-word form of `LINE_CHARS`.
+exact entries, no wildcard, only when `<base>` matches the single-word form of `LINE_CHARS`, and
+only for a Code run (`kind === "code"`): a Spec run shares the Code list today, but it has no
+conflict to fix and nothing on its playbook runs either command, so it does not get them.
 Otherwise it adds nothing and the `scanned` line says `base branch "<name>" cannot be written into
-a rule: git fetch and git merge will ask`. `RunAllowlist` is unchanged in shape.
+a rule: git fetch and git merge will ask`. `RunAllowlist` is unchanged in shape. (Review round 1
+found the entries added to every non-review run; the orchestrator narrowed this to Code runs.)
 
 `harness-check.ts`: the list under test includes the two entries composed for `main`, and
 `FIXED_LIST_REPRESENTATIVES` gains the two commands themselves, since an exact entry's
@@ -182,6 +187,24 @@ Open, recorded as such: `mergeable` on a live conflicting pull request was obser
 development, not by a test, and never on a pull request of this repository's own; the
 grant uses the runner's default branch name while the note uses the pull request's base, and the
 two can differ; a subprocess reaches past every entry here (016).
+
+Two more limits, found by review round 1 and recorded rather than fixed here, because the fix
+belongs to the base every run is measured against and not to this spec:
+
+- **After a fix run merges the base in, the next review's diff is wide.** The runner's base is
+  the *local* `refs/heads/<base>`, which never fetches. The fix run merges
+  `refs/remotes/origin/<base>`, which is ahead of it, so `git diff refs/heads/<base>...refs/heads/<branch>`
+  afterwards includes every commit the owner merged for the other card, and 014's commit range
+  records those shas on the card too. Review reproduced it. The reviewer may request changes on
+  code that is not this card's, in which case the loop ends at the budget and the owner accepts
+  from the PR, whose diff on the forge is right. `code.md` §6 says so to the fix run, so it can
+  say so on the card for the reviewer. The fix is to measure every run against the newer of the
+  local and remote-tracking base (commits reachable from the branch but from neither), which
+  changes 014's contract and 019's review playbook together: carried to MILESTONES.
+- **A conflict that clears and then returns is not said again.** The once-rule is keyed to the
+  conflict note since the card entered PR, so the sequence conflict → clear → conflict leaves
+  "no longer conflicts" as the runner's last word while the open request still carries the
+  conflict. The owner's queue is right; the feed's last line is stale. Recorded in `merges.ts`.
 
 ## Acceptance criteria
 
@@ -250,7 +273,9 @@ two can differ; a subprocess reaches past every entry here (016).
 - **`BEHIND` and branch-protection "update branch" rules.** A mergeable pull request behind its
   base merges; only a conflict stops the owner.
 - **Rebasing, and any force-push grant.** A merge commit is the fix.
-- **Re-running the review** is 019's, and happens because the fix is a Code run.
+- **Re-running the review** is 019's, and happens because the fix is a Code run. **Measuring
+  that review, and 014's commit range, against the fetched base** rather than the stale local
+  one is the fix for the wide-diff limit above, and it is its own spec (MILESTONES).
 - **Taking an offered move from `skelcrew resolve`.** `resolve` clears; `mv` moves and clears.
   A `resolve --move` is a CLI finding for MILESTONES, not this spec.
 - **Reconciling the pull request's base branch with the runner's default branch** when they
