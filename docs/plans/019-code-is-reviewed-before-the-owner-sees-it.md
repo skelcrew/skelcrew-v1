@@ -65,4 +65,56 @@ Run record for `docs/specs/019-code-is-reviewed-before-the-owner-sees-it.md`.
 
 ## Red, then green
 
-Recorded below as each step is taken.
+Each slice was written as a failing test first, run, and the failure read before anything was
+implemented:
+
+- **The verdict primitive.** `core.test.ts`'s three cases failed with
+  `TypeError: core.review is not a function`; over the socket,
+  `RpcError: unknown method "reviewCard"`; through the CLI,
+  `error: unknown command "review"`; and `render.test.ts` with
+  `Expected to end with: "reviewed: approved" / Received: "… simon  undefined"`.
+- **The review playbook.** `PLAYBOOK_KINDS` and the two list constants were added as empty
+  scaffolding first so the failure would be an assertion rather than an import error; with a
+  stub `review.md` in place, five of the seven new playbook tests failed on their assertions
+  (the advertisement, the instructed commands, the verdict rules, the diff rule, AGENTS.md).
+- **The review list.** Four `allowlist.test.ts` cases failed with the Code list where the
+  review list was expected (`allowlistFor` ignored its new argument).
+- **The loop.** All ten new `contracts.test.ts` cases failed; the first on
+  `expect(round).toBeGreaterThanOrEqual(0) / Received: -1` — no review round had started.
+- **The parked ending** was the one place the implementation came first, because `endRun`'s
+  signature had to change with the loop. Its two tests were checked for teeth afterwards by
+  disabling the park block (`if (false && !said)`): both then failed, waiting for an attention
+  request and a warning that never came. Restored, both pass.
+
+**Existing assertions changed in three places, all of them structural:**
+
+- Seven `contracts.test.ts` cases whose Code run meets its contract now use `scripted(…)`
+  rather than `fakeDriver(…)`, so the driver also plays the reviewer and approves. No assertion
+  in them changed.
+- `protocol.test.ts`'s two method-parity tests learned one rename: the core's `review` is
+  `reviewCard` on the wire, which is the same stand-in mechanism `ensureMember → hello` uses.
+- `harness-check.test.ts` moved from one representative array to the two lists under test,
+  because coverage is now counted per list.
+
+## Two places the spec's own wording pulls in two directions
+
+Both are called out rather than silently resolved:
+
+- **The rendering.** *The verdict is a primitive* says "the same marked continuation a comment
+  uses" (`continued()`, which leaves the first line beside its label); criterion 2 and *Desired
+  behavior* both say "every line of the text marked". The criterion is the binding form, so the
+  findings stand on their own lines under the verdict and every one of them carries `> `.
+- **What parks an ending.** Criterion 12 says "an ending whose comment **and** request both
+  throw". 014's existing case — a core whose `requestAttention` always throws while the comment
+  lands — asserts that a met artefact still releases `finished`. So the park fires only when the
+  comment itself failed, which is what "nothing on the card says why" means, and 014's assertion
+  stands unchanged.
+
+## Checks
+
+- `bun run check` — 706 tests, green.
+- `bun run check:harness` — 49 commands under test plus the control: 30 under the Code list
+  (the spec and code playbooks' instructions, a representative per entry, the repository's
+  fenced `bun run check`) and 19 under the review list (the review playbook's instructions, a
+  representative per entry, the same fenced command). Every one ran unprompted;
+  `git push origin HEAD:main` was denied; the temporary repository was unchanged.

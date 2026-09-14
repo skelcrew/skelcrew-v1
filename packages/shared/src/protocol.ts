@@ -45,8 +45,9 @@ export interface Methods {
   setBody: { params: { id: number; body: string }; result: Card };
   comment: { params: { id: number; text: string }; result: Activity };
   /**
-   * Records a verdict on the card. `text` is the findings — required with
-   * `changes_requested` — and the core's `review`, whose name this one carries a card on.
+   * Records a verdict on the card; `text` is the findings, required with `changes_requested`.
+   * The core calls this one `review`: the wire spells a method naming a card `…Card`, as
+   * `moveCard`, `claimCard` and `archiveCard` do.
    */
   reviewCard: { params: { id: number; verdict: ReviewVerdict; text?: string }; result: Activity };
   setRefs: { params: { id: number; refs: CardRefs }; result: Card };
