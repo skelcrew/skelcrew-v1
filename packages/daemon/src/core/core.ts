@@ -191,8 +191,13 @@ function requireNoControl(what: string, kind: TextKind, value: string): void {
   }
 }
 
-/** A member name as stored: trimmed, non-empty, within the cap. Seeded owner and joiners alike. */
-function memberName(raw: string): string {
+/**
+ * A member name as stored: trimmed, non-empty, within the cap. Seeded owner and joiners alike.
+ *
+ * Exported because the socket compares a `hello` against the names the daemon reserves for
+ * itself (028) and has to compare what `ensureMember` would store, not what was typed.
+ */
+export function memberName(raw: string): string {
   requireNoControl("member name", "single-line", raw);
   const trimmed = raw.trim();
   if (trimmed.length === 0) throw new CoreError("invalid", "member name must not be empty");

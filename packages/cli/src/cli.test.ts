@@ -28,7 +28,7 @@ import { type Core, openCore } from "../../daemon/src/core/core";
 import type { AgentDriver } from "../../daemon/src/runner/agent";
 import { createGit } from "../../daemon/src/runner/git";
 import { loadPlaybooks } from "../../daemon/src/runner/playbooks";
-import { type Runner, startRunner } from "../../daemon/src/runner/runner";
+import { RUNNER_MEMBER_NAME, type Runner, startRunner } from "../../daemon/src/runner/runner";
 import { startServer } from "../../daemon/src/server/server";
 
 const MAIN = fileURLToPath(new URL("./main.ts", import.meta.url));
@@ -50,7 +50,8 @@ beforeEach(() => {
   socketPath = join(dir, "skelcrew.sock");
   clockOffsetMs = 0;
   core = openCore(":memory:", { owner: "simon", now: () => Date.now() + clockOffsetMs });
-  server = startServer({ core, socketPath });
+  // The daemon reserves its runner's member name (028); a CLI against it sees that refusal.
+  server = startServer({ core, socketPath, reserved: [RUNNER_MEMBER_NAME] });
 });
 
 afterEach(async () => {
@@ -537,6 +538,21 @@ test("identity: owner by default, SKELCREW_AS, and --as beating the variable", a
   expect(lines(shown).find((l) => l.includes("hey"))).toContain("crew-3");
 });
 
+test("--as runner is refused by the daemon: the runner's name is its own (028)", async () => {
+  core.createCard({ title: "who" }, member("simon").id);
+
+  const stderr = await failed(1, ["ls", "--as", "runner"]);
+  expect(stderr).toContain("runner");
+  expect(stderr).toContain("the daemon's own");
+  // Nothing joined, here or under any other spelling of the same trimmed name.
+  expect(core.listMembers().map((m) => m.name)).toEqual(["simon"]);
+  expect(await failed(1, ["ls", "--as", " runner "])).toContain("runner");
+  expect(core.listMembers().map((m) => m.name)).toEqual(["simon"]);
+  // Every other name still speaks, including the crew the runner spawns agents as.
+  await ok(["comment", "1", "still me", "--as", "crew"]);
+  expect(core.listMembers().map((m) => m.name)).toEqual(["simon", "crew"]);
+});
+
 test('an empty identity fails closed: --as "" is a usage error, SKELCREW_AS="" is refused', async () => {
   core.createCard({ title: "who" }, member("simon").id);
 
@@ -705,6 +721,7 @@ test("from a subdirectory of a git repository the CLI reaches the daemon on <roo
   const repoServer = startServer({
     core: repoCore,
     socketPath: join(repo, ".skelcrew", "skelcrew.sock"),
+    reserved: [RUNNER_MEMBER_NAME],
   });
   extraServers.push({
     stop() {
@@ -1711,7 +1728,11 @@ test("from inside a runner worktree the CLI reaches the repo's daemon with no SK
   const data = join(repo, ".skelcrew");
   mkdirSync(data);
   const repoCore = openCore(":memory:", { owner: "simon" });
-  const repoServer = startServer({ core: repoCore, socketPath: join(data, "skelcrew.sock") });
+  const repoServer = startServer({
+    core: repoCore,
+    socketPath: join(data, "skelcrew.sock"),
+    reserved: [RUNNER_MEMBER_NAME],
+  });
   extraServers.push({
     stop() {
       repoServer.stop();
@@ -1802,7 +1823,11 @@ function fileDaemon(): { home: string; dbPath: string; daemonCore: Core } {
   extraDirs.push(home);
   const dbPath = join(home, "skelcrew.db");
   const daemonCore = openCore(dbPath, { owner: "simon" });
-  const fileServer = startServer({ core: daemonCore, socketPath: join(home, "skelcrew.sock") });
+  const fileServer = startServer({
+    core: daemonCore,
+    socketPath: join(home, "skelcrew.sock"),
+    reserved: [RUNNER_MEMBER_NAME],
+  });
   extraServers.push({
     stop() {
       fileServer.stop();

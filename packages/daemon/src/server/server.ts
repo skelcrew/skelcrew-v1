@@ -13,7 +13,7 @@ import {
   LineTooLongError,
   MAX_LINE_BYTES,
 } from "@skelcrew/shared";
-import type { Core } from "../core/core";
+import { type Core, memberName } from "../core/core";
 import {
   handleRequest,
   ProtocolError,
@@ -38,8 +38,20 @@ export interface Server {
   stop(): void;
 }
 
-export function startServer(options: { core: Core; socketPath: string }): Server {
+export function startServer(options: {
+  core: Core;
+  socketPath: string;
+  /**
+   * Agent member names `hello` refuses: the daemon's own members (028). Required, and `[]` is
+   * how a server says it reserves nothing — a gate left out defaults to open, so the caller
+   * names the names every time.
+   */
+  reserved: readonly string[];
+}): Server {
   const { core, socketPath } = options;
+  // Normalised once, the way the core stores a member name, so the comparison in `hello` is
+  // against what `ensureMember` would have found.
+  const reserved = new Set(options.reserved.map(memberName));
   const connections = new Set<ConnectionSocket>();
   const encoder = new TextEncoder();
 
@@ -136,7 +148,7 @@ export function startServer(options: { core: Core; socketPath: string }): Server
             fail(socket, error);
             return;
           }
-          const ctx = { core, session: conn.session, stream: hooksFor(socket) };
+          const ctx = { core, session: conn.session, reserved, stream: hooksFor(socket) };
           send(socket, handleRequest(ctx, request));
         }
       },

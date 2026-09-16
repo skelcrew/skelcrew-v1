@@ -88,7 +88,17 @@ if (await daemonAnswers(socketPath)) {
 
 prepareDataDir(dir);
 const core = openCore(dbPath);
-const server = startServer({ core, socketPath });
+// The runner's member is the daemon's own: its claims are runs, so a connection that could say
+// `hello` as it would hold leases the sweep treats as runs and could release or renew the real
+// runner's (028). The name is passed from here rather than imported by the server, so the
+// coordination half never reaches into the execution half, and it is passed whether or not the
+// runner is on: the member survives in the database, and the next start must not inherit claims
+// an impersonator made.
+//
+// Observed by "with the runner on the socket refuses hello as the runner, whose member the
+// daemon made itself" — the configuration this is for — and by "with SKELCREW_RUNNER=0 the
+// socket still refuses hello as the runner" for the half that is off.
+const server = startServer({ core, socketPath, reserved: [RUNNER_MEMBER_NAME] });
 // The member whose claims are runs, once the execution half below has joined as it. The sweep
 // takes a lapsed run's own question with it and needs to know which claims are runs; a claim
 // made by hand is not one, whoever made it. Assigned below, before the first tick five seconds

@@ -47,9 +47,10 @@
  * asserts `runner` over the socket. Round 1's fix claimed such a caller was bound; review rounds 2
  * and 3 both walked `skelcrew --as runner refs <id> --branch <other>` live, and each time it
  * joined the `runner` member and wrote the very event this check reads — names are not
- * credentials (`allowlist.ts` has recorded that since 016, and `hello` reserves none). Nothing is
- * lost by it: that caller can drop `--as` and be the owner, who moves cards to Done by typing.
- * A real bind would be `hello` refusing the reserved names, which is its own finding.
+ * credentials (`allowlist.ts` has recorded that since 016). 028 closed that one `hello`: the
+ * runner is the daemon's own member, so the socket refuses the name and there is no such caller
+ * any more. The bind is still not here, and nothing was lost by it: that caller drops `--as` and
+ * is the owner, who moves cards to Done by typing.
  *
  * **3. The tick acts on the card as it is now, not as it listed it.** Each card costs a `gh`
  * round-trip, and the owner can move a card back to Code inside that window — with a run

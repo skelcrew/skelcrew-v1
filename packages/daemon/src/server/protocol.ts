@@ -17,7 +17,7 @@ import {
   type ProtocolErrorCode,
   VERSION,
 } from "@skelcrew/shared";
-import type { Core } from "../core/core";
+import { type Core, memberName } from "../core/core";
 import { CoreError } from "../core/errors";
 
 /** A protocol-level failure. `code` is the wire's `error.data.code`. */
@@ -152,6 +152,13 @@ function validateHello(params: unknown): HelloParams {
 interface Context {
   core: Core;
   session: Session;
+  /**
+   * Agent member names nobody may join as, already normalised. The daemon's own members: the
+   * runner, whose claims are runs, so that no connection can release or renew a run's lease
+   * (028). The server is told which they are rather than knowing — the execution half names
+   * them, and the two halves stay on their own sides of the seam.
+   */
+  reserved: ReadonlySet<string>;
   stream: StreamHooks;
 }
 
@@ -164,6 +171,16 @@ function hello(ctx: Context, params: unknown): Methods["hello"]["result"] {
     );
   }
   const who = validateHello(params);
+  // Against the name as the core would store it, so no spacing joins what a name may not.
+  if (who.kind === "agent") {
+    const name = memberName(who.name);
+    if (ctx.reserved.has(name)) {
+      throw new ProtocolError(
+        "invalid_params",
+        `hello: ${name} is the daemon's own member and cannot be joined over the socket`,
+      );
+    }
+  }
   const member = who.kind === "human" ? owner(ctx.core) : ctx.core.ensureMember(who.name, "agent");
   ctx.session.member = member;
   return { member, version: VERSION, protocol: PROTOCOL_VERSION };
