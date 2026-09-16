@@ -47,8 +47,11 @@ language, and small enough to read in an evening. 027 puts the answers on the ke
 
 **Bare `skelcrew` opens the screen.** `skelcrew` with no command, when stdout is a terminal, is
 the screen; there is no `board` subcommand, because there is one way to open it. `skelcrew` with
-no command and stdout not a terminal prints the usage and exits 2, as it does today, so a script
-or an agent that runs it bare gets the same answer it always did. On start it draws once from
+no command and stdout not a terminal prints the queue and exits 0, as it does today, so a script
+or an agent that runs it bare gets the same answer it always did. (The spec as approved said
+"prints the usage and exits 2"; that was never true — 010 made bare `skelcrew` the queue, and a
+test pins it. The orchestrator corrected the sentence when verification failed criterion 2
+against the code that had kept today's behaviour.) On start it draws once from
 one round of requests — the cards, the open requests, the members, and for every running card
 its feed's last comment — and then redraws as events arrive on the subscription. Nothing
 animates while waiting; there is no spinner and no progress bar. The alternate screen is used
@@ -87,8 +90,8 @@ through the same functions.
 ## Implementation approach
 
 A small module beside `render.ts`, `packages/cli/src/board/`, in the CLI package, entered from
-`main.ts` when no command is given and stdout is a terminal (today that path prints the usage;
-it keeps doing so when stdout is not a terminal). Not a command in the `COMMANDS` table, so the
+`main.ts` when no command is given and stdout is a terminal (today that path runs `queue`; it
+keeps doing so when stdout is not a terminal — corrected from "prints the usage", see above). Not a command in the `COMMANDS` table, so the
 usage listing does not advertise a `board` verb. No new package and no dependency: the terminal
 is driven with escape sequences the module writes itself, and Bun 1.3.14's `setRawMode`,
 `isTTY`, `columns`/`rows` and `SIGWINCH` are all it needs (measured above). This is the
@@ -129,8 +132,8 @@ The screen grants nothing to any agent and, in this spec, makes no mutating requ
 1. `bun run check` passes. No test opens a real terminal, spawns a real coding agent, or calls
    a model; the frame and the reducer are tested as pure functions, and the command's refusal
    without a terminal is tested through the CLI.
-2. `skelcrew` with no command and stdout not a terminal prints the usage and exits 2, exactly as
-   today; `skelcrew` with no command and stdout a terminal enters the screen (asserted by the
+2. `skelcrew` with no command and stdout not a terminal prints the queue and exits 0, exactly as
+   today (corrected from "the usage and exits 2", which was never today's behaviour); `skelcrew` with no command and stdout a terminal enters the screen (asserted by the
    loop being driven with a fake terminal stream in criterion 8, since no test opens a real
    one). No `board` subcommand exists: `skelcrew board` is an unknown command.
 3. `frame(state, {columns: 100, rows: 24})` for a state holding two requests and five cards in
