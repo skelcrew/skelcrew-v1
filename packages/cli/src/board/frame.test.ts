@@ -92,6 +92,7 @@ function state(over: Partial<State> = {}): State {
     cursor: 0,
     view: { kind: "board" },
     detail: null,
+    prompt: null,
     message: "",
     ...over,
   };
@@ -205,11 +206,69 @@ test("a row of wide characters is cut and padded in cells, so no line wraps", ()
   expect(plain(selected[0] as string).trimEnd()).toEndWith("…");
 });
 
+test("the message is the bottom line, and the prompt takes it while one is open", () => {
+  const size = { columns: 100, rows: 24 };
+  const bottom = (over: Partial<State>) => frame(state(over), size, NOW)[size.rows - 1] as string;
+
+  expect(plain(bottom({ message: "#1 has no open question" }))).toBe("#1 has no open question");
+
+  // The prompt says what it will send and on which card, and ends in a reverse-video cursor.
+  const deny = bottom({ prompt: { kind: "deny", cardId: 1, text: "not yet" } });
+  expect(plain(deny)).toContain("deny #1: not yet");
+  expect(deny).toContain(`${ESC}[7m`);
+  expect(width(deny)).toBeLessThanOrEqual(size.columns);
+  expect(plain(bottom({ prompt: { kind: "back", cardId: 1, phase: "spec", text: "" } }))).toContain(
+    "#1 back to Spec:",
+  );
+  expect(plain(bottom({ prompt: { kind: "comment", cardId: 6, text: "ok" } }))).toContain(
+    "comment on #6: ok",
+  );
+
+  // The prompt covers the message, and the board is still drawn above it.
+  const both = frame(
+    state({ message: "the daemon said no", prompt: { kind: "comment", cardId: 1, text: "" } }),
+    size,
+    NOW,
+  ).map(plain);
+  expect(both[size.rows - 1]).not.toContain("the daemon said no");
+  expect(both.some((line) => line.includes("waiting on me"))).toBe(true);
+
+  // A line longer than the terminal is cut rather than wrapped, cursor and all — and cut at
+  // the start, so what is being typed stays on the screen instead of going blind at the edge.
+  const long = bottom({ prompt: { kind: "comment", cardId: 1, text: `${"x".repeat(200)}END` } });
+  expect(width(long)).toBeLessThanOrEqual(size.columns);
+  expect(plain(long)).toContain("END");
+  expect(plain(long)).toStartWith("…");
+
+  // And it is the bottom line of the card view too.
+  const card = frame(
+    state({
+      view: { kind: "card", cardId: 1, scroll: 0 },
+      detail: detail(),
+      prompt: { kind: "deny", cardId: 1, text: "no" },
+    }),
+    size,
+    NOW,
+  );
+  expect(plain(card[size.rows - 1] as string)).toContain("deny #1: no");
+});
+
+test("the keys screen names every key, including the ones that answer", () => {
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), {
+    columns: 100,
+    rows: 24,
+  }).map(plain);
+  for (const key of ["a", "d", "m", "b", "c", "o"]) {
+    expect(shown.some((line) => line.trimStart().startsWith(key))).toBe(true);
+  }
+});
+
 test("no frame writes a colour", () => {
   const views: State[] = [
     state(),
     state({ view: { kind: "help", from: { kind: "board" } } }),
     state({ message: "lost the daemon" }),
+    state({ prompt: { kind: "deny", cardId: 1, text: "not yet" } }),
     state({ view: { kind: "card", cardId: 1, scroll: 0 }, detail: detail() }),
   ];
   for (const each of views) {

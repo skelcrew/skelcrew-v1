@@ -1,11 +1,19 @@
 /**
- * Criterion 4: the reducer. A key is a function of the state and nothing else, so the whole
- * of what the keyboard does is testable without a terminal.
+ * 026's criterion 4 and 027's criteria 2, 3 and 4: the reducer. A key is a function of the
+ * state and nothing else, so the whole of what the keyboard does — moving, and now answering —
+ * is testable without a terminal.
  */
 import { expect, test } from "bun:test";
-import type { Activity, Card, CardDetail, Member, OpenAttention } from "@skelcrew/shared";
+import type {
+  Activity,
+  Attention,
+  Card,
+  CardDetail,
+  Member,
+  OpenAttention,
+} from "@skelcrew/shared";
 import { cardLines } from "./frame";
-import { press } from "./keys";
+import { type Pressed, press } from "./keys";
 import type { State } from "./state";
 
 const ME = 1;
@@ -43,6 +51,7 @@ function state(over: Partial<State> = {}): State {
     cursor: 0,
     view: { kind: "board" },
     detail: null,
+    prompt: null,
     message: "",
     ...over,
   };
@@ -120,8 +129,9 @@ test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () 
     expect(press(view, "ctrl-c").action).toEqual({ kind: "quit" });
   }
 
-  // Every other printable key is the same state and no action, on every view.
-  for (const key of ["a", "d", "m", "b", "c", "o", "z", "1", " ", "J"]) {
+  // Every printable key that is not a key is the same state and no action, on every view.
+  // `a`, `d`, `m`, `b`, `c` and `o` were in this list until 027 gave them to the daemon.
+  for (const key of ["z", "1", " ", "J", "x"]) {
     const pressed = press(board, key);
     expect(pressed.state).toBe(board);
     expect(pressed.action).toBeUndefined();
@@ -159,4 +169,144 @@ test("j and k scroll the card view, newest first, and stop at both ends", () => 
   expect(press(current, "j").state.view).toMatchObject({
     scroll: cardLines(open, NOW).length - 2,
   });
+});
+
+// --- 027: the keys that answer ---
+
+const QUESTION: Attention = {
+  to: ME,
+  note: "ready for review; the work is in /tmp/skelcrew/worktrees/7",
+  moves: ["pr"],
+  raisedBy: ME,
+  raisedAt: NOW,
+};
+
+/** One card in Code with an open request, under the cursor. */
+function asking(over: Partial<Card> = {}, question: Attention | null = QUESTION): State {
+  const one: Card = { ...card(7, "asking"), attention: question, ...over };
+  return state({
+    cards: [one],
+    requests: question === null ? [] : [{ cardId: 7, ...question }],
+    cursor: 0,
+  });
+}
+
+/** Every key in turn, from `start`; the last press is what comes back. */
+function typing(start: State, keys: string[]): Pressed {
+  let pressed: Pressed = { state: start };
+  for (const key of keys) pressed = press(pressed.state, key);
+  return pressed;
+}
+
+/** The state with nothing said, so "otherwise unchanged" can be asserted against the base. */
+function quiet(state: State): State {
+  return { ...state, message: "" };
+}
+
+test("a allows the open question, and a card without one says so", () => {
+  const open = asking();
+  const allowed = press(open, "a");
+  expect(allowed.action).toEqual({ kind: "resolve", id: 7, text: "allow" });
+  expect(allowed.state).toEqual(open);
+
+  const none = asking({}, null);
+  const pressed = press(none, "a");
+  expect(pressed.action).toBeUndefined();
+  expect(pressed.state.message).toContain("#7");
+  expect(pressed.state.message).toContain("no open question");
+  expect(quiet(pressed.state)).toEqual(none);
+});
+
+test("m takes the move the request offers, and says so when it offers none", () => {
+  const moved = press(asking(), "m");
+  expect(moved.action).toEqual({ kind: "move", id: 7, phase: "pr" });
+
+  const without = asking({}, { ...QUESTION, moves: [] });
+  const pressed = press(without, "m");
+  expect(pressed.action).toBeUndefined();
+  expect(pressed.state.message).toContain("no move");
+  expect(quiet(pressed.state)).toEqual(without);
+
+  // No question at all is the same answer `a` gives.
+  expect(press(asking({}, null), "m").state.message).toContain("no open question");
+});
+
+test("b opens the prompt on the previous phase, and a card in Idea has none", () => {
+  const back = press(asking({ phase: "code" }), "b");
+  expect(back.action).toBeUndefined();
+  expect(back.state.prompt).toEqual({ kind: "back", cardId: 7, phase: "spec", text: "" });
+
+  const idea = asking({ phase: "idea" });
+  const pressed = press(idea, "b");
+  expect(pressed.action).toBeUndefined();
+  expect(pressed.state.prompt).toBeNull();
+  expect(pressed.state.message).toContain("Idea");
+  expect(quiet(pressed.state)).toEqual(idea);
+});
+
+test("d, b and c open the one-line prompt; printable keys and Backspace edit it", () => {
+  const open = asking();
+  for (const [key, prompt] of [
+    ["d", { kind: "deny", cardId: 7, text: "" }],
+    ["b", { kind: "back", cardId: 7, phase: "spec", text: "" }],
+    ["c", { kind: "comment", cardId: 7, text: "" }],
+  ] as const) {
+    const opened = press(open, key);
+    expect(opened.action).toBeUndefined();
+    expect(opened.state.prompt).toEqual(prompt);
+
+    // Printable keys are text, not keys: `j`, `q` and `?` type themselves.
+    const typed = typing(opened.state, [..."jq? no", "backspace", "backspace", "!"]);
+    expect(typed.action).toBeUndefined();
+    expect(typed.state.prompt).toEqual({ ...prompt, text: "jq? !" });
+    expect(typed.state.view).toEqual({ kind: "board" });
+  }
+});
+
+test("Enter sends what was typed, an empty deny sends deny, and Esc sends nothing", () => {
+  const open = asking();
+  for (const [keys, action] of [
+    [["d", ..."not yet", "enter"], { kind: "resolve", id: 7, text: "not yet" }],
+    [["d", "enter"], { kind: "resolve", id: 7, text: "deny" }],
+    [
+      ["b", ..."needs a test", "enter"],
+      { kind: "move", id: 7, phase: "spec", message: "needs a test" },
+    ],
+    [["c", ..."looks good", "enter"], { kind: "comment", id: 7, text: "looks good" }],
+  ] as const) {
+    const sent = typing(open, [...keys]);
+    expect(sent.action).toEqual(action);
+    expect(sent.state.prompt).toBeNull();
+  }
+
+  for (const key of ["d", "b", "c"]) {
+    const cancelled = typing(open, [key, ..."never mind", "escape"]);
+    expect(cancelled.action).toBeUndefined();
+    expect(cancelled.state.prompt).toBeNull();
+    expect(quiet(cancelled.state)).toEqual(open);
+  }
+});
+
+test("o asks for a shell on the card under the cursor", () => {
+  const pressed = press(asking(), "o");
+  expect(pressed.action).toEqual({ kind: "open-shell", id: 7 });
+});
+
+test("the same keys act on the card the card view shows", () => {
+  const open = press(asking(), "enter").state;
+  expect(open.view).toEqual({ kind: "card", cardId: 7, scroll: 0 });
+
+  expect(press(open, "a").action).toEqual({ kind: "resolve", id: 7, text: "allow" });
+  expect(press(open, "m").action).toEqual({ kind: "move", id: 7, phase: "pr" });
+  expect(press(open, "o").action).toEqual({ kind: "open-shell", id: 7 });
+  expect(typing(open, ["c", ..."from the card", "enter"]).action).toEqual({
+    kind: "comment",
+    id: 7,
+    text: "from the card",
+  });
+  // The prompt covers the card view rather than closing it: `q` types, and Esc cancels.
+  const typed = typing(open, ["d", ..."q"]);
+  expect(typed.state.view).toEqual(open.view);
+  expect(typed.state.prompt).toEqual({ kind: "deny", cardId: 7, text: "q" });
+  expect(press(typed.state, "escape").state.view).toEqual(open.view);
 });

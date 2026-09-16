@@ -228,6 +228,7 @@ async function main(argv: string[]): Promise<number> {
       {
         client,
         socketPath,
+        dataDir: dir,
         stdin: async () => withLfLineEndings(await Bun.stdin.text()),
         out: (line) => process.stdout.write(`${safe(line)}\n`),
         warn: (line) => process.stderr.write(`${safeLine(line)}\n`),

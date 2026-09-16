@@ -18,15 +18,20 @@ const PACKAGES = fileURLToPath(new URL("../..", import.meta.url));
 const DEFINITION = "shared/src/text.ts";
 
 /**
- * And the one file allowed to spell two characters of it for the other reason there is: the
- * board drives a terminal, so it writes escape sequences rather than escaping them (026). It is
- * not a second definition of the set, which is what the two characters below check — everything
- * the screen draws is still escaped through `render.ts` before the sequences are added.
+ * And the one file allowed to spell a few characters of it for the other reason there is: the
+ * board drives a terminal, so it writes escape sequences rather than escaping them (026), and
+ * it reads the bytes raw mode sends for the keys it has. It is not a second definition of the
+ * set, which is what the exact list below checks — everything the screen draws is still escaped
+ * through `render.ts` before the sequences are added.
  */
 const TERMINAL = "cli/src/board/ansi.ts";
-/** The byte raw mode sends for ctrl-c, and the escape character, as that file writes them. */
+/**
+ * The escape character, the byte raw mode sends for ctrl-c, and the two it sends for Backspace
+ * (027's one text input takes both), as that file writes them.
+ */
 const INTERRUPT_SPELLING = "\\x03";
 const ESCAPE_SPELLING = "\\x1b";
+const BACKSPACE_SPELLINGS = ["\\x08", "\\x7f"];
 
 /**
  * How a set of control characters gets written: escape sequences, a Unicode property class,
@@ -56,10 +61,12 @@ test("the refused set is defined once, in @skelcrew/shared, and all three packag
     .map((path) => relative(PACKAGES, path));
   expect(spelling).toEqual([DEFINITION, TERMINAL]);
 
-  // What the screen may name: the escape character, and the byte raw mode sends for ctrl-c.
+  // What the screen may name: the escape character, and the bytes raw mode sends for the keys.
   const terminal = readFileSync(join(PACKAGES, TERMINAL), "utf8");
   const spelled = [...terminal.matchAll(new RegExp(SET_SYNTAX.source, "g"))].map((m) => m[0]);
-  expect([...new Set(spelled)].sort()).toEqual([INTERRUPT_SPELLING, ESCAPE_SPELLING]);
+  expect([...new Set(spelled)].sort()).toEqual(
+    [INTERRUPT_SPELLING, ESCAPE_SPELLING, ...BACKSPACE_SPELLINGS].sort(),
+  );
 
   // And each package reaches the definition through the shared package's exports.
   for (const [path, used] of [
