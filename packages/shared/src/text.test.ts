@@ -18,6 +18,17 @@ const PACKAGES = fileURLToPath(new URL("../..", import.meta.url));
 const DEFINITION = "shared/src/text.ts";
 
 /**
+ * And the one file allowed to spell two characters of it for the other reason there is: the
+ * board drives a terminal, so it writes escape sequences rather than escaping them (026). It is
+ * not a second definition of the set, which is what the two characters below check — everything
+ * the screen draws is still escaped through `render.ts` before the sequences are added.
+ */
+const TERMINAL = "cli/src/board/ansi.ts";
+/** The byte raw mode sends for ctrl-c, and the escape character, as that file writes them. */
+const INTERRUPT_SPELLING = "\\x03";
+const ESCAPE_SPELLING = "\\x1b";
+
+/**
  * How a set of control characters gets written: escape sequences, a Unicode property class,
  * code-point bounds, or a read of a character's code. This is a tripwire for the common
  * spellings, not a proof — a determined second definition could be written some other way —
@@ -43,7 +54,12 @@ test("the refused set is defined once, in @skelcrew/shared, and all three packag
   const spelling = files
     .filter((path) => SET_SYNTAX.test(readFileSync(path, "utf8")))
     .map((path) => relative(PACKAGES, path));
-  expect(spelling).toEqual([DEFINITION]);
+  expect(spelling).toEqual([DEFINITION, TERMINAL]);
+
+  // What the screen may name: the escape character, and the byte raw mode sends for ctrl-c.
+  const terminal = readFileSync(join(PACKAGES, TERMINAL), "utf8");
+  const spelled = [...terminal.matchAll(new RegExp(SET_SYNTAX.source, "g"))].map((m) => m[0]);
+  expect([...new Set(spelled)].sort()).toEqual([INTERRUPT_SPELLING, ESCAPE_SPELLING]);
 
   // And each package reaches the definition through the shared package's exports.
   for (const [path, used] of [

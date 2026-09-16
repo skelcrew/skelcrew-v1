@@ -127,8 +127,11 @@ function clockTime(ms: number): string {
  * A stored multi-line field's first line with something on it, as one line: what a status
  * column can carry. A note that opens with a blank line — or with nothing but blank lines —
  * would otherwise leave `waiting on you:` with nothing after it.
+ *
+ * Exported for the board, where a queue row carries a note's first line and a running row
+ * carries the first line of the last comment its run posted.
  */
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
   const line = text.split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
   return oneLine(line);
 }
