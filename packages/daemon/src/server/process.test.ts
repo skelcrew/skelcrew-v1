@@ -20,6 +20,7 @@ const MAIN = fileURLToPath(new URL("../main.ts", import.meta.url));
 
 let dir: string;
 const running: Daemon[] = [];
+const runningThroughShell: ShellDaemon[] = [];
 
 beforeEach(() => {
   // Real path: the child reports its cwd resolved, and macOS's temp dir is a symlink.
@@ -28,6 +29,14 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const daemon of running.splice(0)) {
+    if (daemon.proc.exitCode === null && daemon.proc.signalCode === null)
+      daemon.proc.kill("SIGKILL");
+    await daemon.proc.exited;
+  }
+  // A daemon under a pseudo-terminal is `script`'s grandchild: killing `script` would leave it
+  // running, so every daemon started through a shell is signalled by the pid it recorded.
+  for (const daemon of runningThroughShell.splice(0)) {
+    daemon.killDaemon("SIGKILL");
     if (daemon.proc.exitCode === null && daemon.proc.signalCode === null)
       daemon.proc.kill("SIGKILL");
     await daemon.proc.exited;
@@ -567,3 +576,312 @@ test("with SKELCREW_AGENT=claude the daemon loads the driver and its playbooks a
   expect(await stopped(daemon, "SIGTERM")).toBe(0);
   expect(await daemon.stderr()).toBe("");
 });
+
+// --- a question is announced (023) ---
+
+/** A notifier that records `(title, text)` pairs to a file instead of notifying anyone. */
+function recordingNotifier() {
+  const log = join(dir, "notify.log");
+  const script = join(dir, "notify.sh");
+  writeFileSync(script, `#!/bin/sh\nprintf '%s\\t%s\\n' "$1" "$2" >> "${log}"\n`, { mode: 0o755 });
+  return {
+    script,
+    entries(): string[][] {
+      if (!existsSync(log)) return [];
+      return readFileSync(log, "utf8")
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => l.split("\t"));
+    },
+  };
+}
+
+interface ShellDaemon {
+  /** The shell the daemon `exec`s into — or `script`, when it holds the pseudo-terminal. */
+  proc: ReturnType<typeof Bun.spawn>;
+  /** Everything the daemon has written to its standard output so far. */
+  stdout(): string;
+  /** Everything it has written to its standard error so far. */
+  stderr(): string;
+  killDaemon(signal: "SIGTERM" | "SIGKILL"): void;
+  /** SIGTERM to the daemon; resolves with what the spawned process exits. */
+  stop(): Promise<number>;
+}
+
+/** Whatever the stream has carried so far, as it arrives. */
+function accumulate(stream: ReadableStream<Uint8Array>): () => string {
+  let text = "";
+  const decoder = new TextDecoder();
+  void (async () => {
+    for await (const chunk of stream) text += decoder.decode(chunk, { stream: true });
+  })();
+  return () => text;
+}
+
+function readOr(path: string, fallback: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : fallback;
+}
+
+/**
+ * The same daemon, started through a shell so that its standard output is what the owner's
+ * would be: on a pseudo-terminal (`terminal: true`, which is the condition for announcing) or
+ * redirected to a file. `script` allocates the terminal; the shell records the daemon's pid
+ * (`exec` makes it the shell's own) so a test can signal the daemon rather than `script`; the
+ * daemon's stderr goes to a file of its own so the two streams stay apart inside the one
+ * terminal. `SKELCREW_NOTIFY` is dropped from the inherited environment first: no test may
+ * fire a real notification because the terminal running it had the variable set.
+ */
+function spawnShellDaemon(options: {
+  cwd: string;
+  dataDir: string;
+  terminal: boolean;
+  env?: Record<string, string>;
+}): ShellDaemon {
+  const env: Record<string, string | undefined> = { ...process.env, ...GIT_ENV };
+  env.SKELCREW_DIR = options.dataDir;
+  env.SKELCREW_RUNNER = "0";
+  env.SKELCREW_AGENT = "none";
+  delete env.SKELCREW_MERGE_POLL_SECONDS;
+  delete env.SKELCREW_NOTIFY;
+  Object.assign(env, options.env ?? {});
+  const pidFile = join(dir, "daemon.pid");
+  const outFile = join(dir, "daemon.out");
+  const errFile = join(dir, "daemon.err");
+  const redirect = options.terminal ? "" : `> "${outFile}" `;
+  const command = `echo $$ > "${pidFile}"; exec "${process.execPath}" "${MAIN}" ${redirect}2> "${errFile}"`;
+  const argv = options.terminal
+    ? ["script", "-q", "/dev/null", "/bin/sh", "-c", command]
+    : ["/bin/sh", "-c", command];
+  const proc = Bun.spawn(argv, {
+    cwd: options.cwd,
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const fromTerminal = accumulate(proc.stdout as ReadableStream<Uint8Array>);
+  const daemon: ShellDaemon = {
+    proc,
+    stdout: () => (options.terminal ? fromTerminal() : readOr(outFile, "")),
+    stderr: () => readOr(errFile, ""),
+    killDaemon(signal) {
+      if (!existsSync(pidFile)) return;
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      if (!Number.isInteger(pid)) return;
+      try {
+        process.kill(pid, signal);
+      } catch {
+        // Already gone.
+      }
+    },
+    async stop() {
+      daemon.killDaemon("SIGTERM");
+      return proc.exited;
+    },
+  };
+  runningThroughShell.push(daemon);
+  return daemon;
+}
+
+/** The daemon's `listening on` line, once its standard output has carried it. */
+async function listening(daemon: ShellDaemon): Promise<string> {
+  return until(
+    () => (daemon.stdout().includes("listening on") ? daemon.stdout() : undefined),
+    10_000,
+    "the daemon did not say it was listening",
+  );
+}
+
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
+function nonEmpty(line: string): boolean {
+  return line.trim().length > 0;
+}
+
+test("a daemon in a terminal rings the bell and announces a request raised to the owner", async () => {
+  const rec = recordingNotifier();
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnShellDaemon({
+    cwd: dir,
+    dataDir: dir,
+    terminal: true,
+    env: { SKELCREW_NOTIFY: rec.script },
+  });
+  await listening(daemon);
+
+  const owner = await connect(socketPath, { kind: "human" });
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+  const card = await owner.call("createCard", { title: "Add login page" });
+  await crew.call("requestAttention", {
+    id: card.id,
+    to: owner.member.id,
+    note: "why: the push needs your say-so\nshall I push the branch?",
+  });
+
+  const entries = await until(
+    () => (rec.entries().length > 0 ? rec.entries() : undefined),
+    5000,
+    "the notifier was not invoked",
+  );
+  expect(entries).toHaveLength(1);
+  expect(entries[0]?.[0]).toBe("skelcrew");
+  const text = entries[0]?.[1] as string;
+  expect(text).toContain(`#${card.id}`);
+  expect(text).toContain("Add login page");
+  expect(text).toContain("why: the push needs your say-so");
+  // One line: what follows the note's first line is on the card, not in the banner.
+  expect(text).not.toContain("shall I push the branch?");
+  expect(daemon.stdout()).toContain("\x07");
+
+  // A request raised to an agent is not a question for the owner. The one raised after it is,
+  // so the absence is read at a point the daemon has demonstrably passed.
+  const theirs = await owner.call("createCard", { title: "Theirs" });
+  await owner.call("requestAttention", { id: theirs.id, to: crew.member.id, note: "your turn" });
+  // A request replacing the card's open one is a new thing to answer, so it is announced again.
+  await crew.call("requestAttention", { id: card.id, to: owner.member.id, note: "and now this" });
+  const after = await until(
+    () => (rec.entries().length > 1 ? rec.entries() : undefined),
+    5000,
+    "the second request to the owner was not announced",
+  );
+  expect(after).toHaveLength(2);
+  expect(after[1]?.[1]).toContain("and now this");
+  expect(after.map((entry) => entry[1]).join("\n")).not.toContain("your turn");
+
+  await owner.close();
+  await crew.close();
+  expect(await daemon.stop()).toBe(0);
+  expect(daemon.stderr()).toBe("");
+}, 30_000);
+
+test("a daemon whose stdout is redirected to a file announces nothing: watch is that owner's ping", async () => {
+  const rec = recordingNotifier();
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnShellDaemon({
+    cwd: dir,
+    dataDir: dir,
+    terminal: false,
+    env: { SKELCREW_NOTIFY: rec.script },
+  });
+  await listening(daemon);
+  const owner = await connect(socketPath, { kind: "human" });
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+  // Whatever is raised: to the owner, which in a terminal would be announced, and to an agent.
+  const mine = await owner.call("createCard", { title: "Headless" });
+  await crew.call("requestAttention", { id: mine.id, to: owner.member.id, note: "a question" });
+  const theirs = await owner.call("createCard", { title: "Theirs" });
+  await owner.call("requestAttention", { id: theirs.id, to: crew.member.id, note: "your turn" });
+
+  await Bun.sleep(500);
+  expect(rec.entries()).toEqual([]);
+  // The request is on the card either way.
+  expect((await owner.call("getCard", { id: mine.id })).attention?.note).toBe("a question");
+
+  await owner.close();
+  await crew.close();
+  expect(await daemon.stop()).toBe(0);
+  // No bell, and nothing in the file beside the one line it always prints.
+  expect(daemon.stdout()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}\n`);
+  expect(daemon.stderr()).toBe("");
+}, 30_000);
+
+test("SKELCREW_NOTIFY=none turns the announcement off in a terminal too", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnShellDaemon({
+    cwd: dir,
+    dataDir: dir,
+    terminal: true,
+    env: { SKELCREW_NOTIFY: "none" },
+  });
+  const started = await listening(daemon);
+  const owner = await connect(socketPath, { kind: "human" });
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+  const card = await owner.call("createCard", { title: "Quiet" });
+  await crew.call("requestAttention", { id: card.id, to: owner.member.id, note: "a question" });
+
+  await Bun.sleep(500);
+  expect((await owner.call("getCard", { id: card.id })).attention?.note).toBe("a question");
+  // No bell, which is the daemon's own half of the switch: the shared notifier is off under
+  // `none` on its own, but only this file decides whether the terminal rings.
+  expect(daemon.stdout()).not.toContain("\x07");
+  expect(daemon.stdout().slice(started.length)).toBe("");
+  expect(daemon.stderr()).toBe("");
+
+  await owner.close();
+  await crew.close();
+  expect(await daemon.stop()).toBe(0);
+}, 30_000);
+
+test("a notifier that cannot be spawned warns once for the process and keeps the requests", async () => {
+  const missing = join(dir, "no-such-notifier.sh");
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnShellDaemon({
+    cwd: dir,
+    dataDir: dir,
+    terminal: true,
+    env: { SKELCREW_NOTIFY: missing },
+  });
+  await listening(daemon);
+  const owner = await connect(socketPath, { kind: "human" });
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+
+  const first = await owner.call("createCard", { title: "First" });
+  await crew.call("requestAttention", { id: first.id, to: owner.member.id, note: "one" });
+  await until(
+    () => (daemon.stderr().includes(missing) ? daemon.stderr() : undefined),
+    5000,
+    "the failing notifier was not reported",
+  );
+
+  const second = await owner.call("createCard", { title: "Second" });
+  await crew.call("requestAttention", { id: second.id, to: owner.member.id, note: "two" });
+  // Two bells: the daemon has handled both requests, so a second warning would be out by now.
+  await until(
+    () => (occurrences(daemon.stdout(), "\x07") >= 2 ? true : undefined),
+    5000,
+    "the second request did not ring the bell",
+  );
+  await Bun.sleep(300);
+  // One line, not one per question: the notifier is missing for every request after the first.
+  const warnings = daemon.stderr().split("\n").filter(nonEmpty);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain(missing);
+
+  expect((await owner.call("getCard", { id: first.id })).attention?.note).toBe("one");
+  expect((await owner.call("getCard", { id: second.id })).attention?.note).toBe("two");
+
+  await owner.close();
+  await crew.close();
+  expect(await daemon.stop()).toBe(0);
+}, 30_000);
+
+test("a notifier that runs and fails is a warning too, and the request is still on the card", async () => {
+  const failing = join(dir, "failing-notifier.sh");
+  writeFileSync(failing, "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnShellDaemon({
+    cwd: dir,
+    dataDir: dir,
+    terminal: true,
+    env: { SKELCREW_NOTIFY: failing },
+  });
+  await listening(daemon);
+  const owner = await connect(socketPath, { kind: "human" });
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+
+  const card = await owner.call("createCard", { title: "Unpingable" });
+  await crew.call("requestAttention", { id: card.id, to: owner.member.id, note: "a question" });
+  const warning = await until(
+    () => (daemon.stderr().includes(failing) ? daemon.stderr() : undefined),
+    5000,
+    "the failing notifier was not reported",
+  );
+  expect(warning).toContain("3");
+  expect((await owner.call("getCard", { id: card.id })).attention?.note).toBe("a question");
+
+  await owner.close();
+  await crew.close();
+  expect(await daemon.stop()).toBe(0);
+}, 30_000);
