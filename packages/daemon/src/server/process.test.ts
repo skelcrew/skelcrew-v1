@@ -93,6 +93,10 @@ const GIT_ENV: Record<string, string> = {
 /**
  * The runner is off unless a test turns it on: 003's tests are about the socket alone. No
  * test spawns a coding agent: `SKELCREW_AGENT=none` keeps the runner on 006's handoff.
+ *
+ * Every setting the daemon reads is dropped from the inherited environment first, and set
+ * back only by an option or by `env`: a test about a default is about the default, whatever
+ * the developer running it happens to export.
  */
 function spawnDaemon(options: {
   cwd: string;
@@ -110,6 +114,9 @@ function spawnDaemon(options: {
   env.SKELCREW_AGENT = options.agent ?? "none";
   if (options.mergePollSeconds === undefined) delete env.SKELCREW_MERGE_POLL_SECONDS;
   else env.SKELCREW_MERGE_POLL_SECONDS = options.mergePollSeconds;
+  delete env.SKELCREW_RUNS;
+  delete env.SKELCREW_RUN_MINUTES;
+  delete env.SKELCREW_NOTIFY;
   Object.assign(env, options.env ?? {});
   const proc = Bun.spawn([process.execPath, MAIN], {
     cwd: options.cwd,
@@ -697,8 +704,11 @@ test("with SKELCREW_RUNS=1 the daemon claims the second card only after it has r
 
   const first = await owner.call("createCard", { title: "Add login page" });
   const second = await owner.call("createCard", { title: "Add a logout button" });
-  await owner.call("moveCard", { id: first.id, phase: "spec" });
-  await owner.call("moveCard", { id: second.id, phase: "spec" });
+  // Both moves on the wire before the daemon reads either, so neither waits on the other's reply.
+  await Promise.all([
+    owner.call("moveCard", { id: first.id, phase: "spec" }),
+    owner.call("moveCard", { id: second.id, phase: "spec" }),
+  ]);
 
   await until(
     () => (events.filter((event) => event.type === "released").length === 2 ? true : undefined),
@@ -734,8 +744,11 @@ test("with SKELCREW_RUNS unset the daemon claims both cards before either is rel
 
   const first = await owner.call("createCard", { title: "Add login page" });
   const second = await owner.call("createCard", { title: "Add a logout button" });
-  await owner.call("moveCard", { id: first.id, phase: "spec" });
-  await owner.call("moveCard", { id: second.id, phase: "spec" });
+  // Both moves on the wire before the daemon reads either, so neither waits on the other's reply.
+  await Promise.all([
+    owner.call("moveCard", { id: first.id, phase: "spec" }),
+    owner.call("moveCard", { id: second.id, phase: "spec" }),
+  ]);
 
   await until(
     () => (events.filter((event) => event.type === "released").length === 2 ? true : undefined),
@@ -745,6 +758,9 @@ test("with SKELCREW_RUNS unset the daemon claims both cards before either is rel
   const seen = claimsAndReleases(events);
   // The claims are in card order, because the scan takes ready cards in id order; which run
   // releases first is the two sessions' business, so only that both claims precede them is read.
+  // The margin: the second claim needs only the daemon's next socket read, both moves being
+  // already on the wire, while the first release waits on that run's git subprocesses — the
+  // base branch resolved, the card's branch created, its worktree listed and added.
   expect(seen.slice(0, 2)).toEqual([`claimed ${first.id}`, `claimed ${second.id}`]);
   expect(seen.slice(2).sort()).toEqual([`released ${first.id}`, `released ${second.id}`]);
 
