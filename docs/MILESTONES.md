@@ -40,6 +40,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 24 | 027 Acting from the screen | specified |
 | 25 | 028 The runner's name is reserved | landed, PR #26 — two review rounds; the spec's test setup could not work with the runner on, amended |
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
+| 27 | 030 The rest of a day on the screen | planned; after 027 |
 | 27 | 030 The screen starts the daemon | specified |
 | 28 | 031 The arrow keys move the cursor | specified |
 | | 005 | dropped |
@@ -1173,6 +1174,33 @@ working everywhere and nothing is reachable by arrows alone. The decoder in `boa
 drops every escape sequence; 031 reads exactly the four byte sequences the two keys send and
 maps them onto the moves the reducer already makes. In the prompt they do nothing and never
 become text. `Left`, `Right`, `Page Up` and the rest stay uninterpreted.
+
+## 030 — The rest of a day on the screen
+
+What the owner still leaves the screen for after 026 and 027, listed on 2026-09-16 while 027
+was being built. Starting a card by hand (Idea into Spec, an approved Spec into Code) and
+adding one are, by the owner's account, going into 027 already; if they are not there when
+027 lands, they come first here, because starting a card is the gesture the owner makes most
+and 027's `m` takes only the move a request offers.
+
+The rest, in the order they matter:
+
+- **Edit a card.** The title, and the body, which is a spec, so this is "open it in `$EDITOR`"
+  rather than typing in the screen: leave the screen, run the editor on the body, come back,
+  send it with one `body` call. The same shape as 027's `o`.
+- **Archive.** One key on a Done or dead card. Out of scope in 026 by decision; one call.
+- **The live feed as a view.** `watch` inside the screen, every event scrolling, for when the
+  owner wants to see the crew work rather than the board. The subscription is already there;
+  this is a third view beside board and card.
+
+Two things stay out until the board is bigger than a screen: filters (hide Done, show only what
+waits on the owner) and search. A cost line per card needs the daemon to record cost first and
+is its own milestone, from the Claude Tag notes.
+
+Constraints carried from 026: every key is one CLI call; no colour, no mouse, no configuration;
+the frame and the reducer stay pure and tested without a terminal. The display-width finding
+(the status column pads in UTF-16 units) should be closed by 027 or here, whichever touches the
+row first.
 
 ## Later, deliberately unplanned
 
