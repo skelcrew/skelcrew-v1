@@ -1776,6 +1776,128 @@ describe("claims", () => {
     expect(core.listCards().every((card) => card.claim === null)).toBe(true);
   });
 
+  /**
+   * 024. A run that lapsed while waiting on its own question leaves a question nothing can
+   * answer — `resolve -m allow` allows no tool once the run is gone — and the card sits on it.
+   * So the sweep takes that request with the claim: one more fact about the same lapse, and
+   * the only actor the core would let clear a request addressed to the owner. The claims that
+   * are runs are the runner's, and the daemon says which member that is; `agent` plays it here.
+   */
+  test("sweepClaims withdraws the runner's own request as interrupted", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 10 }, agent.id);
+    core.requestAttention(
+      card.id,
+      { to: owner.id, note: "allow Bash? (skelcrew resolve 1 -m allow | …)" },
+      agent.id,
+    );
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims(agent.id)).toEqual([card.id]);
+
+    expect(core.getCard(card.id).attention).toBeNull();
+    expect(core.getCard(card.id).claim).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => [e.type, e.actorId])).toEqual([
+      ["run_interrupted", agent.id],
+      ["attention_resolved", agent.id],
+    ]);
+    expect(since[1]).toMatchObject({ cardId: card.id, data: { how: "interrupted" } });
+    // The card is free in its phase: back in the queue is a status, not a move.
+    expect(core.getCard(card.id).phase).toBe("code");
+  });
+
+  test("sweepClaims leaves a request raised by anyone but the lapsed holder standing", () => {
+    const mine = cardIn("code");
+    const theirs = cardIn("code");
+    core.claimCard(mine.id, { ttlSeconds: 10 }, agent.id);
+    core.claimCard(theirs.id, { ttlSeconds: 10 }, agent.id);
+    // The agent's own `skelcrew attention` question, raised as another member; and the owner's.
+    core.requestAttention(mine.id, { to: owner.id, note: "which repo?" }, other.id);
+    core.requestAttention(theirs.id, { to: other.id, note: "have a look", moves: [] }, owner.id);
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims(agent.id)).toEqual([mine.id, theirs.id]);
+
+    expect(core.getCard(mine.id).attention).toMatchObject({ raisedBy: other.id });
+    expect(core.getCard(theirs.id).attention).toMatchObject({ raisedBy: owner.id });
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual([
+      "run_interrupted",
+      "run_interrupted",
+    ]);
+  });
+
+  /**
+   * The withdrawal is a lapsed *run's*, and the owner's claim is not a run: nothing heartbeats
+   * the claim `skelcrew claim` makes, so the owner's own claim lapses after two minutes at the
+   * keyboard, and the owner is still there to answer the note they left. Withdrawing it would
+   * also hand the card straight back to the runner, which is the card the owner had taken.
+   */
+  test("sweepClaims leaves the owner's own request standing", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 10 }, owner.id);
+    core.requestAttention(card.id, { to: agent.id, note: "rebase onto main first" }, owner.id);
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims(agent.id)).toEqual([card.id]);
+
+    expect(core.getCard(card.id).attention).toMatchObject({
+      raisedBy: owner.id,
+      note: "rebase onto main first",
+    });
+    expect(core.getCard(card.id).claim).toBeNull();
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["run_interrupted"]);
+  });
+
+  /**
+   * Nor is an agent member's hand-made claim a run. An agent in a live session takes a card
+   * with `skelcrew claim` and asks the owner a question with `skelcrew attention`; nothing
+   * heartbeats that claim either, so it lapses two minutes later. The agent is still there to
+   * answer, and the question is one the owner can answer — so it stands, and the card does not
+   * become the runner's to take. The kind of member says nothing about this; the runner's id
+   * does.
+   */
+  test("sweepClaims leaves an agent member's own hand-made request standing", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 10 }, other.id);
+    core.requestAttention(card.id, { to: owner.id, note: "which repo should I use?" }, other.id);
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    // `agent` is the runner here; `other` is an agent member holding a claim of its own.
+    expect(core.sweepClaims(agent.id)).toEqual([card.id]);
+
+    expect(core.getCard(card.id).attention).toMatchObject({
+      raisedBy: other.id,
+      note: "which repo should I use?",
+    });
+    expect(core.getCard(card.id).claim).toBeNull();
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["run_interrupted"]);
+  });
+
+  /**
+   * A daemon with no runner (`SKELCREW_RUNNER=0`) sweeps but runs nothing, so no claim it
+   * finds is a run's and no request goes with a lapse.
+   */
+  test("sweepClaims with no runner id withdraws nothing, even the holder's own request", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 10 }, agent.id);
+    core.requestAttention(card.id, { to: owner.id, note: "allow Bash?" }, agent.id);
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims()).toEqual([card.id]);
+
+    expect(core.getCard(card.id).attention).toMatchObject({
+      raisedBy: agent.id,
+      note: "allow Bash?",
+    });
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["run_interrupted"]);
+  });
+
   test("sweepClaims with no claims at all returns nothing and records nothing", () => {
     cardIn("spec");
     const before = core.activitySince(0);

@@ -47,23 +47,35 @@ nothing.
 | archived | `archived` |
 
 Waiting outranks running, as the marker does today. The marker column stays, so a reader who
-learned it loses nothing. The note is cut to fit a terminal width the way titles are, with the
-whole note still on the card.
+learned it loses nothing. The note is cut to a fixed column width, with the whole note still on
+the card. (The spec as approved said "to fit a terminal width the way titles are"; nothing in
+the CLI cuts a title or reads the terminal width. The orchestrator corrected the sentence after
+review round 2.)
 
 **`show` leads with now.** The header gains a `now:` line carrying the same status text as `ls`,
 first after the title. The activity order is unchanged (oldest first; 015's marking depends on
-the layout), but the last line of the feed is the same fact as the `now:` line, so a reader who
-reads only the top has the answer.
+the layout), and the header answers without the feed, so a reader who reads only the top has
+the answer. (The spec as approved said the feed's last line "is the same fact" as the `now:`
+line; it is not, a running card's last line is usually a comment. The orchestrator corrected
+the sentence after review round 1.)
 
 **`queue` is unchanged**, except that its entries carry the `why:` line 022 adds.
 
-**An interrupted run takes its question with it.** When the sweep lapses a claim and the card's
-open attention request was raised by the lapsed holder, the sweep resolves that request as
-`interrupted` and records it, attributed the way `run_interrupted` is. The card is then free in
-its phase and the runner claims it again on the next scan. A request raised by anyone else — the
-agent's own `skelcrew attention` question as `crew`, the owner's note — stands, because it is
-not the run's and can still be answered. `show` renders the resolution as
-`resolved attention: interrupted`.
+**An interrupted run takes its question with it.** When the sweep lapses a claim held by the
+runner — the daemon's own member, the only holder whose claims are runs — and the card's open
+attention request was raised by that holder, the sweep resolves that request as `interrupted`
+and records it, attributed the way `run_interrupted` is. The card is then free in its phase and
+the runner claims it again on the next scan. A request raised by anyone else — the agent's own
+`skelcrew attention` question as `crew`, the owner's note — stands, because it is not the run's
+and can still be answered. A lapsed claim held by any other member withdraws nothing: the
+owner who took a card by hand with `skelcrew claim`, and an agent member who did the same from
+a live session, are both still there to answer, and nothing heartbeats a hand-made claim. A
+daemon with no runner (`SKELCREW_RUNNER=0`) withdraws nothing. `show` renders the resolution
+as `resolved attention: interrupted`. (The spec as approved said "raised by the lapsed holder"
+with no condition on the holder; review round 1 showed that clearing the owner's own note and
+handing the card to the runner, and the orchestrator made the condition "not a human". Review
+round 2 showed the same hole for an agent member's hand-made claim: the discriminator is the
+runner's identity, not the member's kind. The orchestrator restated the rule after that round.)
 
 ## Implementation approach
 
@@ -73,14 +85,24 @@ CLI: `render.ts` gains `status(card, me, members, now)` returning the table's te
 note is cut with `oneLine` and a fixed width, not by bytes, since this is a screen column. The
 phase track stays.
 
-Core: `sweepClaims` reads each lapsed card's `attention`; when `attention.raisedBy ===
-claim.by`, it clears it and logs `attention_resolved` with `{ how: "interrupted" }`, a new
-member of `AttentionResolution`, attributed to `claim.by` as `run_interrupted` is. The runner's
-existing endings are unaffected: an abandoned run still writes its one comment, and finds no
-request of its own to worry about. One edge, recorded rather than handled: `endRun` raises its
-failure request and releases the claim in the same synchronous mutation, so a lapse cannot fall
-between them; if the process were frozen exactly there, the sweep would withdraw a failure
-request and the card would re-run, visibly, which is the lease's ordinary answer.
+Core: `sweepClaims` takes the runner's member id, when the daemon has a runner (`main.ts`
+creates that member and owns the sweep timer, so the daemon passes it; a daemon with no runner
+passes nothing). It reads each lapsed card's `attention`; when `claim.by` is that id and
+`attention.raisedBy === claim.by`, it clears it and logs `attention_resolved` with
+`{ how: "interrupted" }`, a new member of `AttentionResolution`, attributed to `claim.by` as
+`run_interrupted` is. The holder is always present in the members table: the schema's foreign
+key on activity makes a claim by an unknown member impossible to log, so no fail-closed branch
+for a missing holder exists. (The approved text and the round-1 amendment keyed on the holder's
+kind; see Desired behavior.) The runner's existing endings are unaffected:
+an abandoned run still writes its one comment, and finds no request of its own to worry about.
+One edge, recorded rather than handled: `endRun` raises its failure request and releases the
+claim in separate mutations, but `endRun` is synchronous and the sweep is a timer on the same
+thread, so a lapse cannot fall between them. The edge is reached another way: when the release
+itself fails (`ending.ts` warns and goes on), the claim outlives the ending, and the next lapse
+withdraws the ending's request, including 019's parked note; the card then re-runs, visibly,
+which is the lease's ordinary answer. (The spec as approved said "the same synchronous
+mutation" and did not name the failed-release path; the orchestrator restated it after review
+round 1.)
 
 Decisions resolved from the repository: the sweep withdraws rather than the runner, because the
 core refuses a non-human actor clearing a request addressed to the owner (010's fail-closed
@@ -104,7 +126,11 @@ activity" needs the feed, which `ls` does not fetch.
    runner claims the card again on the next scan. Asserted against the real runner with a
    scripted driver that asks a permission question and a fake clock that lapses the lease.
 5. A claim that lapses while the open request was raised by someone else (the agent as `crew`;
-   the owner): the request stands and the card is not re-claimed.
+   the owner): the request stands and the card is not re-claimed. A claim held by the owner
+   (`skelcrew claim`, never heartbeated) that lapses while the owner's own request is open: the
+   request stands, and the card is not re-claimed by the runner. The same for a claim held by
+   an agent member over the CLI that lapses while that member's own request is open. (Added
+   after review rounds 1 and 2.)
 6. `show` renders the new resolution as `resolved attention: interrupted`; `--json` carries it
    as stored.
 7. 010's and 009's existing tests pass unchanged; `render.test.ts`'s row tests are extended, not

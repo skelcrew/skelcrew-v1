@@ -95,22 +95,111 @@ function marker(card: Card, me: number, now: number): string {
   return card.claim.expiresAt > now ? "*" : "~";
 }
 
-export function row(card: Card, idWidth: number, me: number, now = Date.now()): string {
+/**
+ * The widest the status column gets, in characters — a screen column, so the cut is by
+ * character and never by bytes. A longer status, which in practice is a waiting note, is cut
+ * to it; the whole note is on the card, which `show` and `queue` print.
+ *
+ * Known limitation: the column is padded in UTF-16 units, so a note with wide characters in it
+ * — `日本語のメモです` is 8 of them and twice that many terminal cells — pushes that row's title
+ * right of the others. 026's TUI needs a display-width measure of its own, and this column
+ * should adopt it then.
+ */
+export const STATUS_WIDTH = 40;
+
+/** `text` within `width` characters, the last one an ellipsis when something was dropped. */
+function cut(text: string, width: number): string {
+  const chars = [...text];
+  return chars.length <= width ? text : `${chars.slice(0, width - 1).join("")}…`;
+}
+
+/**
+ * Local time of day, minute precision: `HH:MM`. A heartbeat moves only the expiry, so a claim
+ * is as old as the work it holds — a Code run plus its review rounds, each bounded by the
+ * runner's run limit — and one that began yesterday evening reads as yesterday's time of day.
+ * The table asks for `HH:MM`; a date belongs to the card's detail, which `show` prints in full.
+ */
+function clockTime(ms: number): string {
+  return formatTime(ms).slice(-5);
+}
+
+/**
+ * A stored multi-line field's first line with something on it, as one line: what a status
+ * column can carry. A note that opens with a blank line — or with nothing but blank lines —
+ * would otherwise leave `waiting on you:` with nothing after it.
+ */
+function firstLine(text: string): string {
+  const line = text.split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
+  return oneLine(line);
+}
+
+function claimable(phase: Phase): boolean {
+  return PHASES.find((p) => p.id === phase)?.claimable ?? false;
+}
+
+/**
+ * What the card is doing and what it needs, in words: the same text in a row's status column
+ * and in `show`'s `now:` line. Derived from the claim, the request and the phase — a card's
+ * status is a derivation, never something stored.
+ *
+ * Waiting outranks running, as the marker does; archived outranks both, though the core clears
+ * a card's claim and request when it archives one, so no card can be in two of these at once.
+ * A card that is none of them — free, unarchived, in a phase nobody works in — has no status,
+ * and the empty string is what says so.
+ */
+export function status(card: Card, me: number, members: Member[], now: number): string {
+  if (card.archivedAt !== null) return "archived";
+  if (card.attention !== null) {
+    return cut(
+      card.attention.to === me
+        ? `waiting on you: ${firstLine(card.attention.note)}`
+        : `waiting on ${memberName(card.attention.to, members)}`,
+      STATUS_WIDTH,
+    );
+  }
+  if (card.claim !== null) {
+    return card.claim.expiresAt > now
+      ? `running since ${clockTime(card.claim.claimedAt)}`
+      : "interrupted";
+  }
+  return claimable(card.phase) ? "queued" : "";
+}
+
+/** The columns a listing's rows share: as wide as the widest cell in this listing. */
+interface RowWidths {
+  id: number;
+  status: number;
+}
+
+export function row(
+  card: Card,
+  widths: RowWidths,
+  me: number,
+  members: Member[],
+  now = Date.now(),
+): string {
   const cells = [
     marker(card, me, now),
-    formatId(card.id).padStart(idWidth),
+    formatId(card.id).padStart(widths.id),
     phaseTrack(card.phase),
     phaseName(card.phase).padEnd(PHASE_NAME_WIDTH),
+    // A listing where no card has a status carries no column for it: padding nothing to
+    // nothing still costs the separator, which would push every title two spaces right.
+    // An archived card's status is `archived`, so the column is never empty on its listing,
+    // and the title needs no `(archived)` after it to say the same thing twice.
+    ...(widths.status === 0 ? [] : [status(card, me, members, now).padEnd(widths.status)]),
     oneLine(card.title),
   ];
-  if (card.archivedAt !== null) cells.push("(archived)");
   return cells.join("  ");
 }
 
-export function rows(cards: Card[], me: number): string {
-  const idWidth = Math.max(...cards.map((c) => formatId(c.id).length));
+export function rows(cards: Card[], me: number, members: Member[]): string {
   const now = Date.now();
-  return cards.map((card) => row(card, idWidth, me, now)).join("\n");
+  const widths: RowWidths = {
+    id: Math.max(...cards.map((c) => formatId(c.id).length)),
+    status: Math.max(...cards.map((c) => status(c, me, members, now).length)),
+  };
+  return cards.map((card) => row(card, widths, me, members, now)).join("\n");
 }
 
 function refLines(refs: CardRefs): string[] {
@@ -189,6 +278,8 @@ function describeResolution(resolution: AttentionResolution): string {
       return "archived";
     case "answered":
       return "answered";
+    case "interrupted":
+      return "interrupted";
   }
 }
 
@@ -241,10 +332,24 @@ export function activityLine(event: Activity, members: Member[]): string {
   return `${formatTime(event.createdAt)}  ${memberName(event.actorId, members)}  ${summary(event, members)}`;
 }
 
-/** Header, blank line, the body by line, blank line, the activity oldest first. */
-export function cardView(card: CardDetail, members: Member[], now = Date.now()): string {
+/**
+ * Header, blank line, the body by line, blank line, the activity oldest first.
+ *
+ * The header leads with `now:` — the same status text a row carries — so a reader who reads
+ * only the top has what the card is doing and what it needs. The activity's order is unchanged:
+ * oldest first, with 015's line marking depending on that layout.
+ */
+export function cardView(
+  card: CardDetail,
+  members: Member[],
+  me: number,
+  now = Date.now(),
+): string {
+  const state = status(card, me, members, now);
   const header = [
     `${formatId(card.id)} ${oneLine(card.title)}`,
+    // Nothing to say is said by leaving the line out: a `now:` with nothing after it says less.
+    ...(state.length === 0 ? [] : [`now:     ${state}`]),
     `phase:   ${phaseName(card.phase)}${card.archivedAt === null ? "" : " (archived)"}`,
     ...(card.claim === null ? [] : [claimLine(card.claim, members, now)]),
     ...(card.attention === null ? [] : attentionLines(card.attention, members)),

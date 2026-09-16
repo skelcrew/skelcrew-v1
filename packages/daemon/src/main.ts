@@ -71,9 +71,14 @@ if (await daemonAnswers(socketPath)) {
 prepareDataDir(dir);
 const core = openCore(dbPath);
 const server = startServer({ core, socketPath });
+// The member whose claims are runs, once the execution half below has joined as it. The sweep
+// takes a lapsed run's own question with it and needs to know which claims are runs; a claim
+// made by hand is not one, whoever made it. Assigned below, before the first tick five seconds
+// from now, and left unset when the runner is off — then no request is ever withdrawn.
+let runnerId: number | undefined;
 // Not a member action: the sweep only makes a lapse that already happened visible.
 const sweeper = setInterval(
-  () => sweepTick(core, (line) => console.error(line)),
+  () => sweepTick(core, (line) => console.error(line), runnerId),
   CLAIM_SWEEP_INTERVAL_MS,
 );
 // A question the owner never hears about is a run lost to a sleeping laptop, so a daemon the
@@ -108,6 +113,7 @@ if (process.env.SKELCREW_RUNNER !== "0") {
     // Two members, because the mechanism is that the claim's holder and the agent's identity
     // differ: the runner claims as itself and the agent it spawns speaks as the crew.
     const member = core.ensureMember(RUNNER_MEMBER_NAME, "agent");
+    runnerId = member.id;
     runner = startRunner({
       core,
       dataDir: dir,

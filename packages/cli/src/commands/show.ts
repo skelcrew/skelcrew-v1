@@ -14,6 +14,6 @@ export const show: Command<{ id: number }, CardDetail> = {
   async run(ctx, input) {
     const detail = await ctx.client.call("getCard", input);
     const members = await ctx.client.call("listMembers", {});
-    return { result: detail, render: () => cardView(detail, members) };
+    return { result: detail, render: () => cardView(detail, members, ctx.client.member.id) };
   },
 };

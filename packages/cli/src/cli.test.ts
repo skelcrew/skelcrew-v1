@@ -884,8 +884,11 @@ test("ls marks a card waiting on me with ! and on someone else with ?; show prin
   expect(asOwner).toHaveLength(3);
   expect(asOwner[0]?.startsWith("!")).toBe(true);
   expect(asOwner[0]).toContain("#1");
+  // 024: the same fact in words, between the phase and the title.
+  expect(asOwner[0]).toContain("waiting on you: spec ready");
   expect(asOwner[1]?.startsWith("?")).toBe(true);
   expect(asOwner[1]).toContain("#2");
+  expect(asOwner[1]).toContain("waiting on crew-1");
   expect(asOwner[2]?.startsWith("!")).toBe(false);
   expect(asOwner[2]?.startsWith("?")).toBe(false);
   expect(asOwner[2]).toContain("#3");
@@ -1275,7 +1278,7 @@ test("ls marks a live claim * and a lapsed one ~; attention markers win; show pr
     core.moveCard(card.id, "code", member("simon").id);
   }
   const agent = core.ensureMember("crew-1", "agent");
-  core.claimCard(1, {}, agent.id);
+  const live = core.claimCard(1, {}, agent.id).claim;
   // Card 2's claim is made on a clock a minute behind the CLI's: lapsed, and unswept.
   clockOffsetMs = -60_000;
   core.claimCard(2, { ttlSeconds: 10 }, agent.id);
@@ -1288,13 +1291,18 @@ test("ls marks a live claim * and a lapsed one ~; attention markers win; show pr
   expect(asOwner).toHaveLength(4);
   expect(asOwner[0]?.[0]).toBe("*");
   expect(asOwner[0]).toContain("#1");
+  // 024: the same four states in words, waiting outranking running as the marker does.
+  expect(asOwner[0]).toContain(`running since ${localTime(live?.claimedAt as number).slice(-5)}`);
   expect(asOwner[1]?.[0]).toBe("~");
   expect(asOwner[1]).toContain("#2");
+  expect(asOwner[1]).toContain("interrupted");
   expect(asOwner[2]?.[0]).toBe("!");
   expect(asOwner[2]).toContain("#3");
+  expect(asOwner[2]).toContain("waiting on you: stuck");
   expect(asOwner[3]?.[0]).toBe(" ");
   expect(asOwner[3]).toContain("#4");
   expect(asOwner[3]).toContain(TRACK.code);
+  expect(asOwner[3]).toContain("queued");
 
   const asAgent = lines(await ok(["ls", "--as", "crew-1"]));
   expect(asAgent.map((l) => l[0])).toEqual(["*", "~", "?", " "]);
@@ -1315,6 +1323,8 @@ test("ls marks a live claim * and a lapsed one ~; attention markers win; show pr
   expect(core.sweepClaims()).toEqual([2]);
   const after = lines(await ok(["ls"]));
   expect(after.map((l) => l[0])).toEqual(["*", " ", "!", " "]);
+  // Swept: the card is free in a claimable phase, which is what "queued" is.
+  expect(after[1]).toContain("queued");
   const shownAfter = await ok(["show", "2"]);
   expect(shownAfter.stdout.split("\n\n")[0]).not.toContain("crew-1");
   const interruptedLine = lines(shownAfter).find((l) => l.includes("interrupted"));
@@ -1331,6 +1341,189 @@ test("ls marks a live claim * and a lapsed one ~; attention markers win; show pr
   await ok(["resolve", "3"]);
   expect(lines(await ok(["ls"])).map((l) => l[0])).toEqual([" ", " ", "*", " "]);
   expect(json<CardDetail>(await ok(["show", "3", "--json"]))).toEqual(core.getCard(3));
+});
+
+// --- the status column (024) ---
+
+/**
+ * A row's cells: the marker is the first character, and every cell after it is separated from
+ * the next by at least the two spaces `row` joins them with. A blank status leaves no cell,
+ * which is what the table's blank row means.
+ */
+function cells(row: string): string[] {
+  return [row.slice(0, 1), ...row.slice(3).split(/ {2,}/)];
+}
+
+/**
+ * 024's criterion 2: one card per row of the table, read through the real CLI. The statuses
+ * are their own column, between the phase name and the title, and the marker column stays.
+ */
+test("ls says what each card is doing, in a column between the phase and the title", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  for (const title of ["Mine", "Theirs", "Running", "Interrupted", "Queued", "Idle", "Gone"]) {
+    const card = core.createCard({ title }, simon);
+    if (title !== "Idle" && title !== "Gone") core.moveCard(card.id, "code", simon);
+  }
+  // A real permission question, whose whole note is three lines long.
+  const question =
+    "allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)\ninput:\n> rm -rf build";
+  core.requestAttention(1, { to: simon, note: question }, agent.id);
+  core.requestAttention(2, { to: agent.id, note: "your turn" }, simon);
+  core.claimCard(3, {}, agent.id);
+  // Card 4's claim is made on a clock a minute behind: lapsed, and not yet swept.
+  clockOffsetMs = -60_000;
+  core.claimCard(4, { ttlSeconds: 10 }, agent.id);
+  clockOffsetMs = 0;
+  core.archiveCard(7, simon);
+  const since = localTime(core.getCard(3).claim?.claimedAt as number).slice(-5);
+
+  const board = lines(await ok(["ls", "--all"])).map(cells);
+
+  expect(board).toEqual([
+    // The label is 16 characters and the note's first line fills the column's 40.
+    ["!", "#1", TRACK.code, "Code", "waiting on you: allow Bash? (skelcrew r…", "Mine"],
+    ["?", "#2", TRACK.code, "Code", "waiting on crew-1", "Theirs"],
+    ["*", "#3", TRACK.code, "Code", `running since ${since}`, "Running"],
+    ["~", "#4", TRACK.code, "Code", "interrupted", "Interrupted"],
+    [" ", "#5", TRACK.code, "Code", "queued", "Queued"],
+    [" ", "#6", TRACK.idea, "Idea", "Idle"],
+    // The status says archived, so the title carries no `(archived)` suffix after it.
+    [" ", "#7", TRACK.idea, "Idea", "archived", "Gone"],
+  ]);
+  // The whole note is still on the card, and every column before the status is fixed-width,
+  // so the status begins at the same character on every row.
+  expect(core.getCard(1).attention?.note).toBe(question);
+  const heads = lines(await ok(["ls", "--all"])).map((row) => row.slice(0, 20));
+  expect(heads).toEqual([
+    `!  #1  ${TRACK.code}  Code  `,
+    `?  #2  ${TRACK.code}  Code  `,
+    `*  #3  ${TRACK.code}  Code  `,
+    `~  #4  ${TRACK.code}  Code  `,
+    `   #5  ${TRACK.code}  Code  `,
+    `   #6  ${TRACK.idea}  Idea  `,
+    `   #7  ${TRACK.idea}  Idea  `,
+  ]);
+});
+
+/**
+ * The status column is one screen cell, so it escapes what it carries itself. A tab is the
+ * character that makes the difference: a stored note is a multi-line field, so `main.ts`'s
+ * sink keeps it, and one tab in a note would otherwise jump the title of that row to the next
+ * tab stop while the column's width counted it as a single character.
+ */
+test("a tab in a note is escaped in the status column, and the titles still line up", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  for (const title of ["Tabbed", "Queued"]) {
+    const card = core.createCard({ title }, simon);
+    core.moveCard(card.id, "code", simon);
+  }
+  core.requestAttention(1, { to: simon, note: "allow\tBash?" }, agent.id);
+
+  const board = lines(await ok(["ls"]));
+  expect(board[0]).toContain("waiting on you: allow\\tBash?");
+  expect(board[0]).not.toContain("\t");
+  expect(core.getCard(1).attention?.note).toBe("allow\tBash?");
+  expect(board[0]?.indexOf("Tabbed")).toBe(board[1]?.indexOf("Queued") as number);
+});
+
+/**
+ * A note that opens with a blank line has nothing on its literal first line, and
+ * `waiting on you:` followed by nothing says less than the marker did. The column carries the
+ * note's first line with something on it.
+ */
+test("a note that starts with a newline shows its first line with something on it", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  const card = core.createCard({ title: "Led with a blank line" }, simon);
+  core.moveCard(card.id, "code", simon);
+  core.requestAttention(card.id, { to: simon, note: "\nallow Bash?" }, agent.id);
+
+  expect(lines(await ok(["ls"]))[0]).toContain("waiting on you: allow Bash?");
+  expect((await ok(["show", String(card.id)])).stdout.split("\n")[1]).toBe(
+    "now:     waiting on you: allow Bash?",
+  );
+  // The whole note, blank first line and all, is still on the card.
+  expect(core.getCard(card.id).attention?.note).toBe("\nallow Bash?");
+});
+
+/**
+ * A board with nothing to say about any card holds no status column at all: the cell is a
+ * column, and a column of nothing but padding still pushes every title right.
+ */
+test("no card with a status means no status column, and the title follows the phase", async () => {
+  const simon = member("simon").id;
+  for (const title of ["Idea one", "Idea two"]) core.createCard({ title }, simon);
+
+  expect(lines(await ok(["ls"]))).toEqual([
+    `   #1  ${TRACK.idea}  Idea  Idea one`,
+    `   #2  ${TRACK.idea}  Idea  Idea two`,
+  ]);
+});
+
+/** Criterion 3: the same status text, as the header's second line. */
+test("show leads with now:, and the activity is still oldest first", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  for (const title of ["Waiting", "Running", "Interrupted", "Queued"]) {
+    const card = core.createCard({ title }, simon);
+    core.moveCard(card.id, "code", simon);
+  }
+  core.requestAttention(1, { to: simon, note: "spec ready" }, agent.id);
+  core.claimCard(2, {}, agent.id);
+  clockOffsetMs = -60_000;
+  core.claimCard(3, { ttlSeconds: 10 }, agent.id);
+  clockOffsetMs = 0;
+  const since = localTime(core.getCard(2).claim?.claimedAt as number).slice(-5);
+
+  const nows: string[] = [];
+  for (const id of ["1", "2", "3", "4"]) {
+    const shown = await ok(["show", id]);
+    nows.push(shown.stdout.split("\n")[1] as string);
+  }
+  expect(nows).toEqual([
+    "now:     waiting on you: spec ready",
+    `now:     running since ${since}`,
+    "now:     interrupted",
+    "now:     queued",
+  ]);
+
+  // Unchanged: the header, then the body, then the activity oldest first.
+  const shown = await ok(["show", "1"]);
+  const header = (shown.stdout.split("\n\n")[0] as string).split("\n");
+  expect(header[0]).toContain("#1");
+  expect(header[2]).toStartWith("phase:");
+  const activity = (shown.stdout.split("\n\n")[1] as string).trim().split("\n");
+  expect(activity[0]).toContain('created "Waiting"');
+  expect(activity.at(-1)).toContain("asked simon for attention");
+});
+
+/** Criterion 6: what the sweep's withdrawal reads as, and what `--json` carries. */
+test("show renders the sweep's withdrawal as resolved attention: interrupted", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  const card = core.createCard({ title: "Slept through it" }, simon);
+  core.moveCard(card.id, "code", simon);
+  clockOffsetMs = -60_000;
+  core.claimCard(card.id, { ttlSeconds: 10 }, agent.id);
+  core.requestAttention(card.id, { to: simon, note: "allow Bash?" }, agent.id);
+  clockOffsetMs = 0;
+  // The daemon names the member whose claims are runs; `crew-1` holds this one, so it plays it.
+  expect(core.sweepClaims(agent.id)).toEqual([card.id]);
+
+  const shown = await ok(["show", String(card.id)]);
+  const resolved = lines(shown).find((line) => line.includes("resolved attention"));
+  expect(resolved).toContain("crew-1");
+  expect(resolved).toEndWith("resolved attention: interrupted");
+  // The card is free again, and says so at the top.
+  expect(shown.stdout.split("\n")[1]).toBe("now:     queued");
+  expect(json<CardDetail>(await ok(["show", String(card.id), "--json"]))).toEqual(
+    core.getCard(card.id),
+  );
+  expect(
+    json<CardDetail>(await ok(["show", String(card.id), "--json"])).activity.at(-1),
+  ).toMatchObject({ type: "attention_resolved", data: { how: "interrupted" } });
 });
 
 // --- the runner (006) ---

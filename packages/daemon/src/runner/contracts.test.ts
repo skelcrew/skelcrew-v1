@@ -931,7 +931,7 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
 
   const abandoned = untilEvent(commentContaining(1, "run abandoned"));
   at += 10 * 60_000;
-  core.sweepClaims();
+  core.sweepClaims(runnerMember.id);
   await abandoned;
 
   // Criterion 11: "abandons and returns the card to its queue as `run_interrupted`". The card
@@ -942,6 +942,226 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
   // Returned to its queue: the next run picked it up and ended normally.
   await untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
   expect(runs).toBe(2);
+});
+
+/**
+ * 024, criteria 4 and 5. A run that lapsed while waiting on its own permission question used to
+ * leave that question open and addressed to the owner, where nothing could answer it —
+ * `resolve -m allow` allows no tool once the run is gone — so the card was neither running nor
+ * queued until the owner cleared it by hand. The sweep now takes the question with the claim,
+ * and only that one: a question anyone else raised can still be answered, so it stands.
+ *
+ * A core on a clock the test moves, so a lease lapses without anyone sleeping.
+ */
+function onAFakeClock(): { now: () => number; tick(ms: number): void } {
+  let at = Date.now();
+  const now = (): number => at;
+  core.close();
+  core = openCore(":memory:", { owner: "simon", now });
+  owner = core.listMembers()[0] as Member;
+  runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
+  return {
+    now,
+    tick(ms) {
+      at += ms;
+    },
+  };
+}
+
+test("a lapsed lease takes the run's own question with it, and the card is claimed again", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  let runs = 0;
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* (options) {
+      runs += 1;
+      if (runs > 1) {
+        yield { type: "result", ok: true };
+        return;
+      }
+      // A tool outside the fixed list: a question on the card, which this run waits for.
+      void options.canUseTool("Bash", { command: "rm -rf build" });
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }),
+  });
+  core.createCard({ title: "Asked and slept" }, owner.id);
+  const asked = untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
+  core.moveCard(1, "spec", owner.id);
+  await asked;
+  expect(core.getCard(1).attention?.raisedBy).toBe(runnerMember.id);
+
+  const seqBefore = core.getCard(1).activity.at(-1)?.seq ?? 0;
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
+
+  // The sweep is one synchronous mutation, so this is the card the moment it swept.
+  expect(core.getCard(1).attention).toBeNull();
+  expect(core.getCard(1).claim).toBeNull();
+  expect(core.getCard(1).phase).toBe("spec");
+  const swept = core.activitySince(seqBefore).filter((e) => e.cardId === 1);
+  expect(swept.map((e) => [e.type, e.actorId])).toEqual([
+    ["run_interrupted", runnerMember.id],
+    ["attention_resolved", runnerMember.id],
+  ]);
+  expect(swept[1]).toMatchObject({ data: { how: "interrupted" } });
+
+  await abandoned;
+  // Free in a claimable phase: the next scan claims it, and the second run ends normally.
+  await untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
+  expect(runs).toBe(2);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(2);
+  expect(comments(1).filter((text) => text.includes("run abandoned"))).toHaveLength(1);
+});
+
+/**
+ * Criterion 5, for each of the two raisers it names: a question the run did not raise can still
+ * be answered, so the sweep leaves it, and the card stays out of the runner's queue until a
+ * member answers it — which is `isReady`'s existing rule, unchanged.
+ */
+const OTHER_RAISERS = [
+  {
+    whose: "the agent's own",
+    note: "which repository should I use?",
+    // What `skelcrew attention` does from the worktree: the agent's question, as `crew`.
+    raise: (): void => agentAsks(1, "which repository should I use?"),
+    raisedBy: (): number => crewMember.id,
+  },
+  {
+    whose: "the owner's",
+    note: "have a look at this first",
+    raise: (): void => {
+      core.requestAttention(1, { to: owner.id, note: "have a look at this first" }, owner.id);
+    },
+    raisedBy: (): number => owner.id,
+  },
+] as const;
+
+for (const raiser of OTHER_RAISERS) {
+  test(`a lapsed lease leaves ${raiser.whose} question standing, and the card is not claimed again`, async () => {
+    await initRepo();
+    const clock = onAFakeClock();
+    let runs = 0;
+    start({
+      now: clock.now,
+      driver: fakeDriver(async function* (options) {
+        runs += 1;
+        yield { type: "text", text: "working" };
+        await new Promise<void>((resolve) => {
+          if (options.signal.aborted) resolve();
+          else options.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }),
+    });
+    core.createCard({ title: "Asked by somebody else" }, owner.id);
+    const working = untilEvent(commentContaining(1, "working"));
+    core.moveCard(1, "spec", owner.id);
+    await working;
+    raiser.raise();
+
+    const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+    clock.tick(10 * 60_000);
+    expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
+
+    expect(core.getCard(1).attention).toMatchObject({
+      raisedBy: raiser.raisedBy(),
+      note: raiser.note,
+    });
+    await abandoned;
+    await Bun.sleep(200);
+
+    // Still waiting on a member, and so not ready: no second claim, and no second run.
+    expect(core.getCard(1).attention?.raisedBy).toBe(raiser.raisedBy());
+    expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+    expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+    expect(runs).toBe(1);
+  });
+}
+
+/**
+ * Criterion 5's second half, added after review round 1: the owner takes a card by hand with
+ * `skelcrew claim` and leaves a note on it. Nothing heartbeats a human's claim, so it lapses on
+ * its own — but the note is not a run's question, the owner is still there to answer it, and
+ * the card the owner took is not the runner's to start.
+ */
+test("a lapsed claim held by the owner withdraws nothing, and the runner does not take the card", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  let runs = 0;
+  core.createCard({ title: "Taken by hand" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  // The owner takes it before any runner is watching: `skelcrew claim 1`, then a note.
+  core.claimCard(1, {}, owner.id);
+  core.requestAttention(1, { to: crewMember.id, note: "rebase onto main first" }, owner.id);
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      yield { type: "result", ok: true };
+    }),
+  });
+
+  const interrupted = untilEvent((e) => e.cardId === 1 && e.type === "run_interrupted");
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
+  await interrupted;
+  await Bun.sleep(200);
+
+  // The note stands, so the card is not ready: no claim of the runner's, and no run.
+  expect(core.getCard(1).attention).toMatchObject({
+    raisedBy: owner.id,
+    note: "rebase onto main first",
+  });
+  expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(core.getCard(1).claim).toBeNull();
+  expect(runs).toBe(0);
+});
+
+/**
+ * Criterion 5's third half, added after review round 2: an agent member in a live session takes
+ * a card with `skelcrew claim` and asks the owner a question with `skelcrew attention`. It looks
+ * to the core exactly like a run — an agent holding a claim, raising its own request — but
+ * nothing heartbeats it, so it lapses two minutes later. The agent is still there to answer, the
+ * owner's queue keeps the question, and the runner does not start a run on the card.
+ */
+test("a lapsed claim held by an agent member over the CLI withdraws nothing, and no run starts", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  const inASession = core.ensureMember("agent-at-the-keyboard", "agent");
+  let runs = 0;
+  core.createCard({ title: "Taken by an agent in a session" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  core.claimCard(1, {}, inASession.id);
+  core.requestAttention(1, { to: owner.id, note: "which repo should I use?" }, inASession.id);
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      yield { type: "result", ok: true };
+    }),
+  });
+
+  const interrupted = untilEvent((e) => e.cardId === 1 && e.type === "run_interrupted");
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
+  await interrupted;
+  await Bun.sleep(200);
+
+  expect(core.getCard(1).attention).toMatchObject({
+    to: owner.id,
+    raisedBy: inASession.id,
+    note: "which repo should I use?",
+  });
+  expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(core.getCard(1).claim).toBeNull();
+  expect(runs).toBe(0);
 });
 
 // --- the agent acting on its own card ---
@@ -1260,7 +1480,7 @@ test("a question stands when the lease lapses", async () => {
 
   const abandoned = untilEvent(commentContaining(1, "run abandoned"));
   at += 10 * 60_000;
-  core.sweepClaims();
+  core.sweepClaims(runnerMember.id);
   await abandoned;
   await Bun.sleep(200);
 
@@ -2257,7 +2477,7 @@ test("an ending that cannot park either releases nothing: the lease lapses inste
 
   // And `run_interrupted` lands when the lease lapses, as 009 intends.
   at += 10 * 60_000;
-  core.sweepClaims();
+  core.sweepClaims(runnerMember.id);
   expect(core.getCard(1).activity.map((e) => e.type)).toContain("run_interrupted");
 });
 

@@ -3,6 +3,8 @@ import type { Activity, CardDetail, Member } from "@skelcrew/shared";
 import { activityLine, cardView, describeRefs } from "./render";
 
 const members: Member[] = [{ id: 1, name: "simon", kind: "human", createdAt: 1 }];
+/** The member the view is rendered for: the owner. */
+const ME = 1;
 
 const REFS = {
   branch: "skelcrew/1-artefact-refs",
@@ -40,7 +42,7 @@ test("describeRefs names the spec path after the branch and before the commits",
 });
 
 test("a card's detail block has a spec line between branch and commits", () => {
-  const lines = cardView(card([]), members).split("\n");
+  const lines = cardView(card([]), members, ME).split("\n");
   const labels = lines
     .filter((line) => /^(branch|spec|commits|pr):/.test(line))
     .map((line) => line.split(":")[0]);
@@ -84,6 +86,22 @@ test("a recorded verdict renders as the verdict, with every line of its findings
   expect(activityLine(review({ verdict: "approved", text: "Minor: a typo" }), members)).toEndWith(
     "reviewed: approved\n> Minor: a typo",
   );
+});
+
+/**
+ * 024's criterion 6. The resolution the sweep records when a lapsed run's own question goes
+ * with its claim reads as itself, beside `moved`, `archived` and `answered`.
+ */
+test("the resolution the sweep records reads as resolved attention: interrupted", () => {
+  const event: Activity = {
+    seq: 3,
+    cardId: 1,
+    actorId: 1,
+    type: "attention_resolved",
+    data: { how: "interrupted" },
+    createdAt: 1,
+  };
+  expect(activityLine(event, members)).toEndWith("resolved attention: interrupted");
 });
 
 test("a refs_set event recorded before 011 renders the refs it carries, as it always did", () => {

@@ -89,9 +89,13 @@ export interface Core {
   releaseCard(id: number, options: { reason?: string }, actorId: number): Card;
   /**
    * Expires every lapsed claim, recording `run_interrupted` attributed to its former
-   * holder. The daemon's periodic call, not a member action. Returns the affected ids.
+   * holder, and withdrawing the *runner's* own open request as `interrupted` — a question
+   * nothing can answer once the run that asked it is gone. `runnerId` names the member whose
+   * claims are runs, which only the daemon knows; without it, and for a claim held by anyone
+   * else, every request stands. The daemon's periodic call, not a member action. Returns the
+   * affected ids.
    */
-  sweepClaims(): number[];
+  sweepClaims(runnerId?: number): number[];
 
   /** Every event with `seq` greater than the given one, in `seq` order. */
   activitySince(seq: number): Activity[];
@@ -876,7 +880,7 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
       });
     },
 
-    sweepClaims() {
+    sweepClaims(runnerId) {
       return mutate((log) => {
         const at = now();
         const lapsed = selectLapsedClaims.all(at).map(toCard);
@@ -887,6 +891,27 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
             type: "run_interrupted",
             data: { by: claim.by, expiresAt: claim.expiresAt },
           });
+          // A request a lapsed *run* raised goes with the claim: nothing answers a question once
+          // the run that asked it is gone, and the card would otherwise be neither running nor
+          // queued until a member cleared it by hand. A request raised by anyone else — the
+          // agent's own question, the owner's note — stands, because it can still be answered.
+          // The claims that are runs are the runner's, and only the daemon knows which member
+          // that is, so it passes the id: a claim made by hand with `skelcrew claim` is not a
+          // run, whoever made it, and nothing heartbeats one. The owner and an agent member in
+          // a live session are both still there to answer, and withdrawing their question would
+          // hand the card they took to the runner.
+          // With no runner, `runnerId` is undefined and no claim's holder can equal it.
+          if (
+            claim.by === runnerId &&
+            card.attention !== null &&
+            card.attention.raisedBy === claim.by
+          ) {
+            updateAttention.run(null, at, card.id);
+            log(card.id, claim.by, {
+              type: "attention_resolved",
+              data: { how: "interrupted" },
+            });
+          }
         }
         return lapsed.map((card) => card.id);
       });
