@@ -850,8 +850,10 @@ function readOr(path: string, fallback: string): string {
  * redirected to a file. `script` allocates the terminal; the shell records the daemon's pid
  * (`exec` makes it the shell's own) so a test can signal the daemon rather than `script`; the
  * daemon's stderr goes to a file of its own so the two streams stay apart inside the one
- * terminal. `SKELCREW_NOTIFY` is dropped from the inherited environment first: no test may
- * fire a real notification because the terminal running it had the variable set.
+ * terminal. Every setting the daemon reads is dropped from the inherited environment first,
+ * as in `spawnDaemon`: no test may fire a real notification because the terminal running it
+ * had `SKELCREW_NOTIFY` set, and no daemon here may fail to start because it had a bad
+ * `SKELCREW_RUN_MINUTES` set.
  */
 function spawnShellDaemon(options: {
   cwd: string;
@@ -864,6 +866,8 @@ function spawnShellDaemon(options: {
   env.SKELCREW_RUNNER = "0";
   env.SKELCREW_AGENT = "none";
   delete env.SKELCREW_MERGE_POLL_SECONDS;
+  delete env.SKELCREW_RUNS;
+  delete env.SKELCREW_RUN_MINUTES;
   delete env.SKELCREW_NOTIFY;
   Object.assign(env, options.env ?? {});
   const pidFile = join(dir, "daemon.pid");

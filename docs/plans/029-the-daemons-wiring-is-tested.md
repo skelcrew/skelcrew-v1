@@ -46,6 +46,7 @@ Ran 797 tests across 29 files. [80.35s]
 - The two cards are moved to Spec with two sequential `moveCard` calls on one client, not
   concurrently: the ordering assertions are per card, and two socket round trips are far
   shorter than the run's async worktree setup that follows the synchronous claim.
+  *(Superseded in fix round 1, below: both tests now issue the two moves with `Promise.all`.)*
 - The tests wait for two `released` events (the ending of a no-playbook run) and then assert
   on the index of each of the four `claimed`/`released` events, rather than on wall-clock
   timing.
@@ -143,10 +144,13 @@ error: expect(received).toEqual(expected)
 
 `spawnDaemon` now strips `SKELCREW_RUNS`, `SKELCREW_RUN_MINUTES` and `SKELCREW_NOTIFY` from the
 inherited environment, beside the `SKELCREW_DIR` and `SKELCREW_MERGE_POLL_SECONDS` it already
-stripped, each still settable through the helper's `options.env`. So the helper strips all six
-settings the daemon reads. `SKELCREW_RUN_MINUTES` was worth the same treatment for a sharper
-reason than the run limit: an invalid value stops the daemon at startup, so a developer with a
-typo exported would see most of this file fail — dropping the `delete` and exporting
+stripped, each still settable through the helper's `options.env`. The daemon reads seven
+settings, and the helper now decides all seven: `SKELCREW_DIR` is deleted and set back from
+`options.dataDir`, `SKELCREW_RUNNER` and `SKELCREW_AGENT` are always set from their options, and
+`SKELCREW_MERGE_POLL_SECONDS`, `SKELCREW_RUNS`, `SKELCREW_RUN_MINUTES` and `SKELCREW_NOTIFY` are
+deleted unless a test asks for them. `SKELCREW_RUN_MINUTES` was worth the same treatment for a
+sharper reason than the run limit: an invalid value stops the daemon at startup, so a developer
+with a typo exported would see most of this file fail — dropping the `delete` and exporting
 `SKELCREW_RUN_MINUTES=nonsense` makes the control test fail with `Received: ""` where the
 listening line should be. `SKELCREW_NOTIFY` was already stripped in `spawnShellDaemon` (023's
 helper, the one whose daemons have a terminal), not in this one; under `spawnDaemon` stdout is
@@ -181,3 +185,66 @@ $ bun run check
 ```
 
 Still 799: this round added no test, it made two honest.
+
+## Fix round 2 (post-approval)
+
+Review round 2 approved with four minors. All four are addressed; no behaviour changed, and
+`main.ts` is still comments-only against base `963634a`.
+
+**1. Two handoffs in `main.ts` named no test (minor).** The header says "Each handoff below
+names the test that observes it", but `resolveDataDir(process.env, process.cwd())` and
+`startAnnouncing({ env, isTerminal })` carried no test name. Both now do, quoted verbatim:
+`resolveDataDir` names "starts on SKELCREW_DIR, prints one line, sets modes, and cleans up on
+SIGTERM" for the variable, "from a subdirectory of a git repository the data directory is <repo
+root>/.skelcrew/" for the cwd, and "outside a git repository with no override it exits 1 and
+creates nothing" for the refusal; `startAnnouncing` names "a daemon in a terminal rings the bell
+and announces a request raised to the owner" against "a daemon whose stdout is redirected to a
+file announces nothing: watch is that owner's ping" for the terminal check, and that first test
+plus "SKELCREW_NOTIFY=none turns the announcement off in a terminal too" for `SKELCREW_NOTIFY`.
+
+**2. `spawnShellDaemon` still inherited `SKELCREW_RUNS` and `SKELCREW_RUN_MINUTES` (minor).**
+`main.ts` parses both before the `SKELCREW_RUNNER=0` check, so a bad value exported in the
+developer's shell stops even a state-only daemon. Red first, with the helper unchanged:
+
+```
+$ SKELCREW_RUN_MINUTES=nonsense bun test packages/daemon/src/server/process.test.ts -t "announce"
+
+error: the daemon did not say it was listening within 10000 ms
+(fail) a daemon in a terminal rings the bell and announces a request raised to the owner [10016.59ms]
+(fail) a daemon whose stdout is redirected to a file announces nothing: watch is that owner's ping [10007.52ms]
+(fail) SKELCREW_NOTIFY=none turns the announcement off in a terminal too [10006.30ms]
+
+ 0 pass
+ 23 filtered out
+ 3 fail
+```
+
+The two `delete` lines are now in `spawnShellDaemon` beside the ones it already had, so both
+helpers in the file follow one rule; its doc comment says so. Green:
+
+```
+$ SKELCREW_RUN_MINUTES=nonsense bun test packages/daemon/src/server/process.test.ts -t "announce"
+ 3 pass
+ 23 filtered out
+ 0 fail
+```
+
+**3. A stale decision (minor).** The "two sequential `moveCard` calls" bullet under *Decisions
+the spec left open* is marked superseded in place by fix round 1, which moved both tests to
+`Promise.all`.
+
+**4. Six settings, not seven (minor).** The fix round 1 paragraph said the helper strips all six
+settings the daemon reads. There are seven; the paragraph now says seven and lists them —
+`SKELCREW_DIR`, `SKELCREW_RUNNER`, `SKELCREW_AGENT`, `SKELCREW_MERGE_POLL_SECONDS`,
+`SKELCREW_RUNS`, `SKELCREW_RUN_MINUTES`, `SKELCREW_NOTIFY` — saying which are deleted and which
+are always set from an option.
+
+```
+$ bun run check
+  biome ci .                 Checked 91 files. No fixes applied.
+  typecheck                  shared, cli, daemon all exited 0
+  bun test                   799 pass, 0 fail, across 29 files
+```
+
+Still 799: this round added no test either. `bun run check:harness` was not run — no playbook
+and no entry of the runner's allowlist changed.

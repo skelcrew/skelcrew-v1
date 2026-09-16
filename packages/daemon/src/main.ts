@@ -37,6 +37,11 @@ function stop(error: unknown): never {
   process.exit(1);
 }
 
+// Where the state lives: SKELCREW_DIR if it is set, otherwise <repo root>/.skelcrew. Observed
+// by "starts on SKELCREW_DIR, prints one line, sets modes, and cleans up on SIGTERM" for the
+// variable, "from a subdirectory of a git repository the data directory is <repo root>/
+// .skelcrew/" for the cwd, and "outside a git repository with no override it exits 1 and
+// creates nothing" for the refusal below.
 const dir = resolveDataDir(process.env, process.cwd());
 if (dir === undefined) {
   console.error("skelcrew daemon: not inside a git repository, and SKELCREW_DIR is not set");
@@ -104,6 +109,11 @@ const sweeper = setInterval(
 // redirected, has nobody beside it, and `watch` is the ping for that owner — it notifies
 // wherever it is run, which is where the owner actually is. An owner running both hears twice;
 // 023 took that over a handshake between client and daemon.
+//
+// The terminal check is observed by "a daemon in a terminal rings the bell and announces a
+// request raised to the owner" against "a daemon whose stdout is redirected to a file announces
+// nothing: watch is that owner's ping"; SKELCREW_NOTIFY by that first test, which sets it to a
+// recording script, and by "SKELCREW_NOTIFY=none turns the announcement off in a terminal too".
 const stopAnnouncing = startAnnouncing({
   core,
   env: process.env,
