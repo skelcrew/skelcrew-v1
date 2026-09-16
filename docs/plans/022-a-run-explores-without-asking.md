@@ -9,8 +9,13 @@ Run record for `docs/specs/022-a-run-explores-without-asking.md`.
    no such section, so the paragraph opens §1). It names `Read`, `Glob` and `Grep` as the way to
    read, the shell as the way to run — one command at a time, never joined with `&&`, `;` or a
    pipe and never a loop — and asks for one sentence saying what a command that will stop to ask
-   is for. Prose only: no fence, and no backticked span starting with a command word, so
-   `instructedCommands` harvests nothing new.
+   is for. Prose only, with no fence, so `instructedCommands` harvests nothing new. *(Corrected
+   in review round 3: this said "no fence, and no backticked span starting with a command word",
+   and the second half is false. Each of the three paragraphs names the `skelcrew` CLI in
+   backticks, and `commandsNamed` does harvest it: spec 10 → 11, code 46 → 47, review 20 → 21,
+   measured against `808ba75`. `instructedCommands` is unchanged at 6, 25 and 12 all the same,
+   and the true reason is the other rule — a bare `skelcrew` is a command word with no argument,
+   which `INSTRUCTION` drops as a noun rather than a command.)*
 2. **`playbooks.test.ts`** — the paragraph pinned in all three, the way `CREDENTIAL_RULE` is: a
    shared head and a shared tail, asserted to be in the *same* paragraph, plus the three tool
    names and the two rules criterion 2 lists.
@@ -294,3 +299,85 @@ under test runs unprompted in the harness under its own list, `git push origin H
 denied under each list, and the repository is unchanged". `instructedCommands` after the `spec.md`
 wording change is **spec 6, code 25, review 12**, with the same command lists as the rounds
 before.
+
+## Review round 3
+
+Verdict: APPROVED, with six Minor. Four are this round's work; the other two (a stray
+parenthesis in the spec, and a MILESTONES note about sub-agents) are the orchestrator's. Plan,
+written before the work: make a floored decrement in `callReturned` a no-op and reword the
+`endTurn` doc it came from (Minor 1, red first on a stray extra `tool_result`); accept
+`flushHeld`'s early clear and say so in its comment (Minor 2); add an escape case beside 013's
+for the `why:` line (Minor 3, red first with `relayed` removed in a scratch copy); correct the
+false reason at step 1 of this record (Minor 4). Files: `run.ts`, `run.test.ts`, this record.
+
+- **Minor 1 — a floored decrement ended a turn.** `callReturned` clamped with `Math.max(0, …)`
+  and then ended the turn on *any* zero, including a zero it was already at. So a result for a
+  call the turn under way never made — one left outstanding when the owner's answer or a member's
+  comment ended the previous turn — cleared the sentence the agent had said since. Red first, on
+  the reviewer's script: text, a `tool_use`/`tool_result` pair that ends the turn, new text, a
+  stray extra `tool_result`, then the ask.
+
+  ```
+  expect(core.getCard(card.id).attention?.note).toBe(
+  @@ -1,3 +1,3 @@
+    "allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)
+  - why: TURN TWO: fetching the install script the checks need.
+    input:
+  - Expected  - 1
+  + Received  + 0
+  (fail) a result for a call the turn no longer counts does not end the next turn
+  ```
+
+  Green from an early return: `callReturned` does nothing when the count is already zero, so only
+  a decrement from one to zero ends a turn. The doc at `endTurn` no longer says the late result
+  "clears nothing that is there" — an absolute that held only by the harness's shape. It now says
+  what the code guarantees (a result for a call the turn never made ends no turn) and why the old
+  code was harmless in practice: the agent cannot speak while a call of its own is outstanding, so
+  no text arrives between a call and its result and there was nothing yet to clear.
+
+- **Minor 2 — `flushHeld` ends the turn when the comment is queued, not when the agent reads it.**
+  Accepted, and said so in the comment there. A comment posted between the agent's sentence and
+  its next shell call takes the reason off that question even though the agent asked before it
+  had read a word; the cost is a question with no reason, never a question with a reason that
+  belongs to something else. Moving the clear to where the message is consumed is *not* trivial
+  in the sense that matters: `userMessages` in `claude.ts` drains the inbox into the harness as
+  fast as it yields, so the dequeue is not the read either — the clear would move from one early
+  point to another early point. Left as it is, and documented rather than silently accepted.
+
+- **Minor 3 — nothing pinned that the `why:` line is escaped.** Added beside 015's "a permission
+  question carries the tool's input with its escape sequence escaped". Two things came out of
+  writing it, and the second changed the case:
+
+  - The mutation the finding proposed — drop `relayed` from `whyLine` — does **not** turn a
+    plain escape case red, because `postingCore` escapes every note the runner writes, so the
+    card carries `\x1b` either way. `relayed`'s own doc already says this ("This is **not** what
+    makes the guarantee … What it buys is the byte caps below"). A case asserting only the
+    escaped form would therefore pin the sink, not this line.
+  - So the case carries a reason that is over its budget *and* full of escapes, which is where
+    the order of escape-then-cut is observable: escaped first, the 200-byte budget is measured on
+    what is posted; cut first, the sink's escaping widens the line afterwards and it lands over.
+    It asserts the escaped form (`toStartWith` on the `\x1b[2J` spans, and no raw escape anywhere
+    in the note) and the byte bound together.
+
+  Red confirmed on the proposed mutation, in a scratch copy of `run.ts` (restored; not
+  committed), `oneLine(relayed(raw), …)` → `oneLine(raw, …)`:
+
+  ```
+  expect(Buffer.byteLength(why, "utf8")).toBeLessThanOrEqual("why: ".length + 200);
+  Expected: <= 205
+  Received: 223
+  (fail) a question carries the agent's own reason with its escape sequence escaped
+  ```
+
+- **Minor 4 — the record gave a false reason at step 1.** Corrected in place and marked. The
+  three paragraphs do each carry a backticked `skelcrew`, and `commandsNamed` harvests it: spec
+  10 → 11, code 46 → 47, review 20 → 21, measured against `808ba75` with a scratch script over
+  `playbook-commands.ts` (deleted; not committed). `instructedCommands` is unchanged at 6, 25 and
+  12 because `INSTRUCTION` wants a command word *with an argument*, and a bare `skelcrew` is a
+  noun. No playbook text changed this round.
+
+Checks for this round: `bun run fix` (no fixes applied), and `bun run check` — `biome ci .` clean
+over 90 files, `tsc` clean in all three packages, `760 pass / 0 fail` across 29 files (758 before
+this round; +2 question cases). `bun run check:harness` was **not** run: no playbook and no
+allowlist entry changed this round, and `instructedCommands` is unchanged at spec 6, code 25,
+review 12, measured above.

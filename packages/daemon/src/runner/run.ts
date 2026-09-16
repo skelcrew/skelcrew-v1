@@ -454,8 +454,13 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
    * The count goes with the text, so a call still outstanding when the owner's answer or a
    * comment ends the turn cannot hold the count above zero for the rest of the run and stop
    * later results ending their own turns. Its result — the harness does send one for a call
-   * `canUseTool` denied, measured against the pinned SDK in review round 2 — then decrements a
-   * count already at zero, which floors and clears nothing that is there.
+   * `canUseTool` denied, measured against the pinned SDK in review round 2 — then reaches
+   * `callReturned` with the count already at zero. That is a result for a call the turn under
+   * way never made, so it ends no turn. Until review round 3 it did, and the only thing that
+   * kept it from clearing a sentence that was there is that the agent cannot speak while a call
+   * of its own is outstanding: no text arrives between a call and its result, so there was
+   * nothing yet to clear. That is the harness's shape rather than this run's guarantee, and
+   * the floor is the guarantee.
    */
   const endTurn = (): void => {
     turnText = undefined;
@@ -467,7 +472,10 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     outstandingCalls += 1;
   };
   const callReturned = (): void => {
-    outstandingCalls = Math.max(0, outstandingCalls - 1);
+    // Nothing outstanding: a call from a turn that has already ended, coming back late. The
+    // turn under way made it no promise, so it does not end on it — see `endTurn` above.
+    if (outstandingCalls === 0) return;
+    outstandingCalls -= 1;
     if (outstandingCalls === 0) endTurn();
   };
 
@@ -497,6 +505,15 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     for (const comment of forwarded) messages.push(comment.data.text);
     // A message read is a turn begun, so what the agent said before reading it is not the
     // reason for what it asks after (022).
+    //
+    // The turn ends here, where the comment is queued, and not where the agent reads it — so a
+    // comment posted between the agent's sentence and its next shell call takes the reason off
+    // that question, though the agent asked before it had read a word. That is the safe
+    // direction and it is left as it is: the cost is a question with no reason on it, never a
+    // question with a reason that belongs to something else, and the owner is the one who
+    // caused it. The dequeue is not the read either — `userMessages` in `claude.ts` drains this
+    // inbox into the harness as fast as it yields, well before the model sees a message — so
+    // moving the clear there would buy a different early clear rather than an accurate one.
     if (forwarded.length > 0) endTurn();
   };
 
