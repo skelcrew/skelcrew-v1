@@ -37,12 +37,12 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 21 | 024 The board explains itself | landed, PR #23 — three review rounds on one rule: whose lapsed claim takes its question with it |
 | 22 | 025 Several cards at once | landed, PR #22 — two review rounds, both in teardown; developed in parallel with 023 and 024 from three sessions |
 | 23 | 026 The board on one screen | landed, PR #25 — the read-only half after the split; two review rounds; verification failed once on a spec sentence that was never true |
-| 24 | 027 Acting from the screen | specified |
+| 24 | 027 Acting from the screen | landed, PR #27 — three review rounds; the shell's directory came from agent-written text, and a pasted newline ran as keys |
 | 25 | 028 The runner's name is reserved | landed, PR #26 — two review rounds; the spec's test setup could not work with the runner on, amended |
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
-| 27 | 030 The rest of a day on the screen | planned; after 027 |
 | 27 | 030 The screen starts the daemon | specified |
 | 28 | 031 The arrow keys move the cursor | specified |
+| 29 | 032 The rest of a day on the screen | planned; after 030 and 031 |
 | | 005 | dropped |
 
 ## Background
@@ -1057,6 +1057,37 @@ that change cards are separable, and the plumbing should be reviewed on its own 
 tripwire that the board module makes no mutating call is removed by 027 and replaced by a table
 of every action against the call it makes.
 
+Landed as PR #27. On the selected row `a` allows, `d` denies after an optional message, `m`
+takes the request's offered move, `b` sends the card back a phase with a message, `c` comments,
+and `o` leaves the screen for a shell in the card's worktree and comes back. A one-line prompt
+at the bottom is the screen's only text input. Every key is the call the CLI command makes,
+and a refused call puts the daemon's message on the status line.
+
+Three review rounds, the first two each finding one Important. Round 1: the shell's directory
+for `o` came from a request note, which an agent writes, with no check that the path lay under
+the runner's worktrees root; and a path that existed but was a file crashed the screen. Fixed
+with a containment check and a nine-row table over crafted notes. Round 2: a pasted chunk with
+a newline sent the prompt and then ran the rest of the chunk as board keys — `hi\nallow` posted
+a comment, allowed the request and opened a shell. Fixed: a chunk ends where the prompt closes.
+Round 3 approved by execution. Two spec sentences were not literally true and are recorded:
+five 026 tests changed under new types, none loosened; and Ctrl-C is interpreted in the prompt.
+
+**Carried findings.**
+
+- **Pasting onto the board with no prompt open runs every character as a key.** The reviewer's
+  paste moved and allowed a card. Bracketed paste mode is the fix and its own small spec.
+- **The tail of a pasted chunk after the prompt's Enter is dropped silently.**
+- **A note naming the worktrees root itself passes containment** and opens a shell there.
+  Strictly-under would match the doc comment.
+- **The three empty prompts behave differently**: empty `c` makes a round trip the daemon
+  refuses, empty `b` moves with no comment, empty `d` denies.
+- **A refused call loses the typed text**, because the prompt closes before the call; and a
+  refused comment after a successful move shows the raw error where `mv` wraps it.
+- **A daemon lost while the owner is in the `o` shell prints the error into the shell.**
+- **The raw Backspace bytes have no loop-level test**; the verifier drove them by hand.
+- **The status column still pads in UTF-16 units.** Carried from 024 and 026; 027 did not
+  touch the row after all. Open for 032.
+
 ## 028 — The runner's name is reserved
 
 024's round-3 finding: a client that says `hello` as an agent named `runner` is handed the
@@ -1175,13 +1206,14 @@ drops every escape sequence; 031 reads exactly the four byte sequences the two k
 maps them onto the moves the reducer already makes. In the prompt they do nothing and never
 become text. `Left`, `Right`, `Page Up` and the rest stay uninterpreted.
 
-## 030 — The rest of a day on the screen
+## 032 — The rest of a day on the screen
 
 What the owner still leaves the screen for after 026 and 027, listed on 2026-09-16 while 027
-was being built. Starting a card by hand (Idea into Spec, an approved Spec into Code) and
-adding one are, by the owner's account, going into 027 already; if they are not there when
-027 lands, they come first here, because starting a card is the gesture the owner makes most
-and 027's `m` takes only the move a request offers.
+was being built. (Numbered 030, then 031, in this session's drafts while another session took
+those numbers for the daemon start and the arrow keys; the sequence records the order specs
+were written, so this one is 032.) Starting a card by hand (Idea into Spec, an approved Spec
+into Code) and adding one come first here unless 027 or 030 turn out to carry them: starting a
+card is the gesture the owner makes most, and 027's `m` takes only the move a request offers.
 
 The rest, in the order they matter:
 
