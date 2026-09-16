@@ -42,7 +42,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
 | 27 | 030 The screen starts the daemon | specified |
 | 28 | 031 The arrow keys move the cursor | specified |
-| 29 | 032 The rest of a day on the screen | planned; after 030 and 031 |
+| 29 | 032 A card is added, started and archived from the screen | specified; the milestone's first slice, editing and the feed view follow |
 | | 005 | dropped |
 
 ## Background
