@@ -1,33 +1,22 @@
 /**
  * The daemon's side of the data directory. Discovery — the repo-root walk, `SKELCREW_DIR`,
  * the socket and database paths — lives in `@skelcrew/shared` so clients resolve the same
- * socket from the same code; what stays here is what only the daemon may do: create the
- * directory, and remove a socket file nobody answers on.
+ * socket from the same code, and since 030 so does `prepareDataDir`: the screen opens the
+ * daemon's log in that directory before the daemon exists, so making it is no longer the
+ * daemon's alone. What stays here is what only the daemon may do: remove a socket file nobody
+ * answers on.
  */
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, rmSync } from "node:fs";
 
 export {
   DATA_DIR_NAME,
   DB_FILE,
   dataPaths,
   findRepoRoot,
+  prepareDataDir,
   resolveDataDir,
   SOCKET_FILE,
 } from "@skelcrew/shared";
-
-/**
- * Creates the directory if missing and makes it private either way: it holds the socket.
- * The directory also ignores itself (`*`, which covers the ignore file too), so a target
- * repository with no `.skelcrew/` entry of its own never sees the socket, the database, or
- * a runner worktree in `git status` or in tooling that honours ignore files.
- */
-export function prepareDataDir(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
-  const ignore = join(dir, ".gitignore");
-  if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
-}
 
 /**
  * Whether a daemon answers on the socket. Detected by connecting, not by a pid file: a

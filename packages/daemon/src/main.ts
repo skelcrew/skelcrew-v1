@@ -11,6 +11,7 @@
 import { findRepoRoot, VERSION } from "@skelcrew/shared";
 import { startAnnouncing } from "./announce";
 import { openCore } from "./core/core";
+import { nothingNeedsTheDaemon } from "./idle";
 import { mergePoll, mergePollIntervalFromEnv } from "./merges";
 import type { AgentDriver } from "./runner/agent";
 import { createForge } from "./runner/forge";
@@ -31,6 +32,22 @@ import { sweepTick } from "./sweep";
 
 /** How often lapsed claims are expired into `run_interrupted` events while the daemon runs. */
 const CLAIM_SWEEP_INTERVAL_MS = 5000;
+
+/**
+ * The one argument this file takes, set only by the screen that started this daemon (030).
+ * Under it the daemon's life is its own: it ignores SIGHUP, so closing the window a screen was
+ * opened in does not interrupt a run, and it exits through the same `shutdown()` a signal runs
+ * once nothing needs it — no client connected and no run live. The rule is here rather than in
+ * the client because the daemon is the one that knows who is connected and what is running.
+ *
+ * Observed in `server/process.test.ts`, each against its control without the argument: "with
+ * --stop-when-idle the daemon exits 0 on its own when the last client disconnects" and "…keeps
+ * serving after SIGHUP" with the runner off, and — in the configuration every real `skelcrew`
+ * runs — "with the runner on, a --stop-when-idle daemon stays for the client on its way, through
+ * a run that came and went" and "…outlives its last client while a run is live, and goes when
+ * the runs end".
+ */
+const stopWhenIdle = process.argv.slice(2).includes("--stop-when-idle");
 
 function stop(error: unknown): never {
   console.error(`skelcrew daemon: ${error instanceof Error ? error.message : String(error)}`);
@@ -81,10 +98,14 @@ if (agentKind === "claude" && process.env.SKELCREW_RUNNER !== "0") {
 }
 
 const { dbPath, socketPath } = dataPaths(dir);
-if (await daemonAnswers(socketPath)) {
+
+/** One line, and out: the socket is somebody else's. */
+function alreadyRunning(): never {
   console.error(`skelcrew daemon: a daemon is already running on ${socketPath}`);
   process.exit(1);
 }
+
+if (await daemonAnswers(socketPath)) alreadyRunning();
 
 prepareDataDir(dir);
 const core = openCore(dbPath);
@@ -98,7 +119,29 @@ const core = openCore(dbPath);
 // Observed by "with the runner on the socket refuses hello as the runner, whose member the
 // daemon made itself" — the configuration this is for — and by "with SKELCREW_RUNNER=0 the
 // socket still refuses hello as the runner" for the half that is off.
-const server = startServer({ core, socketPath, reserved: [RUNNER_MEMBER_NAME] });
+//
+// The bind is also where two daemons started in the same instant are decided: the probe above
+// is a question about a moment, and only one process can hold the socket. The loser says what
+// the probe would have told it — the screen that started it then attaches to the winner (030).
+let server: ReturnType<typeof startServer>;
+try {
+  server = startServer({
+    core,
+    socketPath,
+    reserved: [RUNNER_MEMBER_NAME],
+    // One of the two moments the idle rule is asked. `stopIfIdle` is hoisted and reads `runner`,
+    // which is declared further down: safe, because nothing between here and the end of this
+    // file awaits, so no socket callback can run before the execution half below is set up.
+    onClientClosed: () => stopIfIdle(),
+  });
+} catch (error) {
+  // The socket is there: bound by the daemon that won (`EADDRINUSE`), or simply a path that
+  // exists when the bind reaches it (`EEXIST`) — the probe above removes a socket nobody
+  // answers on, so a file still here is somebody else's.
+  const code = (error as { code?: string }).code;
+  if (code === "EADDRINUSE" || code === "EEXIST") alreadyRunning();
+  stop(error);
+}
 // The member whose claims are runs, once the execution half below has joined as it. The sweep
 // takes a lapsed run's own question with it and needs to know which claims are runs; a claim
 // made by hand is not one, whoever made it. Assigned below, before the first tick five seconds
@@ -169,6 +212,10 @@ if (process.env.SKELCREW_RUNNER !== "0") {
       // released the first", against its control "with SKELCREW_RUNS unset the daemon claims
       // both cards before either is released".
       slots: runs,
+      // The other moment the idle rule is asked: a screen closed over a live run leaves it to
+      // finish, and the daemon goes when the last one ends with nobody connected. Observed by
+      // "…outlives its last client while a run is live, and goes when the run ends".
+      onRunSettled: () => stopIfIdle(),
       // No test here observes this one: under SKELCREW_AGENT=none a run has no agent session,
       // so the limit can never fire, and a driver that exists only to be timed out would be a
       // switch in production code for a test's sake. It is observed against the run instead,
@@ -189,7 +236,13 @@ if (process.env.SKELCREW_RUNNER !== "0") {
   }
 }
 
+let stopping = false;
+
 async function shutdown(): Promise<void> {
+  // Once: a Ctrl-C under `skelcrew --headless` arrives twice — from the terminal's process
+  // group and forwarded by the client — and the second must not close the database again.
+  if (stopping) return;
+  stopping = true;
   clearInterval(sweeper);
   stopAnnouncing();
   if (merges !== undefined) clearInterval(merges);
@@ -199,5 +252,25 @@ async function shutdown(): Promise<void> {
   process.exit(0);
 }
 
+/**
+ * The idle rule, asked when a client leaves and when a run settles. The rule itself is
+ * `idle.ts`; the counts it reads are this file's to gather, and what this file does with them is
+ * observed through a spawned daemon by "with the runner on, a --stop-when-idle daemon stays for
+ * the client on its way, through a run that came and went" and "…outlives its last client while
+ * a run is live, and goes when the run ends", in `server/process.test.ts`.
+ */
+function stopIfIdle(): void {
+  if (!stopWhenIdle || stopping) return;
+  const counts = {
+    clients: server.clients(),
+    clientsEver: server.clientsEver(),
+    runs: runner?.liveRuns() ?? 0,
+  };
+  if (nothingNeedsTheDaemon(counts)) void shutdown();
+}
+
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+// A screen-started daemon outlives the terminal it was started from; one in a terminal of its
+// own dies with it, as it always has.
+if (stopWhenIdle) process.on("SIGHUP", () => {});

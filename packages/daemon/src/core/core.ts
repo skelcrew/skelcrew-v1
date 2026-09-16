@@ -35,7 +35,7 @@ import {
   type TextKind,
   TITLE_MAX_BYTES,
 } from "@skelcrew/shared";
-import { openDb, SCHEMA_VERSION } from "./db";
+import { finishOpening, openDb, SCHEMA_VERSION } from "./db";
 import { CoreError } from "./errors";
 
 export { SCHEMA_VERSION };
@@ -557,10 +557,21 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
 
   function seedOwner(): void {
     if (selectOwner.get()) return;
-    insertMember.get(ownerName, "human", now());
+    try {
+      insertMember.get(ownerName, "human", now());
+    } catch (error) {
+      // Two daemons started in the same instant both find no owner and both insert one; the
+      // unique index is what makes the second a no-op rather than a second owner. The state
+      // this wanted is the state there is, so only a failure that left none is a failure.
+      if (!selectOwner.get()) throw error;
+    }
   }
 
   seedOwner();
+  // The last write of the open, so the wait `openDb` set for it ends here: two daemons started
+  // in the same instant both make this database, and the one that is a moment behind waits for
+  // the other rather than failing (030).
+  finishOpening(db);
 
   return {
     listMembers() {

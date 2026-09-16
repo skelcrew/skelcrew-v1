@@ -34,8 +34,27 @@ interface Connection {
 
 type ConnectionSocket = Bun.Socket<Connection>;
 
+/** A connection that has said `hello` and is bound to a member; see `Server.clients`. */
+function isClient(socket: ConnectionSocket): boolean {
+  return socket.data.session.member !== null;
+}
+
 export interface Server {
   stop(): void;
+  /**
+   * How many clients are connected right now — connections that have said `hello` and are bound
+   * to a member, not every socket that was accepted. The daemon the screen started ends when
+   * nothing needs it, and this is one of the two counts that rule reads (030): a peer that never
+   * said who it was — `daemonAnswers`'s probe, a port scan — must not be able to end a daemon,
+   * so it is not a client and its closing is not a client leaving.
+   */
+  clients(): number;
+  /**
+   * How many clients have connected since this server started. Zero means none ever has, which
+   * is what tells a daemon still coming up that the screen which started it has not arrived yet
+   * (030). Only ever grows.
+   */
+  clientsEver(): number;
 }
 
 export function startServer(options: {
@@ -47,12 +66,20 @@ export function startServer(options: {
    * names the names every time.
    */
   reserved: readonly string[];
+  /**
+   * Called after a *client's* connection has been released, so `clients()` already reads without
+   * it. The moment the idle rule is asked (030); a connection that never said `hello` closing is
+   * not that moment, for the reason `clients()` gives.
+   */
+  onClientClosed?: () => void;
 }): Server {
   const { core, socketPath } = options;
   // Normalised once, the way the core stores a member name, so the comparison in `hello` is
   // against what `ensureMember` would have found.
   const reserved = new Set(options.reserved.map(memberName));
   const connections = new Set<ConnectionSocket>();
+  /** Clients since this server started; see `Server.clientsEver`. */
+  let clientsEver = 0;
   const encoder = new TextEncoder();
 
   function flush(socket: ConnectionSocket): void {
@@ -149,14 +176,20 @@ export function startServer(options: {
             return;
           }
           const ctx = { core, session: conn.session, reserved, stream: hooksFor(socket) };
-          send(socket, handleRequest(ctx, request));
+          const wasClient = isClient(socket);
+          const response = handleRequest(ctx, request);
+          // A `hello` is where a connection becomes a client; counted once, and never undone.
+          if (!wasClient && isClient(socket)) clientsEver += 1;
+          send(socket, response);
         }
       },
       drain(socket) {
         flush(socket);
       },
       close(socket) {
+        const wasClient = isClient(socket);
         connections.delete(socket);
+        if (wasClient) options.onClientClosed?.();
       },
       error() {
         // The close handler releases the connection.
@@ -167,6 +200,8 @@ export function startServer(options: {
 
   let stopped = false;
   return {
+    clients: () => [...connections].filter(isClient).length,
+    clientsEver: () => clientsEver,
     stop() {
       if (stopped) return;
       stopped = true;

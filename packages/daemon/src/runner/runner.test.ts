@@ -2,8 +2,16 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type Activity, COMMENT_MAX_BYTES, type Member, worktreesDir } from "@skelcrew/shared";
+import {
+  type Activity,
+  COMMENT_MAX_BYTES,
+  connect,
+  type Member,
+  worktreesDir,
+} from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
+import { nothingNeedsTheDaemon } from "../idle";
+import { startServer } from "../server/server";
 import type { AgentDriver, AgentEvent, AgentRunOptions } from "./agent";
 import { createGit, type Git } from "./git";
 import { loadPlaybooks } from "./playbooks";
@@ -87,7 +95,9 @@ async function worktreePaths(): Promise<string[]> {
     .map((line) => line.slice("worktree ".length));
 }
 
-function start(overrides: { git?: Git; slots?: number; driver?: AgentDriver } = {}): Runner {
+function start(
+  overrides: { git?: Git; slots?: number; driver?: AgentDriver; onRunSettled?: () => void } = {},
+): Runner {
   runner = startRunner({
     core,
     dataDir,
@@ -97,6 +107,7 @@ function start(overrides: { git?: Git; slots?: number; driver?: AgentDriver } = 
     crew: core.ensureMember("crew", "agent"),
     warn: (line) => warnings.push(line),
     ...(overrides.slots === undefined ? {} : { slots: overrides.slots }),
+    ...(overrides.onRunSettled === undefined ? {} : { onRunSettled: overrides.onRunSettled }),
     ...(overrides.driver === undefined
       ? {}
       : { agent: { driver: overrides.driver, playbooks: loadPlaybooks() } }),
@@ -1365,4 +1376,77 @@ test("readiness uses the injected clock: a claim lapsed by that clock is claimed
   expect(types(runnerEvents)).toEqual(["claimed", "run_interrupted", "claimed"]);
   expect(runnerEvents[1]?.actorId).toBe(crew.id);
   expect(runnerEvents[2]?.actorId).toBe(runnerMember.id);
+});
+
+// --- the daemon the screen started, while a run is live (030) ---
+
+/**
+ * "`q` with runs in flight leaves them to finish, and the daemon exits when the last one ends
+ * with nobody connected" — over the real socket, the real runner, and `nothingNeedsTheDaemon`
+ * between them, the way `main.ts` joins them.
+ *
+ * Here the run is held open *at its agent session*, which is the shape a spawned daemon cannot
+ * be put into: no test spawns a coding agent, and a driver that exists only for a test would be
+ * a switch in production code. A run held open in git — a real run of a daemon started as the
+ * owner starts it — is `server/process.test.ts`, and that is what observes `main.ts`'s own
+ * wiring of this rule.
+ */
+test("with a run live the idle rule holds the daemon through the last client leaving, and fires when the run ends", async () => {
+  await initRepo();
+  const socketPath = join(tmp, "skelcrew.sock");
+  /** Why the rule fired, each time it did — what `main.ts` turns into `shutdown()`. */
+  const stops: string[] = [];
+  let clients = () => 0;
+  let clientsEver = () => 0;
+  let runs = () => 0;
+  const stopIfIdle = (when: string): void => {
+    const counts = { clients: clients(), clientsEver: clientsEver(), runs: runs() };
+    if (nothingNeedsTheDaemon(counts)) stops.push(when);
+  };
+  const server = startServer({
+    core,
+    socketPath,
+    reserved: [runnerMember.name],
+    onClientClosed: () => stopIfIdle("a client left"),
+  });
+  clients = () => server.clients();
+  clientsEver = () => server.clientsEver();
+  const hold = holds();
+  const live: number[] = [];
+  const running = start({
+    driver: fakeDriver(async function* (options) {
+      const id = cardOf(options);
+      live.push(id);
+      await Promise.race([hold.wait(id), aborted(options.signal)]);
+      yield { type: "result", ok: true };
+    }),
+    onRunSettled: () => stopIfIdle("a run ended"),
+  });
+  runs = () => running.liveRuns();
+
+  try {
+    const screen = await connect(socketPath, { kind: "human" });
+    core.createCard({ title: "Left running" }, owner.id);
+    expect(running.liveRuns()).toBe(0);
+
+    const done = untilEvent(ended(1), 5000);
+    core.moveCard(1, "spec", owner.id);
+    await until(() => live.includes(1), "card 1's session live");
+    expect(running.liveRuns()).toBe(1);
+
+    // `q` over a live run: the screen goes, the run stays, and so does the daemon.
+    await screen.close();
+    await until(() => server.clients() === 0, "the screen's connection to be gone");
+    expect(stops).toEqual([]);
+    expect(running.liveRuns()).toBe(1);
+
+    // And when the last run ends with nobody connected, nothing needs the daemon.
+    hold.end(1);
+    await done;
+    await until(() => stops.length > 0, "the rule to fire");
+    expect(stops).toEqual(["a run ended"]);
+    expect(running.liveRuns()).toBe(0);
+  } finally {
+    server.stop();
+  }
 });
