@@ -131,10 +131,11 @@ export type ActivityEvent =
 /**
  * How an open request went away. The resolving actor is the event's `actorId`.
  *
- * `interrupted` is the sweep's: a request raised by a claim's holder goes with the claim when
+ * `interrupted` is the sweep's: a request the runner raised goes with the runner's claim when
  * the lease lapses, because nothing can answer a question the run that asked it no longer
- * exists to hear. Only a non-human holder's — a human's claim lapses with the human still at
- * the keyboard, so the request stands. Attributed to the former holder, as `run_interrupted` is.
+ * exists to hear. Only the runner's — a claim made by hand with `skelcrew claim` is not a run,
+ * and whoever made it is still there to answer, so their request stands. Attributed to the
+ * former holder, as `run_interrupted` is.
  */
 export type AttentionResolution =
   | { how: "moved"; phase: Phase }

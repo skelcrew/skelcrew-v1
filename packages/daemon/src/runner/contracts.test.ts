@@ -931,7 +931,7 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
 
   const abandoned = untilEvent(commentContaining(1, "run abandoned"));
   at += 10 * 60_000;
-  core.sweepClaims();
+  core.sweepClaims(runnerMember.id);
   await abandoned;
 
   // Criterion 11: "abandons and returns the card to its queue as `run_interrupted`". The card
@@ -998,7 +998,7 @@ test("a lapsed lease takes the run's own question with it, and the card is claim
   const seqBefore = core.getCard(1).activity.at(-1)?.seq ?? 0;
   const abandoned = untilEvent(commentContaining(1, "run abandoned"));
   clock.tick(10 * 60_000);
-  expect(core.sweepClaims()).toEqual([1]);
+  expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
 
   // The sweep is one synchronous mutation, so this is the card the moment it swept.
   expect(core.getCard(1).attention).toBeNull();
@@ -1066,7 +1066,7 @@ for (const raiser of OTHER_RAISERS) {
 
     const abandoned = untilEvent(commentContaining(1, "run abandoned"));
     clock.tick(10 * 60_000);
-    expect(core.sweepClaims()).toEqual([1]);
+    expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
 
     expect(core.getCard(1).attention).toMatchObject({
       raisedBy: raiser.raisedBy(),
@@ -1108,7 +1108,7 @@ test("a lapsed claim held by the owner withdraws nothing, and the runner does no
 
   const interrupted = untilEvent((e) => e.cardId === 1 && e.type === "run_interrupted");
   clock.tick(10 * 60_000);
-  expect(core.sweepClaims()).toEqual([1]);
+  expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
   await interrupted;
   await Bun.sleep(200);
 
@@ -1116,6 +1116,47 @@ test("a lapsed claim held by the owner withdraws nothing, and the runner does no
   expect(core.getCard(1).attention).toMatchObject({
     raisedBy: owner.id,
     note: "rebase onto main first",
+  });
+  expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(core.getCard(1).claim).toBeNull();
+  expect(runs).toBe(0);
+});
+
+/**
+ * Criterion 5's third half, added after review round 2: an agent member in a live session takes
+ * a card with `skelcrew claim` and asks the owner a question with `skelcrew attention`. It looks
+ * to the core exactly like a run — an agent holding a claim, raising its own request — but
+ * nothing heartbeats it, so it lapses two minutes later. The agent is still there to answer, the
+ * owner's queue keeps the question, and the runner does not start a run on the card.
+ */
+test("a lapsed claim held by an agent member over the CLI withdraws nothing, and no run starts", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  const inASession = core.ensureMember("agent-at-the-keyboard", "agent");
+  let runs = 0;
+  core.createCard({ title: "Taken by an agent in a session" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  core.claimCard(1, {}, inASession.id);
+  core.requestAttention(1, { to: owner.id, note: "which repo should I use?" }, inASession.id);
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      yield { type: "result", ok: true };
+    }),
+  });
+
+  const interrupted = untilEvent((e) => e.cardId === 1 && e.type === "run_interrupted");
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims(runnerMember.id)).toEqual([1]);
+  await interrupted;
+  await Bun.sleep(200);
+
+  expect(core.getCard(1).attention).toMatchObject({
+    to: owner.id,
+    raisedBy: inASession.id,
+    note: "which repo should I use?",
   });
   expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
   expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
@@ -1439,7 +1480,7 @@ test("a question stands when the lease lapses", async () => {
 
   const abandoned = untilEvent(commentContaining(1, "run abandoned"));
   at += 10 * 60_000;
-  core.sweepClaims();
+  core.sweepClaims(runnerMember.id);
   await abandoned;
   await Bun.sleep(200);
 
@@ -2436,7 +2477,7 @@ test("an ending that cannot park either releases nothing: the lease lapses inste
 
   // And `run_interrupted` lands when the lease lapses, as 009 intends.
   at += 10 * 60_000;
-  core.sweepClaims();
+  core.sweepClaims(runnerMember.id);
   expect(core.getCard(1).activity.map((e) => e.type)).toContain("run_interrupted");
 });
 

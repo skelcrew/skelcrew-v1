@@ -1402,6 +1402,26 @@ test("a tab in a note is escaped in the status column, and the titles still line
 });
 
 /**
+ * A note that opens with a blank line has nothing on its literal first line, and
+ * `waiting on you:` followed by nothing says less than the marker did. The column carries the
+ * note's first line with something on it.
+ */
+test("a note that starts with a newline shows its first line with something on it", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  const card = core.createCard({ title: "Led with a blank line" }, simon);
+  core.moveCard(card.id, "code", simon);
+  core.requestAttention(card.id, { to: simon, note: "\nallow Bash?" }, agent.id);
+
+  expect(lines(await ok(["ls"]))[0]).toContain("waiting on you: allow Bash?");
+  expect((await ok(["show", String(card.id)])).stdout.split("\n")[1]).toBe(
+    "now:     waiting on you: allow Bash?",
+  );
+  // The whole note, blank first line and all, is still on the card.
+  expect(core.getCard(card.id).attention?.note).toBe("\nallow Bash?");
+});
+
+/**
  * A board with nothing to say about any card holds no status column at all: the cell is a
  * column, and a column of nothing but padding still pushes every title right.
  */
@@ -1413,34 +1433,6 @@ test("no card with a status means no status column, and the title follows the ph
     `   #1  ${TRACK.idea}  Idea  Idea one`,
     `   #2  ${TRACK.idea}  Idea  Idea two`,
   ]);
-});
-
-/**
- * `--json` prints the daemon's result and never calls the renderer, so it must not need what
- * only the renderer needs: the member names the status column puts after `waiting on`. Driven
- * as an agent, because `hello` lists the members for a human and this asks what `ls` fetches.
- */
-test("ls --json does not need the member list the status column renders with", async () => {
-  const simon = member("simon").id;
-  core.ensureMember("crew-1", "agent");
-  core.createCard({ title: "On the board" }, simon);
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
-  extraDirs.push(home);
-  const withoutMembers: Core = {
-    ...core,
-    listMembers: () => {
-      throw new Error("no member list here");
-    },
-  };
-  const server = startServer({ core: withoutMembers, socketPath: join(home, "skelcrew.sock") });
-  extraServers.push({ stop: () => server.stop() });
-
-  const asJson = await ok(["ls", "--json", "--as", "crew-1"], { dataDir: home });
-  expect(json<Card[]>(asJson)).toEqual(core.listCards());
-  // The text board is what needs the names, and it says so rather than inventing one.
-  expect(await failed(1, ["ls", "--as", "crew-1"], { dataDir: home })).toContain(
-    "no member list here",
-  );
 });
 
 /** Criterion 3: the same status text, as the header's second line. */
@@ -1490,7 +1482,8 @@ test("show renders the sweep's withdrawal as resolved attention: interrupted", a
   core.claimCard(card.id, { ttlSeconds: 10 }, agent.id);
   core.requestAttention(card.id, { to: simon, note: "allow Bash?" }, agent.id);
   clockOffsetMs = 0;
-  expect(core.sweepClaims()).toEqual([card.id]);
+  // The daemon names the member whose claims are runs; `crew-1` holds this one, so it plays it.
+  expect(core.sweepClaims(agent.id)).toEqual([card.id]);
 
   const shown = await ok(["show", String(card.id)]);
   const resolved = lines(shown).find((line) => line.includes("resolved attention"));

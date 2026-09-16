@@ -99,6 +99,11 @@ function marker(card: Card, me: number, now: number): string {
  * The widest the status column gets, in characters — a screen column, so the cut is by
  * character and never by bytes. A longer status, which in practice is a waiting note, is cut
  * to it; the whole note is on the card, which `show` and `queue` print.
+ *
+ * Known limitation: the column is padded in UTF-16 units, so a note with wide characters in it
+ * — `日本語のメモです` is 8 of them and twice that many terminal cells — pushes that row's title
+ * right of the others. 026's TUI needs a display-width measure of its own, and this column
+ * should adopt it then.
  */
 export const STATUS_WIDTH = 40;
 
@@ -118,9 +123,14 @@ function clockTime(ms: number): string {
   return formatTime(ms).slice(-5);
 }
 
-/** A stored multi-line field's first line, as one line: what a status column can carry. */
+/**
+ * A stored multi-line field's first line with something on it, as one line: what a status
+ * column can carry. A note that opens with a blank line — or with nothing but blank lines —
+ * would otherwise leave `waiting on you:` with nothing after it.
+ */
 function firstLine(text: string): string {
-  return oneLine(text.split("\n")[0] ?? "");
+  const line = text.split("\n").find((candidate) => candidate.trim().length > 0) ?? "";
+  return oneLine(line);
 }
 
 function claimable(phase: Phase): boolean {

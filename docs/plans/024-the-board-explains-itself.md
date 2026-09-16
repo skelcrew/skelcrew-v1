@@ -187,3 +187,86 @@ pins the spacing on an all-Idea board.
   one in `contracts.test.ts`, three in `cli.test.ts`), so the suite stood at 769 before it.
 - `bun run check:harness` — not run, and not required: this round changes no playbook and not
   the runner's fixed allowlist.
+
+## Fix round 2 — plan
+
+1. Core: `sweepClaims(runnerId?)` withdraws only when `claim.by === runnerId`; the member-kind
+   test and the unreachable holder guard go. `sweep.ts` forwards the id; `main.ts` supplies the
+   runner member's id, and nothing with `SKELCREW_RUNNER=0`.
+2. CLI: `ls` goes back to fetching `listMembers` unconditionally and knows nothing about
+   `--json`; the round-1 test that pinned the reversed design is removed.
+3. `render.ts`: `firstLine` falls back to the first non-empty line; `STATUS_WIDTH`'s comment
+   records the UTF-16 padding limitation for 026.
+
+Files: `packages/daemon/src/core/core.ts`, `packages/daemon/src/sweep.ts`,
+`packages/daemon/src/main.ts`, `packages/cli/src/commands/ls.ts`, `packages/cli/src/render.ts`,
+`packages/shared/src/types.ts`, and their tests.
+
+### Fix round 2 — what changed
+
+**1 (must fix) — the withdrawal asked the wrong question.** It asked whether the holder was a
+human; what it needed was whether the claim was a run the runner heartbeats, and the core cannot
+tell those apart on its own. An agent member that claims a card in a live session and asks the
+owner a question looks exactly like a run, so round 1's defect survived for agent members: the
+question was cleared 120 seconds later and the runner started a competing run on the card.
+
+`sweepClaims(runnerId?)` now takes the member whose claims are runs and withdraws only when
+`claim.by === runnerId` and `attention.raisedBy === claim.by`. `sweep.ts` forwards the id;
+`main.ts` sets it where it joins the runner member (`core.ensureMember(RUNNER_MEMBER_NAME, …)`)
+and leaves it unset with `SKELCREW_RUNNER=0` or outside a repository, so such a daemon withdraws
+nothing. The member-kind test in the core is gone, and with it the `holder !== undefined` guard
+and the fail-closed comment the reviewer showed was unreachable; `selectMember` is no longer read
+by the sweep. `types.ts`'s justification for `interrupted` says the runner's, not a non-human's.
+
+Pinned by four core cases and one runner case:
+`core.test.ts`'s "sweepClaims leaves an agent member's own hand-made request standing" (red
+first: the request was gone, `Matcher error: received value must be a non-null object`),
+"sweepClaims with no runner id withdraws nothing, even the holder's own request" (red the same
+way), the kept "sweepClaims leaves the owner's own request standing" and the renamed "sweepClaims
+withdraws the runner's own request as interrupted", both now naming the runner explicitly; and
+`contracts.test.ts`'s "a lapsed claim held by an agent member over the CLI withdraws nothing, and
+no run starts", which is criterion 5's third half through the real runner. That last one was run
+against the old kind-based rule to see it red, and it failed exactly as the review described —
+the agent's question replaced by the runner's own `run finished without a spec` request:
+
+```
+- "note": "which repo should I use?", "raisedBy": 4,
++ "note": "run finished without a spec; the work is in …/worktrees/1", "raisedBy": 2,
+```
+
+`sweep.test.ts` gains "a sweep passes the runner's member id on, and nothing when there is no
+runner" for the forwarding. Criterion 4's runner test still passes: the runner's claims carry the
+runner's id, and the daemon's sweep is the caller that names it. Every other `sweepClaims` caller
+in the tests now passes the runner's id where the daemon would; `db.test.ts`'s and
+`protocol.test.ts`'s calls sweep no request and were left alone.
+
+**2 (minor) — `ls` branched on its output mode.** `run` returned `render: () => ""` for `--json`,
+which is correct only because `main.ts` never calls the renderer then, and the `Command` contract
+exists so that `run` need not know. `ls.ts` is back to its earlier shape: it fetches `listMembers`
+unconditionally the way `queue` does, knows nothing about `--json`, and passes `input` to
+`listCards` again. Round 1's test "ls --json does not need the member list the status column
+renders with" is **removed**: it pinned the design being reversed — with members fetched
+unconditionally, `ls --json` against a core whose `listMembers` throws fails, which is what `queue`
+does too. The cost is one round trip `--json` does not use, which is the shape the repository
+already has.
+
+**3 (minor) — three width units mixed in one column.** Not fixed, as directed: the limitation is
+recorded beside `STATUS_WIDTH` instead. `cut` counts code points, `padEnd` counts UTF-16 units and
+the terminal counts display cells, so a note of wide characters pushes that row's title right.
+026's TUI needs a display-width measure and this column should adopt it then.
+
+**4 (minor) — a note that begins with a newline.** `firstLine` took the literal first line, so
+`waiting on you:` rendered with nothing after it. It now takes the first line with something on
+it. Pinned by `cli.test.ts`'s "a note that starts with a newline shows its first line with
+something on it", red first with
+`Received: "!  #1  ○○●○○  Code  waiting on you:   Led with a blank line"`, and asserted on both
+`ls` and `show`'s `now:` line with the whole note still on the card.
+
+### Checks
+
+- `bun run check` — passes: `biome ci .` clean over 90 files, `tsc` clean in all three packages,
+  `778 pass / 0 fail` across 29 files. The suite stood at 774 after round 1: four cases are new
+  (two in `core.test.ts`, one in `sweep.test.ts`, one in `contracts.test.ts`, one in
+  `cli.test.ts`) and one was removed.
+- `bun run check:harness` — not run, and not required: this round changes no playbook and not the
+  runner's fixed allowlist.
