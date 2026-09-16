@@ -416,6 +416,121 @@ test("with SKELCREW_DIR set but no repository around the cwd, the daemon serves 
   expect(await daemon.stderr()).toContain("not inside a git repository");
 });
 
+// --- an interrupted run's own question (024) ---
+
+/**
+ * The daemon's own wiring, not the core's: which member's claims are runs is known only here,
+ * where the runner member is created, and `main.ts` hands it to the sweep. Nothing below is
+ * faked — a real daemon with the runner on, a real lapse, and the daemon's own sweep timer.
+ *
+ * The card is set up the way the live runner sets it up: 006's handoff leaves a request the
+ * runner member raised, on a card in Spec with no claim, and the runner leaves that card alone
+ * while the request is open — so the claim taken here is uncontested. A client that says
+ * `runner`/`agent` is that same member, because `ensureMember` is by name and kind.
+ */
+test("the daemon's sweep takes an interrupted run's own question with it, and the runner takes the card again", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+  const owner = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await owner.subscribe((event) => events.push(event));
+
+  const card = await owner.call("createCard", { title: "Add login page" });
+  await owner.call("moveCard", { id: card.id, phase: "spec" });
+  await until(
+    () => events.find((e) => e.type === "attention_requested"),
+    10_000,
+    "the runner raised no request",
+  );
+
+  const runner = await connect(socketPath, { kind: "agent", name: "runner" });
+  const members = await owner.call("listMembers", {});
+  expect(members.find((m) => m.name === "runner" && m.kind === "agent")?.id).toBe(runner.member.id);
+  const waiting = await owner.call("getCard", { id: card.id });
+  expect(waiting.attention?.raisedBy).toBe(runner.member.id);
+
+  // The run that asked goes away with its lease: claimed as the runner, at the shortest TTL
+  // the core allows, and never heartbeated.
+  const claimed = await runner.call("claimCard", { id: card.id, ttlSeconds: 10 });
+  const expiresAt = claimed.claim?.expiresAt as number;
+  await runner.close();
+
+  // Bounded: the lapse plus the sweep's interval and some slack, never longer.
+  const budget = expiresAt - Date.now() + 20_000;
+  const resolved = await until(
+    () => events.find((e) => e.type === "attention_resolved"),
+    budget,
+    "the daemon's sweep withdrew nothing",
+  );
+  expect(resolved).toMatchObject({
+    type: "attention_resolved",
+    cardId: card.id,
+    actorId: runner.member.id,
+    data: { how: "interrupted" },
+  });
+
+  // Free in its phase again, so the runner takes it on the next scan; with the request still
+  // open it could not have, because a card with one is never ready.
+  const retaken = await until(
+    () => events.find((e) => e.type === "claimed" && e.seq > resolved.seq),
+    10_000,
+    "the runner did not take the card again",
+  );
+  expect(retaken.actorId).toBe(runner.member.id);
+
+  const detail = await owner.call("getCard", { id: card.id });
+  const types = detail.activity.map((e) => e.type);
+  const lapse = types.indexOf("run_interrupted");
+  expect(types[lapse + 1]).toBe("attention_resolved");
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+}, 60_000);
+
+test("with SKELCREW_RUNNER=0 a lapse withdraws nothing: there are no runs to withdraw", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir, runner: false });
+  await daemon.firstLine();
+  const owner = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await owner.subscribe((event) => events.push(event));
+  // The same member name the daemon's runner would have, and the same shape of request: with
+  // no runner the daemon names none, so no claim's holder is a run's.
+  const runner = await connect(socketPath, { kind: "agent", name: "runner" });
+
+  const card = await owner.call("createCard", { title: "nobody runs this" });
+  await owner.call("moveCard", { id: card.id, phase: "spec" });
+  const claimed = await runner.call("claimCard", { id: card.id, ttlSeconds: 10 });
+  const expiresAt = claimed.claim?.expiresAt as number;
+  await runner.call("requestAttention", {
+    id: card.id,
+    to: owner.member.id,
+    note: "allow Bash(bun test)?",
+  });
+  await runner.close();
+
+  const budget = expiresAt - Date.now() + 20_000;
+  await until(
+    () => events.find((e) => e.type === "run_interrupted"),
+    budget,
+    "the daemon's sweep did not expire the claim",
+  );
+  const detail = await owner.call("getCard", { id: card.id });
+  expect(detail.claim).toBeNull();
+  expect(detail.attention?.note).toBe("allow Bash(bun test)?");
+  expect(detail.activity.map((e) => e.type)).toEqual([
+    "card_created",
+    "card_moved",
+    "claimed",
+    "attention_requested",
+    "run_interrupted",
+  ]);
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+}, 60_000);
+
 // --- the merge poll's interval (018) ---
 
 /**

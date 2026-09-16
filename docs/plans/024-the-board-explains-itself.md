@@ -270,3 +270,65 @@ something on it", red first with
   `cli.test.ts`) and one was removed.
 - `bun run check:harness` — not run, and not required: this round changes no playbook and not the
   runner's fixed allowlist.
+
+## Fix round 3 — plan
+
+One Important finding: the daemon-level wiring (`main.ts` passing the runner's id into
+`sweepTick`) has no test, so removing it leaves every check green. Plan:
+
+1. A daemon-level test in `packages/daemon/src/server/process.test.ts`, following its patterns:
+   a real daemon with the runner on and `SKELCREW_AGENT=none`, a real lapse, the daemon's own
+   five-second sweep.
+2. The orchestrator's script claims a card in Idea; Idea is not claimable
+   (`packages/shared/src/phases.ts:39`, `core.ts:806`), so the card is set up the way the live
+   runner itself sets it up: 006's handoff leaves the card in Spec with a request the runner
+   member raised and no claim, and the live runner will not touch it while that request is open
+   (`runner.ts` `isReady`). A client that says `runner`/`agent` *is* that member, so it claims
+   with a 10 s TTL (the minimum) and goes away.
+3. The control beside it: the same lapse under `SKELCREW_RUNNER=0`, where the request stands.
+4. Red first by removing `runnerId` from `main.ts`'s `sweepTick` call, then restoring it.
+
+Files: `packages/daemon/src/server/process.test.ts` only, plus this record.
+
+## Fix round 3 — what changed
+
+**1 (important) — the daemon-level wiring had no test.** Fixed in
+`packages/daemon/src/server/process.test.ts` with two tests against a real daemon.
+
+"the daemon's sweep takes an interrupted run's own question with it, and the runner takes the
+card again" spawns the daemon on a temp repo with the runner on and `SKELCREW_AGENT=none`, lets
+006's handoff leave the card in Spec with a request the runner member raised, binds a second
+client as `runner`/`agent` (asserting its id *is* the daemon's runner member), claims at the
+minimum 10 s TTL and closes, then waits for the daemon's own five-second sweep. It asserts
+`attention_resolved` with `{ how: "interrupted" }` attributed to the runner, that it follows
+`run_interrupted` in the card's activity, and that the runner claims the card again afterwards —
+which it could not while a request was open, so the re-claim is the proof the request went.
+
+The orchestrator's script had the card claimed in Idea, which `claimCard` refuses (Idea is not
+claimable); the handoff's own leftovers give the same shape in a phase that can be claimed, and
+the live runner does not contest it because a card with an open request is never ready.
+
+The control beside it, "with SKELCREW_RUNNER=0 a lapse withdraws nothing", runs the same lapse on
+a daemon with no runner: the sweep expires the claim and the request stands, with the whole
+activity asserted.
+
+Red first, by removing `runnerId` from `main.ts`'s `sweepTick` call:
+
+```
+error: the daemon's sweep withdrew nothing within 30000 ms
+(fail) the daemon's sweep takes an interrupted run's own question with it, and the runner takes
+the card again [30150.46ms]
+```
+
+The control passed under the same mutation, as a control should. `main.ts` was then restored
+unchanged (`git diff packages/daemon/src/main.ts` empty) and both tests pass.
+
+### Checks
+
+- `bun run check` — passes: `biome ci .` clean over 90 files, `tsc` clean in all three packages,
+  `780 pass / 0 fail` across 29 files. The suite stood at 778 after round 2; both new cases are
+  the ones above, and nothing was removed or changed.
+- `packages/daemon/src/server/process.test.ts` run three times over: `18 pass / 0 fail` each
+  time, because both new cases wait on real clocks.
+- `bun run check:harness` — not run, and not required: this round changes no playbook and not the
+  runner's fixed allowlist.
