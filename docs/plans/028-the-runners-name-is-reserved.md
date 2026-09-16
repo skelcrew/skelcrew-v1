@@ -189,3 +189,38 @@ Ran 804 tests across 29 files. [81.43s]
 
 803 tests before this round, 804 after: the one new process test. `check:harness` was not run
 again — this round touched no playbook and not `allowlist.ts`.
+
+## Fix round 2 (post-approval)
+
+Review round 2 approved the spec's implementation with three Minors. Two are taken here; the
+third is recorded, not changed.
+
+**1. The runner-on test's comment claimed more than its assertion shows** (`process.test.ts`).
+`expect(members.filter(… name === "runner" …)).toHaveLength(1)` cannot prove the refused `hello`
+created nothing: a `hello` that succeeded would have joined the *same* member, leaving the count
+at 1. The reviewer confirmed it by mutation — with the reservation off only the `RpcError`
+expectation failed. Comment reworded to say what the count does show (the daemon's own member
+came through intact) and that the refusal is proven by the thrown `RpcError`. No assertion
+changed; the test still makes 7 `expect()` calls.
+
+**2. Three CLI stand-in servers reserved nothing** (`cli.test.ts:724`, `:1734`, `:1829`). Each
+stands in for the repo's daemon, so each should reserve what the real daemon reserves; a future
+CLI test written against one of them could have said `hello` as `runner` and passed. All three
+now pass `[RUNNER_MEMBER_NAME]`, matching the shared server at `:54` and `main.ts:101`. `[]`
+stays only where a server deliberately reserves nothing: `server.test.ts:22` and the timed
+server in `protocol.test.ts:957`. `protocol.test.ts`'s shared server already reserves
+`"runner"` and is unchanged.
+
+**3. The second `openCore` handle with `busy_timeout = 0`** (`process.test.ts:461-464`) —
+recorded only, as agreed. It is already commented at the call site; the orchestrator carries it
+to `docs/MILESTONES.md`.
+
+```
+$ bun run check
+ 804 pass
+ 0 fail
+Ran 804 tests across 29 files. [75.84s]
+```
+
+Same 804 tests as round 1 — this round changed a comment and three fixtures, and added no test.
+`check:harness` not run again: no playbook and no `allowlist.ts` change.

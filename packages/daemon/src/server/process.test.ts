@@ -619,8 +619,10 @@ test("with the runner on the socket refuses hello as the runner, whose member th
   expect(refused.message).toContain("the daemon's own");
 
   const owner = await connect(socketPath, { kind: "human" });
-  // One runner member, the one the running runner made in-process; the refused `hello` made
-  // none. Every other agent name joins as before.
+  // The refusal is the `RpcError` above; this count shows the daemon's own member came through
+  // it intact — still exactly one `runner`, the one the runner made in-process. (It cannot show
+  // that no member was created: a `hello` that succeeded would have joined that same member.)
+  // Every other agent name joins as before.
   const members = await owner.call("listMembers", {});
   expect(members.filter((m) => m.name === "runner" && m.kind === "agent")).toHaveLength(1);
   const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
