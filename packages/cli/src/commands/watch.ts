@@ -1,5 +1,4 @@
-import type { Activity, Member } from "@skelcrew/shared";
-import { notify, selectNotifier } from "../notify";
+import { type Activity, type Member, notify, selectNotifier } from "@skelcrew/shared";
 import { activityLine, formatId, oneLine } from "../render";
 import { type Command, flag, noExtraPositionals, string, UsageError } from "./command";
 
