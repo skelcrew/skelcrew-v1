@@ -40,6 +40,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 24 | 027 Acting from the screen | specified |
 | 25 | 028 The runner's name is reserved | landed, PR #26 — two review rounds; the spec's test setup could not work with the runner on, amended |
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
+| 27 | 030 The screen starts the daemon | specified |
+| 28 | 031 The arrow keys move the cursor | specified |
 | | 005 | dropped |
 
 ## Background
@@ -1135,6 +1137,42 @@ both versions and diffing.
   023 (`SKELCREW_NOTIFY`) and again here (`SKELCREW_RUNS`, `SKELCREW_RUN_MINUTES`); the rule is
   now in both helpers' doc comments. A new setting has three places to add itself: the
   parser, the startup file's comment, and the helpers.
+
+## 030 — The screen starts the daemon
+
+Found the first time the owner typed `skelcrew` after 026 landed: `no daemon is listening`.
+The screen is meant to be the default experience, and it costs two terminals to open — one for
+`bun run daemon`, one for the board — which is more than the positioning allows (adding a card
+must cost less than opening a terminal tab). Decided by the owner on 2026-09-16: there is one
+command. `skelcrew` in a terminal starts the daemon when none is listening and opens the screen
+over it; `skelcrew --headless` is the daemon alone, in the foreground, for an always-on machine
+or a second terminal; `bun run daemon` goes away.
+
+The daemon stays the product and the client stays thin: the CLI starts the daemon as a child
+process and never loads its code, so the SDK stays out of the CLI's process and the internal
+seam is untouched. What the spec has to settle is the daemon's life. The rule chosen with the
+owner: **a daemon the screen started stops itself when nothing needs it** — no client connected
+and no run live — so `q` with nothing running takes the daemon with it, and `q` with runs in
+flight leaves them to finish and says so on the way out. A `--headless` daemon never stops
+itself. Three catches, read off the code: the daemon's stdout is no longer a terminal under the
+screen, so 023's bell and desktop notification are off there (the screen shows the request;
+`watch` stays the ping; a ping from the screen is its own small spec); 018's merge poll stops
+with the daemon, so a merged pull request lands in Done the next time the screen opens rather
+than within a minute; and the daemon must outlive the terminal it was started from while a run
+is live, or closing a window becomes a `run_interrupted`.
+
+Piped and scripted invocations — every command, `watch`, bare `skelcrew` without a terminal,
+and therefore every agent — never start a daemon. Their error keeps saying what to run.
+
+## 031 — The arrow keys move the cursor
+
+Asked for by the owner on 2026-09-16, the first day of using the screen: `Up` and `Down` beside
+`k` and `j`, the way they work in nvim. 026 put arrow-key navigation out of scope by decision,
+and its design choice — no navigation that *needs* the arrow keys — still stands: `j`/`k` keep
+working everywhere and nothing is reachable by arrows alone. The decoder in `board.ts` today
+drops every escape sequence; 031 reads exactly the four byte sequences the two keys send and
+maps them onto the moves the reducer already makes. In the prompt they do nothing and never
+become text. `Left`, `Right`, `Page Up` and the rest stay uninterpreted.
 
 ## Later, deliberately unplanned
 
