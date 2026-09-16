@@ -143,3 +143,14 @@ The verifier also found by mutation that every new test is load-bearing (six mut
 caught), that the widened 015 tripwire refuses a third control character and an escape spelled
 in any other board file, and that the new `cli.test.ts` case is green on base (it guards
 existing behaviour, not new).
+
+### Re-verification — VERIFIED
+
+The spec author corrected criterion 2 and the two matching sentences in the branch: piped bare
+`skelcrew` prints the queue and exits 0. `origin/main` (028, 029) merged in cleanly. A fresh
+verifier ran `bun run check` on the merged tree (Biome clean, three packages typecheck, 832
+pass, 0 fail), confirmed piped bare `skelcrew` is byte-identical to the base binary's output
+against the same daemon, opened the screen under a real pseudo-terminal, wrote escape
+sequences into a card's title in SQLite and saw them rendered as text, and re-ran eight
+mutations, each caught. No build step or CI is configured; `check:harness` not applicable.
+MILESTONES untouched by instruction: the landing entry is the human's.
