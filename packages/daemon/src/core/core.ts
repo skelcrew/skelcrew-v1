@@ -89,7 +89,9 @@ export interface Core {
   releaseCard(id: number, options: { reason?: string }, actorId: number): Card;
   /**
    * Expires every lapsed claim, recording `run_interrupted` attributed to its former
-   * holder. The daemon's periodic call, not a member action. Returns the affected ids.
+   * holder, and withdrawing that holder's own open request as `interrupted` — a question
+   * nothing can answer once the run is gone. A request raised by any other member stands.
+   * The daemon's periodic call, not a member action. Returns the affected ids.
    */
   sweepClaims(): number[];
 
@@ -887,6 +889,17 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
             type: "run_interrupted",
             data: { by: claim.by, expiresAt: claim.expiresAt },
           });
+          // A request the lapsed holder raised goes with the claim: nothing answers a question
+          // once the run that asked it is gone, and the card would otherwise be neither running
+          // nor queued until a member cleared it by hand. A request raised by anyone else — the
+          // agent's own question, the owner's note — stands, because it can still be answered.
+          if (card.attention !== null && card.attention.raisedBy === claim.by) {
+            updateAttention.run(null, at, card.id);
+            log(card.id, claim.by, {
+              type: "attention_resolved",
+              data: { how: "interrupted" },
+            });
+          }
         }
         return lapsed.map((card) => card.id);
       });

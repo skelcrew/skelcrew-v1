@@ -1776,6 +1776,58 @@ describe("claims", () => {
     expect(core.listCards().every((card) => card.claim === null)).toBe(true);
   });
 
+  /**
+   * 024. A run that lapsed while waiting on its own question leaves a question nothing can
+   * answer — `resolve -m allow` allows no tool once the run is gone — and the card sits on it.
+   * So the sweep takes that request with the claim: one more fact about the same lapse, and
+   * the only actor the core would let clear a request addressed to the owner.
+   */
+  test("sweepClaims withdraws the lapsed holder's own request as interrupted", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 10 }, agent.id);
+    core.requestAttention(
+      card.id,
+      { to: owner.id, note: "allow Bash? (skelcrew resolve 1 -m allow | …)" },
+      agent.id,
+    );
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims()).toEqual([card.id]);
+
+    expect(core.getCard(card.id).attention).toBeNull();
+    expect(core.getCard(card.id).claim).toBeNull();
+    const since = core.activitySince(seqBefore);
+    expect(since.map((e) => [e.type, e.actorId])).toEqual([
+      ["run_interrupted", agent.id],
+      ["attention_resolved", agent.id],
+    ]);
+    expect(since[1]).toMatchObject({ cardId: card.id, data: { how: "interrupted" } });
+    // The card is free in its phase: back in the queue is a status, not a move.
+    expect(core.getCard(card.id).phase).toBe("code");
+  });
+
+  test("sweepClaims leaves a request raised by anyone but the lapsed holder standing", () => {
+    const mine = cardIn("code");
+    const theirs = cardIn("code");
+    core.claimCard(mine.id, { ttlSeconds: 10 }, agent.id);
+    core.claimCard(theirs.id, { ttlSeconds: 10 }, agent.id);
+    // The agent's own `skelcrew attention` question, raised as another member; and the owner's.
+    core.requestAttention(mine.id, { to: owner.id, note: "which repo?" }, other.id);
+    core.requestAttention(theirs.id, { to: other.id, note: "have a look", moves: [] }, owner.id);
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims()).toEqual([mine.id, theirs.id]);
+
+    expect(core.getCard(mine.id).attention).toMatchObject({ raisedBy: other.id });
+    expect(core.getCard(theirs.id).attention).toMatchObject({ raisedBy: owner.id });
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual([
+      "run_interrupted",
+      "run_interrupted",
+    ]);
+  });
+
   test("sweepClaims with no claims at all returns nothing and records nothing", () => {
     cardIn("spec");
     const before = core.activitySince(0);

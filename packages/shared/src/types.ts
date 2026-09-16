@@ -128,11 +128,18 @@ export type ActivityEvent =
   /** The claim lapsed. Attributed to the former holder, `by`; the sweep is not a member. */
   | { type: "run_interrupted"; data: { by: number; expiresAt: number } };
 
-/** How an open request went away. The resolving actor is the event's `actorId`. */
+/**
+ * How an open request went away. The resolving actor is the event's `actorId`.
+ *
+ * `interrupted` is the sweep's: a request raised by a claim's holder goes with the claim when
+ * the lease lapses, because nothing can answer a question the run that asked it no longer
+ * exists to hear. Attributed to the former holder, as `run_interrupted` is.
+ */
 export type AttentionResolution =
   | { how: "moved"; phase: Phase }
   | { how: "archived" }
-  | { how: "answered" };
+  | { how: "answered" }
+  | { how: "interrupted" };
 
 export type ActivityType = ActivityEvent["type"];
 

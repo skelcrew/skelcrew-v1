@@ -944,6 +944,121 @@ test("a lapsed lease abandons the run and returns the card to its queue as run_i
   expect(runs).toBe(2);
 });
 
+/**
+ * 024, criteria 4 and 5. A run that lapsed while waiting on its own permission question used to
+ * leave that question open and addressed to the owner, where nothing could answer it —
+ * `resolve -m allow` allows no tool once the run is gone — so the card was neither running nor
+ * queued until the owner cleared it by hand. The sweep now takes the question with the claim,
+ * and only that one: a question anyone else raised can still be answered, so it stands.
+ *
+ * A core on a clock the test moves, so a lease lapses without anyone sleeping.
+ */
+function onAFakeClock(): { now: () => number; tick(ms: number): void } {
+  let at = Date.now();
+  const now = (): number => at;
+  core.close();
+  core = openCore(":memory:", { owner: "simon", now });
+  owner = core.listMembers()[0] as Member;
+  runnerMember = core.ensureMember("runner", "agent");
+  crewMember = core.ensureMember("crew", "agent");
+  return {
+    now,
+    tick(ms) {
+      at += ms;
+    },
+  };
+}
+
+test("a lapsed lease takes the run's own question with it, and the card is claimed again", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  let runs = 0;
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* (options) {
+      runs += 1;
+      if (runs > 1) {
+        yield { type: "result", ok: true };
+        return;
+      }
+      // A tool outside the fixed list: a question on the card, which this run waits for.
+      void options.canUseTool("Bash", { command: "rm -rf build" });
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }),
+  });
+  core.createCard({ title: "Asked and slept" }, owner.id);
+  const asked = untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
+  core.moveCard(1, "spec", owner.id);
+  await asked;
+  expect(core.getCard(1).attention?.raisedBy).toBe(runnerMember.id);
+
+  const seqBefore = core.getCard(1).activity.at(-1)?.seq ?? 0;
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims()).toEqual([1]);
+
+  // The sweep is one synchronous mutation, so this is the card the moment it swept.
+  expect(core.getCard(1).attention).toBeNull();
+  expect(core.getCard(1).claim).toBeNull();
+  expect(core.getCard(1).phase).toBe("spec");
+  const swept = core.activitySince(seqBefore).filter((e) => e.cardId === 1);
+  expect(swept.map((e) => [e.type, e.actorId])).toEqual([
+    ["run_interrupted", runnerMember.id],
+    ["attention_resolved", runnerMember.id],
+  ]);
+  expect(swept[1]).toMatchObject({ data: { how: "interrupted" } });
+
+  await abandoned;
+  // Free in a claimable phase: the next scan claims it, and the second run ends normally.
+  await untilEvent((e) => e.cardId === 1 && e.type === "attention_requested");
+  expect(runs).toBe(2);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(2);
+  expect(comments(1).filter((text) => text.includes("run abandoned"))).toHaveLength(1);
+});
+
+test("a lapsed lease leaves the agent's own question standing, and the card is not claimed again", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  let runs = 0;
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* (options) {
+      runs += 1;
+      yield { type: "text", text: "working" };
+      await new Promise<void>((resolve) => {
+        if (options.signal.aborted) resolve();
+        else options.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }),
+  });
+  core.createCard({ title: "Asked for itself" }, owner.id);
+  const working = untilEvent(commentContaining(1, "working"));
+  core.moveCard(1, "spec", owner.id);
+  await working;
+  // What `skelcrew attention` does from the worktree: the agent's own question, as `crew`.
+  agentAsks(1, "which repository should I use?");
+
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims()).toEqual([1]);
+
+  expect(core.getCard(1).attention).toMatchObject({
+    raisedBy: crewMember.id,
+    note: "which repository should I use?",
+  });
+  await abandoned;
+  await Bun.sleep(200);
+
+  // Still waiting on the owner, and so not ready: no second claim, and no second run.
+  expect(core.getCard(1).attention?.raisedBy).toBe(crewMember.id);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+  expect(runs).toBe(1);
+});
+
 // --- the agent acting on its own card ---
 //
 // 014 drove all three self-actions as the `runner` member, because the agent spoke as the
