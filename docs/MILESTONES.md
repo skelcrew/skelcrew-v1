@@ -32,6 +32,11 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 16 | 019 Code is reviewed before the owner sees it (008b) | landed, PR #17 — three review rounds; the milestone's premise that the playbook already looped was wrong |
 | 17 | 020 A conflicting pull request asks to go back to Code (008c) | landed, PR #18 — two review rounds; the daemon offers the move and does not make it |
 | 18 | 021 The agent inherits what its login needs | landed, PR #19 — the first real card's finding: the runner stripped `USER`, and the Keychain login needs it |
+| 19 | 022 A run explores without asking | landed, PR #20 — three review rounds, two on when a turn ends |
+| 20 | 023 A question is announced | specified |
+| 21 | 024 The board explains itself | specified |
+| 22 | 025 Several cards at once | specified |
+| 23 | 026 The board on one screen | specified; card 2 on the owner's own board is this |
 | | 005 | dropped |
 
 ## Background
@@ -741,6 +746,149 @@ the repository by the Code run that follows. All three playbooks now carry the r
 - **`USER` alone was verified on one machine.** Whether it suffices on every macOS version, and
   whether a subprocess can read the Keychain token without a prompt, are unverified. The
   owner's re-run of card 1 is criterion 7, performed after this landed.
+
+## 022 — A run explores without asking
+
+Landed as PR #20. Three runs on the first real evening asked five permission questions, every
+one a read the agent could have done with `Read`, `Glob` or `Grep`. The playbooks now say so:
+read with the tools, shell one command at a time, never joined or looped, and say in one
+sentence why a command that will ask is needed. The runner keeps that sentence and puts it on
+the question as a `why:` line, escaped and flattened, so the owner can answer from the queue
+without reading shell.
+
+Review round 1 found the sentence outliving its turn: it was cleared on an answer and at the
+session's end, but not when a turn ended on a tool result, so a reason from an earlier turn
+stood beside a later command. Fixed by clearing it at every turn boundary; the record's claim
+that "the stream carries no turn marker" was false, and is the kind of sentence 013–021 keep
+finding.
+
+**Carried findings.**
+
+- **Two questions raised in one turn share one sentence.** One text turn followed by two
+  tool calls in parallel gives two questions, each carrying the same `why:`, and the rendering
+  reads as if the sentence were about each command. Faithful to the spec, and disclosed; the
+  honest rendering for a shared sentence is different from a per-command one. For whichever
+  spec next touches the question note.
+- **Whether a real Spec run now finishes with no question is the owner's to observe.** The
+  claim rests on the playbook being read by a model; the next real card is the test.
+- **The harness runs some read-only shell without asking the daemon at all.** Review round 2
+  of 022 watched `sed -n 1,60p package.json` run under an empty allowlist without `canUseTool`
+  being consulted, while `curl … | sh` did reach it. That is 013's recorded flag-by-flag
+  recognition, wider than the daemon's list, and it means the card does not see every command a
+  run executes. Not a defect of 022; a note for whichever spec next audits what the harness
+  pre-approves, and for the harness check, which only asks whether a command *would* ask.
+- **A turn's end is not a single event.** 022's runner found out twice: a sentence outlived its
+  turn (round 1), then a sibling tool call's result ended the turn too early (round 2). The
+  stream carries no turn marker; the runner counts the turn's tool calls and their results.
+  If the driver ever changes what it emits for a denied call, that count is where to look.
+- **Sub-agents share the parent's turn.** `Agent` is pre-allowed, and a sub-agent's text and
+  tool calls arrive interleaved with the parent's in one stream and one counter, so with two
+  sub-agents running at once one's sentence could become the `why:` for the other's question.
+  Unverified (no nested-agent probe was built) and no playbook instructs sub-agents; recorded
+  by review round 3 so it is not rediscovered as a mystery.
+
+## 025 — Several cards at once
+
+The goal, stated by the owner on 2026-09-16 after the first real cards: the feeling of a team
+of developers working for you, not one contractor. Several cards move at the same time, each
+in its own worktree, each with its own agent, and the owner's queue fills from all of them.
+
+What stands in the way is one line of design from 006: the runner's job pump performs one job
+at a time. It was right then — the point was to prove claim, worktree and hand-off with no
+concurrency to confuse the evidence — and it has held through 019's review loop and 020's
+conflict bounce without change. Everything else was built so it could go: a claim is per card,
+a worktree is per card (`<data dir>/worktrees/<id>`), a branch is per card, a run log is per
+run, the review loop's budget lives in one claim's frame, and every gate the core keeps is a
+refusal about one card. Nothing shared between cards holds state in the runner except the pump.
+
+The shape: the runner takes up to N claims, N small and configurable (`SKELCREW_RUNS`, default
+to decide — two is a team, one is today), and runs each card's loop in its own worktree with its
+own subprocess. The scan claims the oldest ready cards up to the free slots; a card whose run
+ends frees its slot on the next scan. `stop()` tells every live run to stop and waits for all.
+
+Catches to settle in the spec, each found by reading the code rather than guessed:
+
+- **Git is one repository.** `git worktree add` and `worktree prune` take the repository lock;
+  two runs starting at once can collide. Serialise the *setup* steps (branch, worktree, allowlist
+  scan) through one queue and run only the agent sessions in parallel, which is where the time
+  goes.
+- **The allowlist scan reads one ref** (`refs/remotes/origin/<base>`) and 020's fix run fetches
+  it; a fetch during another run's scan is a read of a moving ref. Say whether that matters.
+- **The daemon's own stderr is one stream.** N runs warn into it interleaved; the card is the
+  record, so this is only the operator's console, but say so.
+- **The merge poll and the sweep are already per card** and need nothing.
+- **A single owner answering N questions** is exactly what 023 and 024 exist for; this
+  milestone should land after them, and after 022 has cut the questions down.
+- **The alive-but-stuck gap** (CLAUDE.md's Gas Town paragraph, herdr's three answers) gets N
+  times wider with N runs and is still not this milestone's.
+
+Out of scope for it: a second runner or a second machine (the internal seam, "Later");
+scheduling by priority or dependency between cards (they order by readiness, oldest first, as
+today); any change to gates, contracts or playbooks.
+
+**Carried finding, from this session's own workflow.** One Claude Code session runs one
+`/develop` at a time for the same reason the runner does: it sits in one worktree and its
+subagents inherit that. Parallel development of the repository today means a second session.
+The daemon is where the parallelism should live, which is this milestone.
+
+## 026 — The board on one screen
+
+The TUI, decided 2026-09-16 after the first evening of real use and a sketch of three shapes.
+Rows, never columns: cards render as rows with a phase track, as the settled architecture says,
+and the owner's own reason is the practical one — columns are awkward in a terminal, and moving
+between them is work the row layout does not ask for. Of the three shapes sketched (an inbox
+over the board; a board with a live pane for one card; a room with one pane per running agent),
+the first is the one to build, with one element borrowed from the third.
+
+**One screen, two halves, live.** The top half is the queue: what is waiting on the owner, one
+row each, with the card, the note's first line (022's `why:` where there is one), and the
+answers as single keys — `a` allows, `d` denies, `m` takes the offered move, `b` sends back,
+`Enter` opens the card. The bottom half is the board: every card as a row with its phase track,
+its status in words (024), and its title. Both halves redraw from the daemon's activity
+subscription, which `watch` already consumes; the TUI is a renderer over the same stream and a
+client of the same socket, holding no state of its own.
+
+**A running card's row shows the agent's last line.** The most recent text turn or tool
+summary the run posted, cut to the column, so the board moves while the crew works and a row
+that has not changed in ten minutes is a run worth looking at. This is the one thing 024's `ls`
+deliberately omits, because it needs the feed and `ls` does not fetch it; the TUI has the feed,
+so it carries it. With 025 in place several rows move at once, which is the team feeling.
+
+**The exit ramp is a key.** `o` opens the selected card's worktree in a terminal; every attention
+note already names the path.
+
+What it is not: a kanban, a place to write specs (the card's body is written by a run or by
+`skelcrew body`), or a second way to do anything the CLI cannot. Every key maps to one CLI call,
+so the two never disagree about what a gesture means.
+
+Catches for the spec to settle: where status is derived (024 derives it in the CLI's renderer;
+if the TUI recomputes it, the two can drift — move the derivation into the shared package, or
+have the TUI import the CLI's); the terminal library, on Bun (card 2's Spec run was probing
+raw-mode support on 2026-09-15, and its spec is the input here, not the plan — it was written
+before 022–025 and by an agent that was itself stopping every few minutes); and the per-card
+"last line", which the daemon does not keep and the TUI must build from the feed it subscribes
+to, so a TUI started late replays from `--since`.
+
+Order: after 022, 023, 024 and 025. A screen over a loop that stops silently is a nicer view
+of the same problem; after those four it is the thing that makes the tool feel like watching a
+team rather than debugging one.
+
+**Design choices, decided by the owner on 2026-09-16, and a spec that breaks one is wrong:**
+
+- **Opinionated defaults, almost no config.** One way to do things, chosen well. A settings
+  screen with twenty toggles is a failure. If a config file is ever needed, it is tiny and
+  human-readable; until then there is none, and the environment variables the daemon already
+  reads are the whole of the configuration.
+- **Keyboard only, vim-flavoured.** `j`/`k` to move, single-key actions, `?` shows the keys. No
+  mouse affordances, no navigation that needs the arrow keys.
+- **Fast and quiet.** Instant startup, no spinner theatre, no progress bars for things that take
+  200 ms. The status view looks calm with five agents running: rows change, nothing flashes.
+- **Fits the terminal it runs in.** It respects the terminal's theme rather than shipping its own
+  colours, looks right in Alacritty or Ghostty at a normal font size, and keeps unicode box
+  drawing restrained. The Omarchy aesthetic is the reference.
+- **Legible.** The owner should be able to read the source in an evening and understand the
+  loop. A small codebase, few dependencies, one language — which is also what the repository
+  says about itself, and what pi got right.
 
 ## Later, deliberately unplanned
 

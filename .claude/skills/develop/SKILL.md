@@ -36,6 +36,17 @@ not been met.
    Zero-pad a bare number to three digits before matching. If nothing matches, or more than
    one does, stop and list `docs/specs/` so the user can pick — never guess between candidates.
 
+   **Several specs at once.** The argument may name more than one spec — `022, 023 and 024`,
+   `022 023 024`, or a range `022-024`. Resolve every one of them by the rules above before
+   starting any; if one does not resolve, stop and list `docs/specs/` without starting the
+   others. Then run the whole of Stages 1–5 for each, in the order given, one at a time: the
+   next begins only when the previous one has reached its pull request, or has merged where the
+   user has delegated merging for this run. Each gets its own worktree, entered when its turn
+   comes and left when its pull request exists, so two implementations never share a tree.
+   Report after each one, not only at the end, so a failure in the second is not hidden behind
+   the first's success. Specs that touch the same files still run in this order; that is why
+   they are serial.
+
    Then read the **complete** specification. If the file does not exist, stop and ask. If it is
    missing required sections (see `docs/specs/README.md`), say so and stop — do not fill them
    in yourself.
