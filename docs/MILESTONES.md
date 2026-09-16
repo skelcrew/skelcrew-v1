@@ -36,7 +36,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 20 | 023 A question is announced | landed, PR #21 — three review rounds; `none` had no meaning until the first found it |
 | 21 | 024 The board explains itself | landed, PR #23 — three review rounds on one rule: whose lapsed claim takes its question with it |
 | 22 | 025 Several cards at once | landed, PR #22 — two review rounds, both in teardown; developed in parallel with 023 and 024 from three sessions |
-| 23 | 026 The board on one screen | specified; card 2 on the owner's own board is this |
+| 23 | 026 The board on one screen | specified; split on 2026-09-16 into the read-only screen (026) and acting from it (027); card 2 on the owner's own board is this |
+| 24 | 027 Acting from the screen | specified |
 | | 005 | dropped |
 
 ## Background
@@ -998,6 +999,20 @@ team rather than debugging one.
 - **Legible.** The owner should be able to read the source in an evening and understand the
   loop. A small codebase, few dependencies, one language — which is also what the repository
   says about itself, and what pi got right.
+
+## 027 — Acting from the screen
+
+The second half of 026, split out on 2026-09-16 a minute into 026's first development run,
+before anything was built. 026 is the screen read-only: open, watch, move, open a card, leave.
+027 puts the answers on the keys — `a`, `d`, `m`, `b`, `c` — with the one-line message prompt,
+and `o`, the exit ramp into a shell in the card's worktree. Every key is one CLI call through
+the same client the commands use.
+
+Why split: one large diff reviews worse than two small ones. 024 took three review rounds on
+one rule in a small diff; a screen's plumbing (raw mode, redraw, the subscription) and the keys
+that change cards are separable, and the plumbing should be reviewed on its own first. 026's
+tripwire that the board module makes no mutating call is removed by 027 and replaced by a table
+of every action against the call it makes.
 
 ## Later, deliberately unplanned
 
