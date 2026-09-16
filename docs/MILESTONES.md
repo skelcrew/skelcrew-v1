@@ -38,6 +38,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 22 | 025 Several cards at once | landed, PR #22 — two review rounds, both in teardown; developed in parallel with 023 and 024 from three sessions |
 | 23 | 026 The board on one screen | specified; split on 2026-09-16 into the read-only screen (026) and acting from it (027); card 2 on the owner's own board is this |
 | 24 | 027 Acting from the screen | specified |
+| 25 | 028 The runner's name is reserved | specified; 024's round-3 finding |
+| 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
 | | 005 | dropped |
 
 ## Background
@@ -1013,6 +1015,53 @@ one rule in a small diff; a screen's plumbing (raw mode, redraw, the subscriptio
 that change cards are separable, and the plumbing should be reviewed on its own first. 026's
 tripwire that the board module makes no mutating call is removed by 027 and replaced by a table
 of every action against the call it makes.
+
+## 028 — The runner's name is reserved
+
+024's round-3 finding: a client that says `hello` as an agent named `runner` is handed the
+daemon's own runner member, because members are found by name and kind and created when
+missing. It can then release or renew the real runner's leases, and after 024 its own lapsed
+claim takes its question with it. The daemon refuses that `hello`; `crew` stays joinable,
+because spawned agents join as it over the socket. A gate, not a boundary: the socket is local
+and the owner's `hello` needs no credential. 024's two daemon-level tests, which impersonate the
+runner to make a lapsing claim, are rewritten to pre-make the claim in the data directory
+before the daemon starts — which is a restart after a sleep, the scenario 024 was for.
+
+## 029 — The daemon's wiring is tested
+
+The finding 024 and 025 made on the same day: the startup file hands settings to parts, every
+part is tested with fakes, and deleting a handoff leaves every check green. 024 covered its own
+line; 025's `slots` is still uncovered. This spec observes `SKELCREW_RUNS=1` through the real
+daemon — the second card is claimed only after the first is released, an ordering on the cards
+— and writes the rule into `main.ts`: a setting that crosses the file is observed by a test that
+starts the daemon, or the comment beside it says why it cannot be. The run limit cannot be,
+under `none`; it is observed against the run instead, and a test-only driver is rejected.
+
+Landed as PR #24. Two process tests start the real daemon and show `SKELCREW_RUNS=1` claims
+the second card only after it has released the first, while the default claims both at once;
+the startup file states the rule at its top and every handoff names its test verbatim, the
+data directory and the announcer included. `main.ts` changed in comments only.
+
+Two review rounds. Round 1 found the test helper leaking `SKELCREW_RUNS` from the developer's
+shell: an exported `1` broke the control test and an exported `4` would have let it pass while
+testing nothing. Both helpers in the process tests now strip all seven settings the daemon
+reads unless the test sets them. Round 2 approved after mutating four of the five handoffs and
+confirming each named test fails, and proving the startup file comments-only by transpiling
+both versions and diffing.
+
+**Carried findings.**
+
+- **A pre-existing sweep test is load-sensitive.** "with `SKELCREW_RUNNER=0` a lapse withdraws
+  nothing" (024) timed out once at 30 seconds under the reviewer's parallel runs and passed on
+  every other run. Its budget is the lease plus 20 seconds against a 5-second sweep; a loaded
+  machine is where it bites.
+- **The comments quote test titles, and nothing enforces the link.** A renamed test silently
+  stales a comment in `main.ts`. A tripwire that greps the titles is possible; not worth it
+  until it goes stale once.
+- **Test helpers that spawn the daemon must strip every setting the daemon reads.** Found by
+  023 (`SKELCREW_NOTIFY`) and again here (`SKELCREW_RUNS`, `SKELCREW_RUN_MINUTES`); the rule is
+  now in both helpers' doc comments. A new setting has three places to add itself: the
+  parser, the startup file's comment, and the helpers.
 
 ## Later, deliberately unplanned
 

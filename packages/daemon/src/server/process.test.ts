@@ -93,6 +93,10 @@ const GIT_ENV: Record<string, string> = {
 /**
  * The runner is off unless a test turns it on: 003's tests are about the socket alone. No
  * test spawns a coding agent: `SKELCREW_AGENT=none` keeps the runner on 006's handoff.
+ *
+ * Every setting the daemon reads is dropped from the inherited environment first, and set
+ * back only by an option or by `env`: a test about a default is about the default, whatever
+ * the developer running it happens to export.
  */
 function spawnDaemon(options: {
   cwd: string;
@@ -110,6 +114,9 @@ function spawnDaemon(options: {
   env.SKELCREW_AGENT = options.agent ?? "none";
   if (options.mergePollSeconds === undefined) delete env.SKELCREW_MERGE_POLL_SECONDS;
   else env.SKELCREW_MERGE_POLL_SECONDS = options.mergePollSeconds;
+  delete env.SKELCREW_RUNS;
+  delete env.SKELCREW_RUN_MINUTES;
+  delete env.SKELCREW_NOTIFY;
   Object.assign(env, options.env ?? {});
   const proc = Bun.spawn([process.execPath, MAIN], {
     cwd: options.cwd,
@@ -662,6 +669,106 @@ test("a SKELCREW_RUNS that is not a count stops the daemon before it creates any
   expect(existsSync(join(dir, "data"))).toBe(false);
 });
 
+/** Every `claimed` and `released` a subscriber saw, in order, as `"<type> <card id>"`. */
+function claimsAndReleases(events: Activity[]): string[] {
+  return events
+    .filter((event) => event.type === "claimed" || event.type === "released")
+    .map((event) => `${event.type} ${event.cardId}`);
+}
+
+/**
+ * The count itself, through the real daemon rather than through `startRunner`'s options: the
+ * two tests below are what observes `main.ts` handing the parsed `SKELCREW_RUNS` on, and a
+ * daemon that dropped it on the floor and ran with the default would pass every other check.
+ *
+ * What a slot is worth is on the cards. With `SKELCREW_AGENT=none` a run is 006's handoff —
+ * claim, worktree, a request to the owner, release — and the scan claims synchronously while
+ * the worktree setup that follows does not, so with two slots both claims land before either
+ * run reaches its release, and with one the second card cannot be claimed until the first is
+ * released.
+ */
+test("with SKELCREW_RUNS=1 the daemon claims the second card only after it has released the first", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const daemon = spawnDaemon({
+    cwd: repo,
+    dataDir: data,
+    runner: true,
+    env: { SKELCREW_RUNS: "1" },
+  });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+  const owner = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await owner.subscribe((event) => events.push(event));
+
+  const first = await owner.call("createCard", { title: "Add login page" });
+  const second = await owner.call("createCard", { title: "Add a logout button" });
+  // Both moves on the wire before the daemon reads either, so neither waits on the other's reply.
+  await Promise.all([
+    owner.call("moveCard", { id: first.id, phase: "spec" }),
+    owner.call("moveCard", { id: second.id, phase: "spec" }),
+  ]);
+
+  await until(
+    () => (events.filter((event) => event.type === "released").length === 2 ? true : undefined),
+    20_000,
+    "the runner did not finish both cards",
+  );
+  expect(claimsAndReleases(events)).toEqual([
+    `claimed ${first.id}`,
+    `released ${first.id}`,
+    `claimed ${second.id}`,
+    `released ${second.id}`,
+  ]);
+  // Both were really run: each card is back with the owner, holding its own worktree.
+  for (const card of [first, second]) {
+    const detail = await owner.call("getCard", { id: card.id });
+    expect(detail.attention?.note).toContain(join(data, "worktrees", String(card.id)));
+  }
+
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
+}, 60_000);
+
+test("with SKELCREW_RUNS unset the daemon claims both cards before either is released", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+  const owner = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await owner.subscribe((event) => events.push(event));
+
+  const first = await owner.call("createCard", { title: "Add login page" });
+  const second = await owner.call("createCard", { title: "Add a logout button" });
+  // Both moves on the wire before the daemon reads either, so neither waits on the other's reply.
+  await Promise.all([
+    owner.call("moveCard", { id: first.id, phase: "spec" }),
+    owner.call("moveCard", { id: second.id, phase: "spec" }),
+  ]);
+
+  await until(
+    () => (events.filter((event) => event.type === "released").length === 2 ? true : undefined),
+    20_000,
+    "the runner did not finish both cards",
+  );
+  const seen = claimsAndReleases(events);
+  // The claims are in card order, because the scan takes ready cards in id order; which run
+  // releases first is the two sessions' business, so only that both claims precede them is read.
+  // The margin: the second claim needs only the daemon's next socket read, both moves being
+  // already on the wire, while the first release waits on that run's git subprocesses — the
+  // base branch resolved, the card's branch created, its worktree listed and added.
+  expect(seen.slice(0, 2)).toEqual([`claimed ${first.id}`, `claimed ${second.id}`]);
+  expect(seen.slice(2).sort()).toEqual([`released ${first.id}`, `released ${second.id}`]);
+
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
+}, 60_000);
+
 // --- the driver selection (012) ---
 
 test("an unknown SKELCREW_AGENT stops the daemon before it creates anything", async () => {
@@ -743,8 +850,10 @@ function readOr(path: string, fallback: string): string {
  * redirected to a file. `script` allocates the terminal; the shell records the daemon's pid
  * (`exec` makes it the shell's own) so a test can signal the daemon rather than `script`; the
  * daemon's stderr goes to a file of its own so the two streams stay apart inside the one
- * terminal. `SKELCREW_NOTIFY` is dropped from the inherited environment first: no test may
- * fire a real notification because the terminal running it had the variable set.
+ * terminal. Every setting the daemon reads is dropped from the inherited environment first,
+ * as in `spawnDaemon`: no test may fire a real notification because the terminal running it
+ * had `SKELCREW_NOTIFY` set, and no daemon here may fail to start because it had a bad
+ * `SKELCREW_RUN_MINUTES` set.
  */
 function spawnShellDaemon(options: {
   cwd: string;
@@ -757,6 +866,8 @@ function spawnShellDaemon(options: {
   env.SKELCREW_RUNNER = "0";
   env.SKELCREW_AGENT = "none";
   delete env.SKELCREW_MERGE_POLL_SECONDS;
+  delete env.SKELCREW_RUNS;
+  delete env.SKELCREW_RUN_MINUTES;
   delete env.SKELCREW_NOTIFY;
   Object.assign(env, options.env ?? {});
   const pidFile = join(dir, "daemon.pid");
