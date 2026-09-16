@@ -17,9 +17,13 @@
  * - **Legible.** The loop is one file, over three pure parts — a state, a frame, a reducer —
  *   and reading it is reading the product.
  */
-import type { Activity, Client } from "@skelcrew/shared";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, sep } from "node:path";
+import { type Activity, type Client, worktreesDir } from "@skelcrew/shared";
 import type { Command } from "../commands/command";
+import { formatId } from "../render";
 import {
+  BACKSPACE_KEYS,
   CURSOR_HOME,
   ENTER_ALTERNATE_SCREEN,
   ERASE_BELOW,
@@ -31,8 +35,8 @@ import {
   SHOW_CURSOR,
 } from "./ansi";
 import { clampScroll, frame, sizeOf } from "./frame";
-import { press } from "./keys";
-import { apply, load, type State, type View } from "./state";
+import { type Action, press } from "./keys";
+import { apply, load, questionOf, type State, type View } from "./state";
 
 /** Raw stdin, as much of it as the loop uses. */
 export interface KeyInput {
@@ -54,13 +58,90 @@ export interface BoardDeps {
   client: Client;
   /** Where the daemon was reached, for the message when it goes away. */
   socketPath: string;
+  /** The daemon's data directory: the runner's worktrees are under it. */
+  dataDir: string;
   input: KeyInput;
   screen: Screen;
+  /**
+   * The owner's shell, in the card's worktree, with the terminal already handed back. Injected
+   * so that a test drives `o` without a process ever being started.
+   */
+  spawnShell(shell: string, cwd: string): Promise<void>;
+  /** Where `$SHELL` is read from; the command passes `process.env`. */
+  env?: Record<string, string | undefined>;
   /** Window-size changes; the returned function stops listening. */
   onResize?(handler: () => void): () => void;
   now?(): number;
   /** How long a burst of events is collected before one frame, in milliseconds. */
   redrawMs?: number;
+}
+
+/**
+ * The call the action is. These are the calls `resolve.ts`, `mv.ts` and `comment.ts` make,
+ * with the parameters those commands send: the screen and the CLI cannot come to disagree
+ * about what a key means, because they make the same request (027's criterion 6).
+ */
+async function perform(client: Client, action: Action): Promise<void> {
+  switch (action.kind) {
+    case "resolve":
+      await client.call("resolveAttention", { id: action.id, text: action.text });
+      return;
+    case "move":
+      // Moves first, then comments, as `mv` does: a rejected move posts nothing.
+      await client.call("moveCard", { id: action.id, phase: action.phase });
+      if (action.message !== undefined) {
+        await client.call("comment", { id: action.id, text: action.message });
+      }
+      return;
+    case "comment":
+      await client.call("comment", { id: action.id, text: action.text });
+      return;
+    default:
+      return;
+  }
+}
+
+/** Where `path` really is when it is a directory, and `undefined` when it is anything else. */
+function directory(path: string): string | undefined {
+  try {
+    return statSync(path).isDirectory() ? realpathSync(path) : undefined;
+  } catch {
+    // Missing, or not reachable: either way there is nothing to open a shell in.
+    return undefined;
+  }
+}
+
+/** A path a note named, accepted only as an absolute directory inside the runner's root. */
+function inside(root: string, path: string): string | undefined {
+  if (!isAbsolute(path)) return undefined;
+  const real = directory(path);
+  if (real === undefined) return undefined;
+  return real === root || real.startsWith(root + sep) ? real : undefined;
+}
+
+/**
+ * Where the card's work is: the path the card's open request names, and the runner's own
+ * directory for the card otherwise. `undefined` when there is no such directory, which is what
+ * the key then says.
+ *
+ * A note is written by whoever raised the request, and an agent may raise one, so the path it
+ * names is a claim and not a fact. It is taken only when it is an absolute directory under
+ * `worktreesDir(dataDir)` — any directory under that root, and nothing outside it; anything
+ * else falls back to the card's own directory. That is what makes the directory `o` hands the
+ * owner's shell one the daemon chose. Every note the daemon writes today names
+ * `worktreesDir(dataDir)/<id>`, which is the fallback — a dirty worktree is kept where it is
+ * (006, 014) — so the note's path is what the screen opens only when something named another
+ * card's directory under that root. The phrase is read from its last occurrence, so a note that
+ * says it twice names the second path rather than everything after the first.
+ */
+function worktreeOf(state: State, cardId: number, dataDir: string): string | undefined {
+  const root = directory(worktreesDir(dataDir));
+  if (root === undefined) return undefined;
+  const note = questionOf(state, cardId)?.note ?? "";
+  const named = [...note.matchAll(/^.*the work is in ([^\n]+?)[ \t]*$/gm)].at(-1)?.[1];
+  const path = named === undefined ? undefined : inside(root, named);
+  // The card's own directory goes through the same rule: one answer to "is this the runner's".
+  return path ?? inside(root, join(root, String(cardId)));
 }
 
 /** Raw stdin arrives as bytes or as text, depending on the stream. */
@@ -82,6 +163,7 @@ function keysOf(chunk: string): string[] {
   for (const char of chunk) {
     if (char === INTERRUPT_KEY) keys.push("ctrl-c");
     else if (char === "\r" || char === "\n") keys.push("enter");
+    else if (BACKSPACE_KEYS.includes(char)) keys.push("backspace");
     else if (char >= " ") keys.push(char);
   }
   return keys;
@@ -101,6 +183,8 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
   let state: State | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let over = false;
+  /** True while the owner's shell has the terminal: nothing is drawn into it. */
+  let suspended = false;
   let quit = () => {};
   let fail = (_error: unknown) => {};
   const done = new Promise<void>((resolve, reject) => {
@@ -119,14 +203,14 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
   });
 
   function draw(): void {
-    if (state === undefined) return;
+    if (state === undefined || suspended) return;
     const lines = frame(state, sizeOf(screen), now());
     screen.write(CURSOR_HOME + lines.map((line) => line + ERASE_LINE).join("\r\n") + ERASE_BELOW);
   }
 
   /** One frame per burst: a run posting three comments at once is one redraw. */
   function redraw(): void {
-    if (timer !== undefined || over) return;
+    if (timer !== undefined || over || suspended) return;
     timer = setTimeout(() => {
       timer = undefined;
       try {
@@ -147,16 +231,68 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     return before.kind === "card" && before.cardId === after.cardId ? undefined : after.cardId;
   }
 
+  /**
+   * The exit ramp: the terminal goes back to the owner, their shell runs in the card's
+   * worktree, and the screen comes back — reloaded, because the crew worked on while they
+   * were in there — when it exits.
+   */
+  async function openShell(cardId: number): Promise<void> {
+    if (state === undefined) return;
+    const path = worktreeOf(state, cardId, deps.dataDir);
+    if (path === undefined) {
+      state = { ...state, message: `${formatId(cardId)} has no worktree` };
+      redraw();
+      return;
+    }
+    const shell = (deps.env ?? process.env).SHELL || "sh";
+    suspended = true;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    freeTerminal();
+    try {
+      await deps.spawnShell(shell, path);
+    } finally {
+      if (!over) {
+        takeTerminal();
+        suspended = false;
+      }
+    }
+    state = await load(client);
+    draw();
+  }
+
   async function onKey(chunk: unknown): Promise<void> {
     for (const key of keysOf(textOf(chunk))) {
       if (state === undefined || over) return;
       const before = state.view;
+      // Two lines pasted into the prompt arrive as one chunk with a newline in it. The line is
+      // sent and the chunk ends there: what follows a newline is text the owner typed, and
+      // reading it as board keys would answer questions and open shells they never asked for
+      // (027 — of the prompt, "nothing else is interpreted").
+      const prompting = state.prompt !== null;
       const pressed = press(state, key);
       // The reducer knows the card; the terminal's height is the loop's to hold.
       state = clampScroll(pressed.state, sizeOf(screen));
-      if (pressed.action?.kind === "quit") {
+      const action = pressed.action;
+      if (action?.kind === "quit") {
         quit();
         return;
+      }
+      if (action?.kind === "open-shell") {
+        await openShell(action.id);
+        continue;
+      }
+      if (action !== undefined) {
+        try {
+          await perform(client, action);
+          // What the call did reaches the screen as the events it caused, like anything else.
+          state = { ...state, message: "" };
+        } catch (error) {
+          // Refused: the daemon's own sentence, and nothing else on the screen changes.
+          state = { ...state, message: error instanceof Error ? error.message : String(error) };
+        }
       }
       const opening = opened(before, state.view);
       if (opening !== undefined) {
@@ -164,6 +300,7 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
         state = { ...state, detail };
       }
       redraw();
+      if (prompting && state.prompt === null) return;
     }
   }
 
@@ -204,10 +341,23 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       redraw();
     }) ?? (() => {});
 
-  input.setRawMode(true);
-  input.resume();
-  input.on(onData);
-  screen.write(ENTER_ALTERNATE_SCREEN + HIDE_CURSOR);
+  /** The screen takes the terminal: raw keys, the alternate screen, no cursor. */
+  function takeTerminal(): void {
+    input.setRawMode(true);
+    input.resume();
+    input.on(onData);
+    screen.write(ENTER_ALTERNATE_SCREEN + HIDE_CURSOR);
+  }
+
+  /** And hands it back exactly as it found it — on the way out, and for `o`'s shell. */
+  function freeTerminal(): void {
+    input.off(onData);
+    input.setRawMode(false);
+    input.pause();
+    screen.write(SHOW_CURSOR + LEAVE_ALTERNATE_SCREEN);
+  }
+
+  takeTerminal();
   try {
     // Subscribed before anything is read, so an event between the read and the stream is held
     // rather than lost; `apply` is idempotent, so one the read already reflected costs nothing.
@@ -233,10 +383,8 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     over = true;
     if (timer !== undefined) clearTimeout(timer);
     stopResize();
-    input.off(onData);
-    input.setRawMode(false);
-    input.pause();
-    screen.write(SHOW_CURSOR + LEAVE_ALTERNATE_SCREEN);
+    // A shell holds the terminal already; it was handed back before that shell started.
+    if (!suspended) freeTerminal();
   }
 }
 
@@ -252,6 +400,15 @@ export const board: Command<null, null> = {
     await runBoard({
       client: ctx.client,
       socketPath: ctx.socketPath,
+      dataDir: ctx.dataDir,
+      env: process.env,
+      // The owner's own shell, in their own terminal, as them. The directory is a path and
+      // never a command, and `worktreeOf` has already established that it is one of the
+      // runner's own worktrees — a note may name it, but a note cannot choose it (027).
+      spawnShell: async (shell, cwd) => {
+        await Bun.spawn([shell], { cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+          .exited;
+      },
       input: {
         setRawMode: (on) => {
           // The screen opens on a terminal on stdout; stdin can still be a file or a pipe,

@@ -26,6 +26,8 @@ export interface Context {
   client: Client;
   /** Where the daemon was reached, for messages about losing it. */
   socketPath: string;
+  /** The daemon's data directory, the socket's own: the runner's worktrees are under it. */
+  dataDir: string;
   /** All of stdin, read once, with CRLF line endings made LF like a file's. */
   stdin(): Promise<string>;
   /** One line to stdout, as it happens; for a command that streams rather than returns. */

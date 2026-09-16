@@ -5,12 +5,14 @@
  */
 import type {
   Activity,
+  Attention,
   Card,
   CardDetail,
   Claim,
   Client,
   Member,
   OpenAttention,
+  Phase,
 } from "@skelcrew/shared";
 import { firstLine } from "../render";
 
@@ -19,6 +21,17 @@ export type View =
   | { kind: "board" }
   | { kind: "card"; cardId: number; scroll: number }
   | { kind: "help"; from: View };
+
+/**
+ * The one-line message being typed, what it is for, and the card it will be sent on. It is a
+ * field rather than a fourth view because it is one line at the bottom of whichever view is
+ * open: the board or the card stays drawn behind it (027).
+ */
+export type Prompt =
+  | { kind: "deny"; cardId: number; text: string }
+  /** `phase` is fixed when the prompt opens: the move the owner was told about is the one sent. */
+  | { kind: "back"; cardId: number; phase: Phase; text: string }
+  | { kind: "comment"; cardId: number; text: string };
 
 export interface State {
   /** The member the screen is rendered for: whoever the CLI connected as. */
@@ -35,8 +48,21 @@ export interface State {
   view: View;
   /** The open card, once the loop has read it; null while there is none to show. */
   detail: CardDetail | null;
+  /** The line being typed, or null: the screen's only text input. */
+  prompt: Prompt | null;
   /** The screen's one sentence. Empty until something has to be said. */
   message: string;
+}
+
+/**
+ * The card's open request, whoever it is addressed to — what `a`, `d` and `m` answer. A
+ * request addressed to someone else is sent all the same and refused by the daemon, which is
+ * one rule in one place rather than two that can disagree.
+ */
+export function questionOf(state: State, cardId: number): Attention | undefined {
+  const card = state.cards.find((each) => each.id === cardId);
+  if (card !== undefined && card.attention !== null) return card.attention;
+  return state.requests.find((request) => request.cardId === cardId);
 }
 
 /** The queue rows and the board rows, as one list: what the cursor moves through. */
@@ -98,6 +124,7 @@ export async function load(client: Client): Promise<State> {
     cursor: 0,
     view: { kind: "board" },
     detail: null,
+    prompt: null,
     message: "",
   };
 }

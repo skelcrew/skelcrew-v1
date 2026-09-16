@@ -8,9 +8,9 @@
  * adds the only control characters the screen writes on purpose (015).
  */
 import type { Card, OpenAttention } from "@skelcrew/shared";
-import { cardView, firstLine, formatId, oneLine, row, status } from "../render";
+import { cardView, firstLine, formatId, oneLine, phaseName, row, status } from "../render";
 import { bold, dim, reverse } from "./ansi";
-import type { State, View } from "./state";
+import type { Prompt, State, View } from "./state";
 
 export interface Size {
   columns: number;
@@ -59,6 +59,24 @@ function cut(text: string, columns: number): string {
   return `${kept}…`;
 }
 
+/**
+ * `text` within `columns` cells, keeping its end rather than its start: the first cell is an
+ * ellipsis when something was dropped. What is being typed stays on the screen this way, where
+ * cutting the other end would leave the owner writing past the right edge, blind.
+ */
+function cutStart(text: string, columns: number): string {
+  if (cells(text) <= columns) return text;
+  let kept = "";
+  let used = 0;
+  for (const char of [...text].reverse()) {
+    const width = cells(char);
+    if (used + width > columns - 1) break;
+    kept = char + kept;
+    used += width;
+  }
+  return `…${kept}`;
+}
+
 /** `text` filled with spaces to `columns` cells. */
 function pad(text: string, columns: number): string {
   return text + " ".repeat(Math.max(0, columns - cells(text)));
@@ -98,11 +116,37 @@ function boardRow(
   return running && line !== undefined && line.length > 0 ? `${base}  ${line}` : base;
 }
 
+/** What the prompt is for, as the line says it before the text being typed. */
+function promptLabel(prompt: Prompt): string {
+  switch (prompt.kind) {
+    case "deny":
+      return `deny ${formatId(prompt.cardId)}: `;
+    case "back":
+      return `${formatId(prompt.cardId)} back to ${phaseName(prompt.phase)}: `;
+    case "comment":
+      return `comment on ${formatId(prompt.cardId)}: `;
+  }
+}
+
 /**
- * The lines, the terminal's height, and the one line the screen keeps for a sentence. The
- * window follows the cursor when there is more to show than there is room for.
+ * The screen's last line: the prompt while one is open — the terminal's own cursor is hidden,
+ * so the caret is a reverse-video cell — and the one sentence otherwise.
  */
-function screenful(lines: string[], cursorLine: number, size: Size, message: string): string[] {
+function bottomLine(state: State, size: Size): string {
+  const prompt = state.prompt;
+  if (prompt !== null) {
+    // One cell is kept for the caret, so the line still fits when the text fills the terminal,
+    // and the line is cut at its start so that the caret's end of it is the part that stays.
+    return cutStart(oneLine(promptLabel(prompt) + prompt.text), size.columns - 1) + reverse(" ");
+  }
+  return state.message.length === 0 ? "" : dim(fit(state.message, size.columns));
+}
+
+/**
+ * The lines, the terminal's height, and the one line the screen keeps for a sentence or the
+ * prompt. The window follows the cursor when there is more to show than there is room for.
+ */
+function screenful(lines: string[], cursorLine: number, size: Size, bottom: string): string[] {
   const available = size.rows - 1;
   let start = 0;
   if (lines.length > available) {
@@ -111,7 +155,7 @@ function screenful(lines: string[], cursorLine: number, size: Size, message: str
   }
   const shown = lines.slice(start, start + available);
   while (shown.length < available) shown.push("");
-  shown.push(message.length === 0 ? "" : dim(fit(message, size.columns)));
+  shown.push(bottom);
   return shown;
 }
 
@@ -144,7 +188,7 @@ function boardFrame(state: State, size: Size, now: number): string[] {
     lines.push(rowLine(boardRow(card, widths, state, now), columns, selected));
   });
 
-  return screenful(lines, cursorLine, size, state.message);
+  return screenful(lines, cursorLine, size, bottomLine(state, size));
 }
 
 /** The open card exactly as `show` prints it, or a word while it is being read. */
@@ -183,7 +227,7 @@ function cardFrame(state: State, view: View & { kind: "card" }, size: Size, now:
     // The card's first line is its id and title: the one place the screen uses bold.
     return start + index === 0 ? bold(text) : text;
   });
-  return screenful(shown, -1, size, state.message);
+  return screenful(shown, -1, size, bottomLine(state, size));
 }
 
 const KEYS = [
@@ -191,13 +235,19 @@ const KEYS = [
   "  g, G     the first row and the last",
   "  enter    open the card under the cursor",
   "  esc, q   back to the board",
+  "  a        allow the open question",
+  "  d        deny it, with a message",
+  "  m        take the move the request offers",
+  "  b        send the card back a phase, with a message",
+  "  c        comment on the card",
+  "  o        a shell in the card's worktree",
   "  ?        these keys",
   "  q        quit",
 ];
 
 function helpFrame(state: State, size: Size): string[] {
   const lines = [dim("keys"), "", ...KEYS.map((line) => fit(line, size.columns))];
-  return screenful(lines, -1, size, state.message);
+  return screenful(lines, -1, size, bottomLine(state, size));
 }
 
 export function frame(state: State, size: Size, now = Date.now()): string[] {

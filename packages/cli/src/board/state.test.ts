@@ -43,6 +43,7 @@ function state(over: Partial<State> = {}): State {
     cursor: 0,
     view: { kind: "board" },
     detail: null,
+    prompt: null,
     message: "",
     ...over,
   };

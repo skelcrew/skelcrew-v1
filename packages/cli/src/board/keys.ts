@@ -1,12 +1,27 @@
 /**
- * What a key does, as a function of the state and nothing else. The screen changes nothing in
- * this spec, so the one action a key can ask the loop for is to quit; it is a union rather than
- * a flag because 027 adds the keys that call the daemon.
+ * What a key does, as a function of the state and nothing else. A key that answers does not
+ * make the call: it yields the action, and the loop makes it, so what every key means is
+ * readable — and testable — without a terminal or a daemon.
  */
+import { PHASES, type Phase } from "@skelcrew/shared";
+import { formatId, phaseName } from "../render";
 import { cardLines } from "./frame";
-import { cardIdAt, rowCount, type State } from "./state";
+import { cardIdAt, type Prompt, questionOf, rowCount, type State } from "./state";
 
-export type Action = { kind: "quit" };
+/**
+ * What the loop is asked to do. Every action but `quit` and `open-shell` is one of the CLI's
+ * own calls with the parameters its command would send (027's criterion 6).
+ */
+export type Action =
+  | { kind: "quit" }
+  /** `resolve <id> -m <text>`. */
+  | { kind: "resolve"; id: number; text: string }
+  /** `mv <id> <phase> [-m <message>]`. */
+  | { kind: "move"; id: number; phase: Phase; message?: string }
+  /** `comment <id> <text>`. */
+  | { kind: "comment"; id: number; text: string }
+  /** The owner's shell, in the card's worktree. No call. */
+  | { kind: "open-shell"; id: number };
 
 export interface Pressed {
   state: State;
@@ -15,6 +30,103 @@ export interface Pressed {
 
 const QUIT: Pressed["action"] = { kind: "quit" };
 
+/** The screen's one sentence, when a key does not apply to the row it was pressed on. */
+function says(state: State, message: string): Pressed {
+  return { state: { ...state, message } };
+}
+
+function opens(state: State, prompt: Prompt): Pressed {
+  return { state: { ...state, prompt, message: "" } };
+}
+
+/** The phase before this one on the track; Idea has none. */
+function previousPhase(phase: Phase): Phase | undefined {
+  const index = PHASES.findIndex((each) => each.id === phase);
+  return index > 0 ? (PHASES[index - 1] as (typeof PHASES)[number]).id : undefined;
+}
+
+/**
+ * The keys that answer, on one card: the same six wherever the cursor is, because the card
+ * view shows one card and the board's selected row is one card. `undefined` when the key is
+ * not one of them.
+ */
+function act(state: State, cardId: number, key: string): Pressed | undefined {
+  const none = `${formatId(cardId)} has no open question`;
+  switch (key) {
+    case "a": {
+      if (questionOf(state, cardId) === undefined) return says(state, none);
+      return { state, action: { kind: "resolve", id: cardId, text: "allow" } };
+    }
+    case "d": {
+      if (questionOf(state, cardId) === undefined) return says(state, none);
+      return opens(state, { kind: "deny", cardId, text: "" });
+    }
+    case "m": {
+      const question = questionOf(state, cardId);
+      if (question === undefined) return says(state, none);
+      const phase = question.moves[0];
+      if (phase === undefined) {
+        return says(state, `the request on ${formatId(cardId)} offers no move`);
+      }
+      return { state, action: { kind: "move", id: cardId, phase } };
+    }
+    case "b": {
+      const card = state.cards.find((each) => each.id === cardId);
+      const phase = card === undefined ? undefined : previousPhase(card.phase);
+      if (phase === undefined) {
+        return says(state, `${formatId(cardId)} is in ${phaseName("idea")}; there is nowhere back`);
+      }
+      return opens(state, { kind: "back", cardId, phase, text: "" });
+    }
+    case "c":
+      return opens(state, { kind: "comment", cardId, text: "" });
+    case "o":
+      return { state, action: { kind: "open-shell", id: cardId } };
+    default:
+      return undefined;
+  }
+}
+
+/** What Enter sends, by what the prompt was opened for. An empty `d` denies in one word. */
+function sent(prompt: Prompt): Action {
+  switch (prompt.kind) {
+    case "deny":
+      return { kind: "resolve", id: prompt.cardId, text: prompt.text || "deny" };
+    case "back":
+      // No message is `mv <id> <phase>`, which is the call that carries none.
+      return prompt.text.length === 0
+        ? { kind: "move", id: prompt.cardId, phase: prompt.phase }
+        : { kind: "move", id: prompt.cardId, phase: prompt.phase, message: prompt.text };
+    case "comment":
+      return { kind: "comment", id: prompt.cardId, text: prompt.text };
+  }
+}
+
+/** One character as the terminal sends it, rather than one of the named keys. */
+function printable(key: string): boolean {
+  return [...key].length === 1 && key >= " ";
+}
+
+/**
+ * The prompt has every key while it is open: Enter sends, Esc cancels, Backspace and printable
+ * characters edit, and nothing else is interpreted — a `q` here is a letter, not the way out.
+ */
+function pressPrompt(state: State, prompt: Prompt, key: string): Pressed {
+  switch (key) {
+    case "enter":
+      return { state: { ...state, prompt: null }, action: sent(prompt) };
+    case "escape":
+      return { state: { ...state, prompt: null } };
+    case "backspace":
+      return {
+        state: { ...state, prompt: { ...prompt, text: [...prompt.text].slice(0, -1).join("") } },
+      };
+    default:
+      if (!printable(key)) return { state };
+      return { state: { ...state, prompt: { ...prompt, text: prompt.text + key } } };
+  }
+}
+
 function moveTo(state: State, cursor: number): Pressed {
   const last = rowCount(state) - 1;
   if (last < 0) return { state };
@@ -22,6 +134,11 @@ function moveTo(state: State, cursor: number): Pressed {
 }
 
 function pressBoard(state: State, key: string): Pressed {
+  const cardId = cardIdAt(state, state.cursor);
+  if (cardId !== undefined) {
+    const acted = act(state, cardId, key);
+    if (acted !== undefined) return acted;
+  }
   switch (key) {
     case "j":
       return moveTo(state, state.cursor + 1);
@@ -45,7 +162,9 @@ function pressBoard(state: State, key: string): Pressed {
   }
 }
 
-function pressCard(state: State, scroll: number, key: string): Pressed {
+function pressCard(state: State, cardId: number, scroll: number, key: string): Pressed {
+  const acted = act(state, cardId, key);
+  if (acted !== undefined) return acted;
   switch (key) {
     // The scroll counts lines up from the newest, so `k` goes back and `j` returns.
     case "j":
@@ -71,16 +190,18 @@ function scrollTo(state: State, scroll: number): Pressed {
 }
 
 /**
- * The key, on the state. Ctrl-C is the one key every view answers the same way; every other
+ * The key, on the state. Ctrl-C is the one key every view answers the same way — the prompt
+ * included, where Esc is the cancel and Ctrl-C is still the way out of the screen; every other
  * key the view does not use leaves the state exactly as it was, so a stray byte draws nothing.
  */
 export function press(state: State, key: string): Pressed {
   if (key === "ctrl-c") return { state, action: QUIT };
+  if (state.prompt !== null) return pressPrompt(state, state.prompt, key);
   switch (state.view.kind) {
     case "board":
       return pressBoard(state, key);
     case "card":
-      return pressCard(state, state.view.scroll, key);
+      return pressCard(state, state.view.cardId, state.view.scroll, key);
     case "help":
       // Any key closes the keys, back to wherever they were opened from.
       return { state: { ...state, view: state.view.from } };

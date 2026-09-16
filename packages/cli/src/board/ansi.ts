@@ -39,3 +39,9 @@ export const ESCAPE_KEY = ESC;
 
 /** Ctrl-C, as raw stdin delivers it: in raw mode the terminal sends this byte, not a signal. */
 export const INTERRUPT_KEY = "\x03";
+
+/**
+ * Backspace, as raw stdin delivers it. Terminals disagree: most send delete for the key marked
+ * Backspace, some send backspace, and the screen's one text input takes both for the same key.
+ */
+export const BACKSPACE_KEYS = ["\x7f", "\x08"];
