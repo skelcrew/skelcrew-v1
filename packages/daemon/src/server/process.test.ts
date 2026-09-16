@@ -14,7 +14,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Activity, connect, VERSION } from "@skelcrew/shared";
+import { type Activity, connect, type Member, RpcError, VERSION } from "@skelcrew/shared";
+import { openCore } from "../core/core";
 
 const MAIN = fileURLToPath(new URL("../main.ts", import.meta.url));
 
@@ -439,40 +440,47 @@ test("with SKELCREW_DIR set but no repository around the cwd, the daemon serves 
  * where the runner member is created, and `main.ts` hands it to the sweep. Nothing below is
  * faked — a real daemon with the runner on, a real lapse, and the daemon's own sweep timer.
  *
- * The card is set up the way the live runner sets it up: 006's handoff leaves a request the
- * runner member raised, on a card in Spec with no claim, and the runner leaves that card alone
- * while the request is open — so the claim taken here is uncontested. A client that says
- * `runner`/`agent` is that same member, because `ensureMember` is by name and kind.
+ * The card is set up through the data directory rather than over the socket: the runner member,
+ * a card in Spec, and the question that run raised, all before the daemon opens the database,
+ * and then the claim. Nothing says `hello` as the runner — the socket refuses that name (028) —
+ * and the daemon's own `ensureMember` finds the member made here, by name and kind. The shape is
+ * 006's handoff, and the runner leaves a card with an open request alone, so the claim is
+ * uncontested until the sweep takes both.
+ *
+ * Only the claim waits for the daemon, and it has to: the runner releases a claim of its own
+ * that survived a restart (`reconcileAll`, "daemon restarted"), so a claim made before the start
+ * is gone before the first sweep and never lapses. A lapsing run's claim is one the daemon was
+ * live for, which is what this sets up.
  */
 test("the daemon's sweep takes an interrupted run's own question with it, and the runner takes the card again", async () => {
   const repo = await tempRepo();
   const data = join(dir, "data");
   const socketPath = join(data, "skelcrew.sock");
+
+  mkdirSync(data, { recursive: true });
+  const setup = openCore(join(data, "skelcrew.db"));
+  const runner = setup.ensureMember("runner", "agent");
+  const ownerMember = setup.listMembers().find((m) => m.kind === "human") as Member;
+  const card = setup.createCard({ title: "Add login page" }, ownerMember.id);
+  setup.moveCard(card.id, "spec", ownerMember.id);
+  setup.requestAttention(card.id, { to: ownerMember.id, note: "allow Bash(bun test)?" }, runner.id);
+
   const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true });
   expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
   const owner = await connect(socketPath, { kind: "human" });
   const events: Activity[] = [];
   await owner.subscribe((event) => events.push(event));
 
-  const card = await owner.call("createCard", { title: "Add login page" });
-  await owner.call("moveCard", { id: card.id, phase: "spec" });
-  await until(
-    () => events.find((e) => e.type === "attention_requested"),
-    10_000,
-    "the runner raised no request",
-  );
-
-  const runner = await connect(socketPath, { kind: "agent", name: "runner" });
   const members = await owner.call("listMembers", {});
-  expect(members.find((m) => m.name === "runner" && m.kind === "agent")?.id).toBe(runner.member.id);
+  expect(members.find((m) => m.name === "runner" && m.kind === "agent")?.id).toBe(runner.id);
   const waiting = await owner.call("getCard", { id: card.id });
-  expect(waiting.attention?.raisedBy).toBe(runner.member.id);
+  expect(waiting.attention?.raisedBy).toBe(runner.id);
 
-  // The run that asked goes away with its lease: claimed as the runner, at the shortest TTL
-  // the core allows, and never heartbeated.
-  const claimed = await runner.call("claimCard", { id: card.id, ttlSeconds: 10 });
+  // The run that asked goes away with its lease: claimed as the runner, at the shortest TTL the
+  // core allows, and never heartbeated.
+  const claimed = setup.claimCard(card.id, { ttlSeconds: 10 }, runner.id);
   const expiresAt = claimed.claim?.expiresAt as number;
-  await runner.close();
+  setup.close();
 
   // Bounded: the lapse plus the sweep's interval and some slack, never longer.
   const budget = expiresAt - Date.now() + 20_000;
@@ -484,7 +492,7 @@ test("the daemon's sweep takes an interrupted run's own question with it, and th
   expect(resolved).toMatchObject({
     type: "attention_resolved",
     cardId: card.id,
-    actorId: runner.member.id,
+    actorId: runner.id,
     data: { how: "interrupted" },
   });
 
@@ -495,7 +503,7 @@ test("the daemon's sweep takes an interrupted run's own question with it, and th
     10_000,
     "the runner did not take the card again",
   );
-  expect(retaken.actorId).toBe(runner.member.id);
+  expect(retaken.actorId).toBe(runner.id);
 
   const detail = await owner.call("getCard", { id: card.id });
   const types = detail.activity.map((e) => e.type);
@@ -507,25 +515,24 @@ test("the daemon's sweep takes an interrupted run's own question with it, and th
 
 test("with SKELCREW_RUNNER=0 a lapse withdraws nothing: there are no runs to withdraw", async () => {
   const socketPath = join(dir, "skelcrew.sock");
+  // The same member name the daemon's runner would have, and the same shape of request, set up
+  // in the data directory as above: with no runner the daemon names none, so no claim's holder
+  // is a run's.
+  const setup = openCore(join(dir, "skelcrew.db"));
+  const runner = setup.ensureMember("runner", "agent");
+  const ownerMember = setup.listMembers().find((m) => m.kind === "human") as Member;
+  const card = setup.createCard({ title: "nobody runs this" }, ownerMember.id);
+  setup.moveCard(card.id, "spec", ownerMember.id);
+  const claimed = setup.claimCard(card.id, { ttlSeconds: 10 }, runner.id);
+  const expiresAt = claimed.claim?.expiresAt as number;
+  setup.requestAttention(card.id, { to: ownerMember.id, note: "allow Bash(bun test)?" }, runner.id);
+  setup.close();
+
   const daemon = spawnDaemon({ cwd: dir, dataDir: dir, runner: false });
   await daemon.firstLine();
   const owner = await connect(socketPath, { kind: "human" });
   const events: Activity[] = [];
   await owner.subscribe((event) => events.push(event));
-  // The same member name the daemon's runner would have, and the same shape of request: with
-  // no runner the daemon names none, so no claim's holder is a run's.
-  const runner = await connect(socketPath, { kind: "agent", name: "runner" });
-
-  const card = await owner.call("createCard", { title: "nobody runs this" });
-  await owner.call("moveCard", { id: card.id, phase: "spec" });
-  const claimed = await runner.call("claimCard", { id: card.id, ttlSeconds: 10 });
-  const expiresAt = claimed.claim?.expiresAt as number;
-  await runner.call("requestAttention", {
-    id: card.id,
-    to: owner.member.id,
-    note: "allow Bash(bun test)?",
-  });
-  await runner.close();
 
   const budget = expiresAt - Date.now() + 20_000;
   await until(
@@ -546,6 +553,41 @@ test("with SKELCREW_RUNNER=0 a lapse withdraws nothing: there are no runs to wit
   await owner.close();
   expect(await stopped(daemon, "SIGTERM")).toBe(0);
 }, 60_000);
+
+// --- the runner's name is reserved (028) ---
+
+/**
+ * The reservation is the daemon's, not the execution half's: `main.ts` gives the server the
+ * runner's member name whether or not the runner is on, so a `hello` cannot take the member a
+ * runner will use on the next start. With the runner off nothing else here observes that
+ * handoff, which is the point of asserting it with the runner off.
+ */
+test("with SKELCREW_RUNNER=0 the socket still refuses hello as the runner", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir, runner: false });
+  await daemon.firstLine();
+
+  let caught: unknown;
+  try {
+    await connect(socketPath, { kind: "agent", name: "runner" });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(RpcError);
+  const refused = caught as RpcError;
+  expect(refused.code).toBe(-32602);
+  expect(refused.message).toContain("runner");
+  expect(refused.message).toContain("the daemon's own");
+
+  const owner = await connect(socketPath, { kind: "human" });
+  // No member was created by it, and every other agent name joins as before.
+  expect((await owner.call("listMembers", {})).map((m) => m.kind)).toEqual(["human"]);
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+  expect(crew.member.name).toBe("crew-1");
+  await crew.close();
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+});
 
 // --- the merge poll's interval (018) ---
 
