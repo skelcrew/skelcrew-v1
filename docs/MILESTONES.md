@@ -33,9 +33,9 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 17 | 020 A conflicting pull request asks to go back to Code (008c) | landed, PR #18 — two review rounds; the daemon offers the move and does not make it |
 | 18 | 021 The agent inherits what its login needs | landed, PR #19 — the first real card's finding: the runner stripped `USER`, and the Keychain login needs it |
 | 19 | 022 A run explores without asking | landed, PR #20 — three review rounds, two on when a turn ends |
-| 20 | 023 A question is announced | specified |
-| 21 | 024 The board explains itself | specified |
-| 22 | 025 Several cards at once | specified |
+| 20 | 023 A question is announced | landed, PR #21 — three review rounds; `none` had no meaning until the first found it |
+| 21 | 024 The board explains itself | landed, PR #23 — three review rounds on one rule: whose lapsed claim takes its question with it |
+| 22 | 025 Several cards at once | landed, PR #22 — two review rounds, both in teardown; developed in parallel with 023 and 024 from three sessions |
 | 23 | 026 The board on one screen | specified; card 2 on the owner's own board is this |
 | | 005 | dropped |
 
@@ -787,7 +787,116 @@ finding.
   Unverified (no nested-agent probe was built) and no playbook instructs sub-agents; recorded
   by review round 3 so it is not rediscovered as a mystery.
 
+## 023 — A question is announced
+
+Landed as PR #21. A daemon started in a terminal rings the bell and sends one desktop
+notification when a request is raised to a human member; a request to an agent is not
+announced; a headless daemon sends nothing, and `watch` stays the ping for that owner.
+`SKELCREW_NOTIFY=none` turns it off. A notifier that cannot be spawned or exits non-zero warns
+once per process. The notifier moved from the CLI into shared, because two readers now use it.
+
+Two sentences in the spec were wrong about existing code, recorded not edited. "010 already
+made `SKELCREW_NOTIFY` the notifier's switch" — it had made it a selector, and `none` meant a
+command called `none`, so the first version silenced the daemon and made `watch` error once per
+question. `none` now means off in the shared notifier, which makes the spec's "`watch` is
+unchanged" false for that one value. Review round 2 found the `watch` test helper inheriting
+`SKELCREW_NOTIFY` from the developer's shell, so a test could fire a real notification; that
+predates 023, from 010, and is fixed.
+
+**Carried findings.**
+
+- **`"none"` is spelled in two packages** rather than exported once.
+- **The pseudo-terminal tests use BSD `script`'s argument form** and would fail on a Linux
+  checkout. There is no CI, so nothing says so yet.
+- **`watch` and the daemon word the same request differently**: the daemon announces the
+  note's first line, `watch` the whole escaped note. The spec dictates the daemon's.
+- **`shutdown()` does not await an in-flight notification**, and nothing bounds a notifier that
+  hangs. The request is on the card either way.
+- **The announcer calls `getCard` to read two fields**, which loads the card's whole activity
+  synchronously inside the listener. Harmless today.
+
+## 024 — The board explains itself
+
+Landed as PR #23. `skelcrew ls` says what each card is doing in words, in a column between
+the phase and the title: `waiting on you: <first line of the note>`, `waiting on <name>`,
+`running since <time>`, `interrupted`, `queued`, `archived`, or nothing. `show` leads with a
+`now:` line carrying the same text. And a run interrupted by a lapsed lease takes its own
+stale permission question with it, so the card returns to the queue by itself instead of
+sitting on an answer nobody can give — which is what card 1 did on 2026-09-14 after the
+laptop slept.
+
+Three review rounds, all on one rule: whose lapsed claim takes its question with it. The spec
+as approved said "raised by the lapsed holder". Round 1 showed that clearing the owner's own
+note on a card the owner had claimed by hand, and handing the card to the runner; the
+amendment keyed on member kind. Round 2 showed the same hole for an agent member claiming by
+hand from a live session. The rule now keys on the runner's own identity — the only member
+whose claims are runs — and a daemon with no runner withdraws nothing. Round 3 verified all
+three cases live and found no behavioural defect, only that the startup line handing the
+runner's id to the sweep had no test: delete it and every check stayed green. The last fix
+round added two tests that spawn the real daemon; no fourth review ran, and the verifier
+confirmed by mutation that the new test goes red. The lesson for `/spec`: a rule that says
+*who* (raised by the holder, held by a human) is a grant in disguise, and deserves the
+red-team step's composition check even though it grants no command.
+
+**Carried findings.**
+
+- **The runner's identity is a member name, and nothing reserves it.** `hello` is idempotent
+  by name and kind, so a client that says `--as runner` *is* the daemon's runner member: it
+  can release or renew the runner's real claims, and now its hand-made question would be
+  withdrawn on a lapse. Predates 024; a reserved-name check at `hello` closes it.
+- **The status column pads in UTF-16 units**, so a note with wide characters (`日本語`) pushes
+  that row's title right. Documented beside the column width; 026 needs a display-width
+  measure for the whole screen and this column should adopt it then.
+- **The sweep learns the runner's id through a `let` in `main.ts`** assigned after the timer
+  is created. Sound today because the block has no `await`; covered by a test rather than
+  removed. Creating the timer where the runner is known would make it a `const`.
+- **The `endRun` edge is reachable, by a failed release.** `endRun` is synchronous so a lapse
+  cannot fall between its request and its release; but when the release itself fails (the
+  path `ending.ts` already warns on), the claim outlives the ending and the next lapse
+  withdraws the ending's request, including 019's parked note. The card re-runs, visibly.
+- **Two tests wait on real clocks** (a 10-second lease plus the 5-second sweep), adding about
+  27 seconds to the suite. One 5-second test timeout was seen once in a baseline run and not
+  reproduced in five later runs.
+- **`show`'s `now:` line cuts the note to 40 characters** even though the whole note is four
+  lines below. The spec says "the same status text as `ls`"; if it should differ, the spec is
+  the artefact to change.
+
 ## 025 — Several cards at once
+
+Landed as PR #22. The runner holds up to `SKELCREW_RUNS` claims at once, default two, each
+card in its own worktree with its own subprocess; the scan claims ready cards in id order up
+to the free slots; setup (branch, worktree, allowlist read, run log) is serialised through one
+mutex the runner owns, and the agent sessions run in parallel; `teardown` waits for a live run
+before removing its worktree. Developed in parallel with 023 and 024 from three Claude Code
+sessions, one worktree each, merging main before their pull requests: no conflicts, and the
+last to land wrote these entries — the carried finding at the end of this entry, answered by
+hand before the daemon could.
+
+Two review rounds, both Important findings in `teardown`: it awaited the live run before
+checking whether the card had already come back, so a scan that restarted the card held the
+serial pump for that whole new run; and its worktree removal ran outside the setup mutex, so
+a teardown and a starting run could contend for the repository lock the spec said they never
+would. Two spec sentences were wrong about the code, recorded not edited: the release event
+cannot trigger the refill scan through `onEvent`, because `released` is emitted synchronously
+inside the run that still holds the slot (the settle handler scans instead); and
+`SKELCREW_RUNS=1` is 006's *dispatch*, not the whole of 006, because the run is detached at
+every slot count.
+
+**Carried findings.**
+
+- **`main.ts` passing `slots` to the runner has no test of its own** — the same gap 024's
+  round 3 found for the sweep's runner id, in the same file. Two specs in a row found the
+  daemon's wiring untested; `process.test.ts` can cover it, and the next change to `main.ts`
+  should.
+- **The pump-handle change (a boolean cleared inside the pump) has no test.** The old handle
+  passes the whole suite because any later event recovers a dropped job; on a quiet daemon
+  there is no later event. A deterministic test would have to pin microtask ordering.
+- **The parser test for `SKELCREW_RUNS` was written after the function.** Its red was
+  verified by stubbing. Every other behaviour was red first.
+- **N runs warn into one stderr, interleaved.** The card is the record; this is the
+  operator's console only.
+
+The planning text that preceded landing follows, kept for the catches it recorded.
 
 The goal, stated by the owner on 2026-09-16 after the first real cards: the feeling of a team
 of developers working for you, not one contractor. Several cards move at the same time, each
@@ -892,10 +1001,10 @@ team rather than debugging one.
 
 ## Later, deliberately unplanned
 
-TUI (the rows-and-phase-track view, live over 003) and GUI, maybe. Remote clients watching a
-daemon on an always-on machine. Second runners and hosted runner tiers over the internal
-seam. Teams — hosted multi-human mode (auth, tenancy, sync). Multiple repositories per
-daemon, notification channels beyond the local ping (Slack, email, push), card attachments,
+GUI, maybe (the TUI is 026). Remote clients watching a daemon on an always-on machine. Second
+runners and hosted runner tiers over the internal seam. Teams — hosted multi-human mode (auth,
+tenancy, sync). Multiple repositories per daemon, notification channels beyond the local ping
+(`watch`'s since 010 and the terminal daemon's since 023: Slack, email, push), card attachments,
 and per-repo override of the built-in phase playbooks (users supplying their own spec/develop
 skills; skelcrew ships the workflow until real use demands customization). Grouping cards
 into milestones or projects: deferred until 008, when skelcrew builds skelcrew and this file
