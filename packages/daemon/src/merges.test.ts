@@ -327,8 +327,9 @@ test("a card no run has recorded a branch on has nothing for the head to match",
  * stale or copied `prUrl` and an agent that keeps the identity it was given. It does **not** bind
  * a caller that asserts another name over the socket: review round 3 ran `skelcrew --as runner
  * refs <id> --branch <other>` live, and it joined the `runner` member and wrote the very event
- * this check reads — names are not credentials (`allowlist.ts`, since 016). That caller is
- * owner-equivalent by passing no `--as` at all, which is 016's recorded limit.
+ * this check reads — names are not credentials (`allowlist.ts`, since 016). That `hello` is
+ * refused since 028, and the caller is owner-equivalent by passing no `--as` at all anyway,
+ * which is 016's recorded limit.
  */
 test("crew rewriting the branch and the pull request does not land the card in Done", async () => {
   const card = cardInPr();
@@ -363,9 +364,10 @@ test("a branch only crew ever recorded is no branch of this card's", async () =>
 /**
  * Review round 2, Important 1: the round-1 fix claimed `crew` could not produce a `refs_set` as
  * `runner`, and review walked `skelcrew --as runner refs <id> --branch <other>` live — names are
- * not credentials. So the check binds an agent that keeps the identity it was given, and a branch
- * a *human* member recorded binds too: that member can `mv <id> done` anyway, and the card whose
- * branch and pull request were made by hand in a terminal must still be able to land.
+ * not credentials, and that one `hello` is refused only since 028. So the check binds an agent
+ * that keeps the identity it was given, and a branch a *human* member recorded binds too: that
+ * member can `mv <id> done` anyway, and the card whose branch and pull request were made by hand
+ * in a terminal must still be able to land.
  */
 test("a branch the owner recorded by hand binds: the hand-driven card lands", async () => {
   const card = core.createCard({ title: "by hand" }, owner.id);

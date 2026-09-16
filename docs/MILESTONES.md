@@ -36,9 +36,9 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 20 | 023 A question is announced | landed, PR #21 — three review rounds; `none` had no meaning until the first found it |
 | 21 | 024 The board explains itself | landed, PR #23 — three review rounds on one rule: whose lapsed claim takes its question with it |
 | 22 | 025 Several cards at once | landed, PR #22 — two review rounds, both in teardown; developed in parallel with 023 and 024 from three sessions |
-| 23 | 026 The board on one screen | specified; split on 2026-09-16 into the read-only screen (026) and acting from it (027); card 2 on the owner's own board is this |
+| 23 | 026 The board on one screen | landed, PR #25 — the read-only half after the split; two review rounds; verification failed once on a spec sentence that was never true |
 | 24 | 027 Acting from the screen | specified |
-| 25 | 028 The runner's name is reserved | specified; 024's round-3 finding |
+| 25 | 028 The runner's name is reserved | landed, PR #26 — two review rounds; the spec's test setup could not work with the runner on, amended |
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
 | | 005 | dropped |
 
@@ -1002,6 +1002,44 @@ team rather than debugging one.
   loop. A small codebase, few dependencies, one language — which is also what the repository
   says about itself, and what pi got right.
 
+Landed as PR #25, the read-only half after the split. Bare `skelcrew` in a terminal opens the
+screen: the queue over the board, rows and a phase track, `j`/`k`/`g`/`G` for the cursor,
+`Enter` for the card view, `?` for the keys, `q` to leave, redrawn as events arrive, with a
+running card's row carrying the agent's last line. Piped, bare `skelcrew` is still the queue.
+No colour escape, no configuration, no dependency: `packages/cli/src/board/` is a model, a pure
+frame, a pure reducer and one terminal loop, about 800 lines with their tests beside them.
+
+Two review rounds. Round 1 found a Critical, reopening a card showed a stale feed, and an
+Important, wide characters wrapped the frame and scrolled the screen; both fixed and confirmed
+against the real binary under a pseudo-terminal. Round 2 approved. Verification failed once on
+criterion 2's wording alone: the spec said piped bare `skelcrew` "prints the usage and exits
+2, as it does today", and it never did — 010 made it the queue and a test pins it. The
+orchestrator corrected the sentence in the worktree and verification passed on the rerun.
+
+**Workflow finding, the spec's.** That sentence was written from memory of the CLI's
+no-command path instead of running it. `/spec`'s step 1 says to read the real files and check
+real behaviour; a claim of the form "as it does today" is exactly the kind that costs nothing
+to run and a verification round to get wrong. Two specs in a row (024's "in the same
+synchronous mutation", 026's "prints the usage") made a present-tense claim about the code that
+was false; both were caught late. For `/spec`: every "today" sentence names the command or test
+that shows it.
+
+**Carried findings.**
+
+- **The status column pads in UTF-16 units and `cut` counts code points.** Carried from 024;
+  026 pinned `row` and `status` unchanged, so it stays open. 027 touches the board's rendering
+  and is where a display-width measure belongs.
+- **The status line has no producer yet.** A failed card read ends the whole screen instead of
+  saying so on the line. 027 gives the line a producer with the refusal messages.
+- **Cards first seen through an event are stored with their whole feed.** Memory grows with a
+  long session; harmless at this scale.
+- **The queue half is re-sorted by `raisedAt`** while the daemon orders by event sequence; two
+  requests in one millisecond could swap.
+- **`skelcrew --json` with no command on a terminal stays `queue`.** The spec does not say
+  either way.
+- **015's tripwire now allows one more file to spell the escape character**, `board/ansi.ts`,
+  and became stricter about that file. Two reviewers judged it necessary.
+
 ## 027 — Acting from the screen
 
 The second half of 026, split out on 2026-09-16 a minute into 026's first development run,
@@ -1026,6 +1064,41 @@ because spawned agents join as it over the socket. A gate, not a boundary: the s
 and the owner's `hello` needs no credential. 024's two daemon-level tests, which impersonate the
 runner to make a lapsing claim, are rewritten to pre-make the claim in the data directory
 before the daemon starts — which is a restart after a sleep, the scenario 024 was for.
+
+Landed as PR #26. `hello` as an agent named `runner` is refused with a message saying the
+member is the daemon's own; the name is compared after the same trim the core applies, so
+`" runner "` is refused and `"Runner"` is another member; the daemon reserves the name whether
+or not the runner is on, and hands it to the server as a list so the server never imports
+from the runner. 024's two daemon-level tests set the runner's state up through the core on
+the data directory instead of impersonating it.
+
+One spec sentence was wrong and is corrected inline: with the runner on, a claim pre-made
+before the daemon starts is never swept, because the runner releases every claim of its own at
+startup (006's rule). The runner-on test takes the claim through the core after the daemon is
+listening, still never over the socket.
+
+Two review rounds. Round 1's Important was procedural: the orchestrator's spec amendment was
+uncommitted, so the branch's commit contradicted its own criterion; the repository's rule is
+that an amendment lands with the change. Round 2 approved after mutating the trim, the
+reservation and the runner-on condition, and reproducing the timeout that forced the
+amendment. A test now observes the refusal with the runner on, which is the case the spec was
+written for; the daemon-off case alone had let a `main.ts` that reserved only with the runner
+off pass every check — 029's rule, one spec later.
+
+**Carried findings.**
+
+- **`bun:sqlite` opens with `busy_timeout` 0.** A second connection's write during another's
+  transaction throws "database is locked" at once, with no retry. Measured by 028's reviewer:
+  a write straight after the daemon's "listening" line collided in 1 of 25 runs; after the
+  socket round trips, 0 of 50. The rewritten 024 test sits after the round trips and says so.
+  A second writer on the daemon's file is now a supported test shape, so a `busy_timeout` in
+  `openDb` is worth its one line; a production change, so not 028's.
+- **The default of a gate is open.** `reserved` was optional on `startServer` and defaulted to
+  nothing reserved; made required in fix round 1 so a second entry point must state its answer.
+- **Two wall-clock sweep tests flaked once each under load** during 028's and 029's runs (the
+  024 sweep test and the 006 sweep test, both budgeted lease plus 20 seconds against a 5-second
+  sweep). Each passed on rerun and in every full check. With four such tests in one file now,
+  a loaded machine will hit one; the budget or the lease is the knob.
 
 ## 029 — The daemon's wiring is tested
 

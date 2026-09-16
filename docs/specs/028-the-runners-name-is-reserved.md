@@ -75,7 +75,16 @@ required. The clean setup is the data directory: before spawning the daemon, ope
 close it; then spawn the daemon, whose own `ensureMember` finds the same member, and whose
 sweep lapses the pre-made claim. That is the daemon's real state on a restart after a sleep,
 which is the scenario 024 exists for, so the tests get closer to the truth by losing the
-impersonation. The assertions stay as they are.
+impersonation. The assertions stay as they are. One correction, made by the orchestrator
+during development: with the runner on, a claim pre-made before the daemon starts is never
+swept, because `reconcileAll` in `runner.ts` releases every claim held by the runner member at
+startup — a claim that survived a restart belongs to a run that no longer exists, which is
+006's rule and the right one. So for the runner-on test the member, the card in Spec and the
+request are pre-made through `openCore`, and the claim alone is taken through the same core
+handle after the daemon reports listening — still never over the socket. The control under
+`SKELCREW_RUNNER=0` follows the paragraph above exactly, since nothing reconciles there. (The
+spec as approved said the claim was pre-made in both; the implementer found the release in the
+activity and the sweep withdrawing nothing.)
 
 Decisions resolved from the repository: a set passed in rather than a constant imported by
 the protocol, for the seam; `crew` not reserved, because the shim needs it to join over the
@@ -109,9 +118,12 @@ process that opens the SQLite file directly, which is the owner's file on the ow
 5. `skelcrew --as runner ls` through the real CLI prints the daemon's message on stderr and
    exits 1.
 6. 024's two daemon-level tests in `process.test.ts` no longer connect as `runner`; they set
-   up the runner's claim and request through `openCore` on the data directory before spawning
-   the daemon, and their assertions (the withdrawal, the re-claim, the control under
-   `SKELCREW_RUNNER=0`) are unchanged. `git diff` of those tests shows setup changed and no
+   up the runner's member, card and request through `openCore` on the data directory before
+   spawning the daemon (and the claim too under `SKELCREW_RUNNER=0`; with the runner on, the
+   claim is taken through the same core handle after the daemon is listening, because the
+   runner releases pre-existing claims of its own at startup — amended during development),
+   and their assertions (the withdrawal, the re-claim, the control under `SKELCREW_RUNNER=0`)
+   are unchanged. `git diff` of those tests shows setup changed and no
    `expect` removed.
 7. The runner's own `hello`-free path is untouched: a daemon with the runner on still claims a
    card moved to Spec and raises its request as the `runner` member (the existing process test

@@ -28,7 +28,9 @@ beforeEach(() => {
   socketPath = join(dir, "s.sock");
   core = openCore(":memory:", { owner: "simon" });
   owner = core.listMembers()[0] as Member;
-  server = startServer({ core, socketPath });
+  // The daemon reserves its runner's name here (`main.ts` passes `RUNNER_MEMBER_NAME`); this
+  // file spells it out, because the `hello` lines below are raw JSON naming it too.
+  server = startServer({ core, socketPath, reserved: ["runner"] });
 });
 
 afterEach(() => {
@@ -321,6 +323,47 @@ describe("framing and session over a raw socket", () => {
     await raw.send('{"jsonrpc":"2.0","id":2,"method":"listCards","params":{}}');
     reply = JSON.parse(await raw.next());
     expect(reply.error.data.code).toBe("no_session");
+    raw.end();
+  });
+
+  test("hello as a reserved name is refused, and the connection stays free to be someone else", async () => {
+    const raw = await rawConnect(socketPath);
+    await raw.send(
+      '{"jsonrpc":"2.0","id":1,"method":"hello","params":{"kind":"agent","name":"runner"}}',
+    );
+    const refused = JSON.parse(await raw.next());
+    expect(refused.error.code).toBe(-32602);
+    expect(refused.error.data.code).toBe("invalid_params");
+    expect(refused.error.message).toContain("runner");
+    expect(refused.error.message).toContain("the daemon's own");
+
+    // No member was created by it, and the connection may say hello again as someone else.
+    const client = await asOwner();
+    expect((await client.call("listMembers", {})).map((m) => m.name)).toEqual(["simon"]);
+    await raw.send(
+      '{"jsonrpc":"2.0","id":2,"method":"hello","params":{"kind":"agent","name":"crew-1"}}',
+    );
+    const joined = JSON.parse(await raw.next());
+    expect(joined.result.member.name).toBe("crew-1");
+    expect((await client.call("listMembers", {})).map((m) => m.name)).toEqual(["simon", "crew-1"]);
+    await client.close();
+    raw.end();
+  });
+
+  test("a reserved name is refused as the core would trim it; another case is another member", async () => {
+    const raw = await rawConnect(socketPath);
+    await raw.send(
+      '{"jsonrpc":"2.0","id":1,"method":"hello","params":{"kind":"agent","name":"  runner  "}}',
+    );
+    const refused = JSON.parse(await raw.next());
+    expect(refused.error.code).toBe(-32602);
+    expect(refused.error.message).toContain("runner");
+    // The core does not fold case, so `Runner` is a different member and joins as one.
+    await raw.send(
+      '{"jsonrpc":"2.0","id":2,"method":"hello","params":{"kind":"agent","name":"Runner"}}',
+    );
+    const joined = JSON.parse(await raw.next());
+    expect(joined.result.member.name).toBe("Runner");
     raw.end();
   });
 
@@ -911,7 +954,7 @@ describe("claims on the wire", () => {
     // A server over a core on a movable clock, so the lapse is exercised without waiting.
     const timed = openCore(":memory:", { owner: "simon", now: () => clock });
     const timedPath = join(dir, "t.sock");
-    const timedServer = startServer({ core: timed, socketPath: timedPath });
+    const timedServer = startServer({ core: timed, socketPath: timedPath, reserved: [] });
     try {
       const watcher = await connect(timedPath, { kind: "human" });
       const agentClient = await connect(timedPath, { kind: "agent", name: "crew-1" });
