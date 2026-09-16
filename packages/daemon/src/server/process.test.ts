@@ -662,6 +662,97 @@ test("a SKELCREW_RUNS that is not a count stops the daemon before it creates any
   expect(existsSync(join(dir, "data"))).toBe(false);
 });
 
+/** Every `claimed` and `released` a subscriber saw, in order, as `"<type> <card id>"`. */
+function claimsAndReleases(events: Activity[]): string[] {
+  return events
+    .filter((event) => event.type === "claimed" || event.type === "released")
+    .map((event) => `${event.type} ${event.cardId}`);
+}
+
+/**
+ * The count itself, through the real daemon rather than through `startRunner`'s options: the
+ * two tests below are what observes `main.ts` handing the parsed `SKELCREW_RUNS` on, and a
+ * daemon that dropped it on the floor and ran with the default would pass every other check.
+ *
+ * What a slot is worth is on the cards. With `SKELCREW_AGENT=none` a run is 006's handoff —
+ * claim, worktree, a request to the owner, release — and the scan claims synchronously while
+ * the worktree setup that follows does not, so with two slots both claims land before either
+ * run reaches its release, and with one the second card cannot be claimed until the first is
+ * released.
+ */
+test("with SKELCREW_RUNS=1 the daemon claims the second card only after it has released the first", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const daemon = spawnDaemon({
+    cwd: repo,
+    dataDir: data,
+    runner: true,
+    env: { SKELCREW_RUNS: "1" },
+  });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+  const owner = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await owner.subscribe((event) => events.push(event));
+
+  const first = await owner.call("createCard", { title: "Add login page" });
+  const second = await owner.call("createCard", { title: "Add a logout button" });
+  await owner.call("moveCard", { id: first.id, phase: "spec" });
+  await owner.call("moveCard", { id: second.id, phase: "spec" });
+
+  await until(
+    () => (events.filter((event) => event.type === "released").length === 2 ? true : undefined),
+    20_000,
+    "the runner did not finish both cards",
+  );
+  expect(claimsAndReleases(events)).toEqual([
+    `claimed ${first.id}`,
+    `released ${first.id}`,
+    `claimed ${second.id}`,
+    `released ${second.id}`,
+  ]);
+  // Both were really run: each card is back with the owner, holding its own worktree.
+  for (const card of [first, second]) {
+    const detail = await owner.call("getCard", { id: card.id });
+    expect(detail.attention?.note).toContain(join(data, "worktrees", String(card.id)));
+  }
+
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
+}, 60_000);
+
+test("with SKELCREW_RUNS unset the daemon claims both cards before either is released", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+  const owner = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await owner.subscribe((event) => events.push(event));
+
+  const first = await owner.call("createCard", { title: "Add login page" });
+  const second = await owner.call("createCard", { title: "Add a logout button" });
+  await owner.call("moveCard", { id: first.id, phase: "spec" });
+  await owner.call("moveCard", { id: second.id, phase: "spec" });
+
+  await until(
+    () => (events.filter((event) => event.type === "released").length === 2 ? true : undefined),
+    20_000,
+    "the runner did not finish both cards",
+  );
+  const seen = claimsAndReleases(events);
+  // The claims are in card order, because the scan takes ready cards in id order; which run
+  // releases first is the two sessions' business, so only that both claims precede them is read.
+  expect(seen.slice(0, 2)).toEqual([`claimed ${first.id}`, `claimed ${second.id}`]);
+  expect(seen.slice(2).sort()).toEqual([`released ${first.id}`, `released ${second.id}`]);
+
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+  expect(await daemon.stderr()).toBe("");
+}, 60_000);
+
 // --- the driver selection (012) ---
 
 test("an unknown SKELCREW_AGENT stops the daemon before it creates anything", async () => {
