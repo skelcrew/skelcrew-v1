@@ -721,6 +721,7 @@ test("from a subdirectory of a git repository the CLI reaches the daemon on <roo
   const repoServer = startServer({
     core: repoCore,
     socketPath: join(repo, ".skelcrew", "skelcrew.sock"),
+    reserved: [],
   });
   extraServers.push({
     stop() {
@@ -1727,7 +1728,11 @@ test("from inside a runner worktree the CLI reaches the repo's daemon with no SK
   const data = join(repo, ".skelcrew");
   mkdirSync(data);
   const repoCore = openCore(":memory:", { owner: "simon" });
-  const repoServer = startServer({ core: repoCore, socketPath: join(data, "skelcrew.sock") });
+  const repoServer = startServer({
+    core: repoCore,
+    socketPath: join(data, "skelcrew.sock"),
+    reserved: [],
+  });
   extraServers.push({
     stop() {
       repoServer.stop();
@@ -1818,7 +1823,11 @@ function fileDaemon(): { home: string; dbPath: string; daemonCore: Core } {
   extraDirs.push(home);
   const dbPath = join(home, "skelcrew.db");
   const daemonCore = openCore(dbPath, { owner: "simon" });
-  const fileServer = startServer({ core: daemonCore, socketPath: join(home, "skelcrew.sock") });
+  const fileServer = startServer({
+    core: daemonCore,
+    socketPath: join(home, "skelcrew.sock"),
+    reserved: [],
+  });
   extraServers.push({
     stop() {
       fileServer.stop();

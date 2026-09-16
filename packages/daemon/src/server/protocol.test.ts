@@ -954,7 +954,7 @@ describe("claims on the wire", () => {
     // A server over a core on a movable clock, so the lapse is exercised without waiting.
     const timed = openCore(":memory:", { owner: "simon", now: () => clock });
     const timedPath = join(dir, "t.sock");
-    const timedServer = startServer({ core: timed, socketPath: timedPath });
+    const timedServer = startServer({ core: timed, socketPath: timedPath, reserved: [] });
     try {
       const watcher = await connect(timedPath, { kind: "human" });
       const agentClient = await connect(timedPath, { kind: "agent", name: "crew-1" });

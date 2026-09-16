@@ -41,13 +41,17 @@ export interface Server {
 export function startServer(options: {
   core: Core;
   socketPath: string;
-  /** Agent member names `hello` refuses: the daemon's own members (028). */
-  reserved?: readonly string[];
+  /**
+   * Agent member names `hello` refuses: the daemon's own members (028). Required, and `[]` is
+   * how a server says it reserves nothing — a gate left out defaults to open, so the caller
+   * names the names every time.
+   */
+  reserved: readonly string[];
 }): Server {
   const { core, socketPath } = options;
   // Normalised once, the way the core stores a member name, so the comparison in `hello` is
   // against what `ensureMember` would have found.
-  const reserved = new Set((options.reserved ?? []).map(memberName));
+  const reserved = new Set(options.reserved.map(memberName));
   const connections = new Set<ConnectionSocket>();
   const encoder = new TextEncoder();
 

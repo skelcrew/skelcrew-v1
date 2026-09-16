@@ -43,13 +43,14 @@
  * card must still be able to land. A card no such write exists on is a mismatch.
  *
  * What this binds, stated without the overclaim round 1 made: a wrong, stale or copied `prUrl`,
- * and an agent that keeps the identity the runner gave it. It does **not** bind a caller on the
- * socket. Round 1's fix claimed such a caller was bound; review rounds 2 and 3 both walked
- * `skelcrew --as runner refs <id> --branch <other>` live, and each time it joined the `runner`
- * member and wrote the very event this check reads — names are not credentials (`allowlist.ts`
- * has recorded that since 016). 028 refuses that one `hello`, since the runner is the daemon's
- * own member, and it is no bind either: the same caller drops `--as` and is the owner, whose
- * writes bind by design and who moves cards to Done by typing.
+ * and an agent that keeps the identity the runner gave it. It does **not** bind a caller that
+ * asserts `runner` over the socket. Round 1's fix claimed such a caller was bound; review rounds 2
+ * and 3 both walked `skelcrew --as runner refs <id> --branch <other>` live, and each time it
+ * joined the `runner` member and wrote the very event this check reads — names are not
+ * credentials (`allowlist.ts` has recorded that since 016). 028 closed that one `hello`: the
+ * runner is the daemon's own member, so the socket refuses the name and there is no such caller
+ * any more. The bind is still not here, and nothing was lost by it: that caller drops `--as` and
+ * is the owner, who moves cards to Done by typing.
  *
  * **3. The tick acts on the card as it is now, not as it listed it.** Each card costs a `gh`
  * round-trip, and the owner can move a card back to Code inside that window — with a run

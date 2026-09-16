@@ -95,7 +95,9 @@ const core = openCore(dbPath);
 // runner is on: the member survives in the database, and the next start must not inherit claims
 // an impersonator made.
 //
-// Observed by "with SKELCREW_RUNNER=0 the socket still refuses hello as the runner".
+// Observed by "with the runner on the socket refuses hello as the runner, whose member the
+// daemon made itself" — the configuration this is for — and by "with SKELCREW_RUNNER=0 the
+// socket still refuses hello as the runner" for the half that is off.
 const server = startServer({ core, socketPath, reserved: [RUNNER_MEMBER_NAME] });
 // The member whose claims are runs, once the execution half below has joined as it. The sweep
 // takes a lapsed run's own question with it and needs to know which claims are runs; a claim

@@ -19,7 +19,7 @@ beforeEach(() => {
   socketPath = join(dir, "s.sock");
   core = openCore(":memory:", { owner: "simon" });
   owner = core.listMembers()[0] as Member;
-  server = startServer({ core, socketPath });
+  server = startServer({ core, socketPath, reserved: [] });
 });
 
 afterEach(async () => {

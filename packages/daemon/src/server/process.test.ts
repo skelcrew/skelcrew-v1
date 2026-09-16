@@ -458,6 +458,10 @@ test("the daemon's sweep takes an interrupted run's own question with it, and th
   const socketPath = join(data, "skelcrew.sock");
 
   mkdirSync(data, { recursive: true });
+  // This handle stays open while the daemon runs, so the claim below is a second writer on the
+  // same file, and `openCore` opens with `busy_timeout = 0` — a write that collides with the
+  // daemon's throws "database is locked" rather than waiting. The claim therefore sits after the
+  // socket round trips below, which leave the daemon idle at the moment it is taken.
   const setup = openCore(join(data, "skelcrew.db"));
   const runner = setup.ensureMember("runner", "agent");
   const ownerMember = setup.listMembers().find((m) => m.kind === "human") as Member;
@@ -582,6 +586,43 @@ test("with SKELCREW_RUNNER=0 the socket still refuses hello as the runner", asyn
   const owner = await connect(socketPath, { kind: "human" });
   // No member was created by it, and every other agent name joins as before.
   expect((await owner.call("listMembers", {})).map((m) => m.kind)).toEqual(["human"]);
+  const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
+  expect(crew.member.name).toBe("crew-1");
+  await crew.close();
+  await owner.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+});
+
+/**
+ * The configuration the spec is about: a daemon whose runner is running, holding the member
+ * whose claims are runs. The runner made that member itself, without the socket, and the socket
+ * refuses the same name to everyone else — so the member the daemon's own `hello`-free path uses
+ * stays the daemon's, and a client cannot release or renew its leases.
+ */
+test("with the runner on the socket refuses hello as the runner, whose member the daemon made itself", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true });
+  await daemon.firstLine();
+
+  let caught: unknown;
+  try {
+    await connect(socketPath, { kind: "agent", name: "runner" });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(RpcError);
+  const refused = caught as RpcError;
+  expect(refused.code).toBe(-32602);
+  expect(refused.message).toContain("runner");
+  expect(refused.message).toContain("the daemon's own");
+
+  const owner = await connect(socketPath, { kind: "human" });
+  // One runner member, the one the running runner made in-process; the refused `hello` made
+  // none. Every other agent name joins as before.
+  const members = await owner.call("listMembers", {});
+  expect(members.filter((m) => m.name === "runner" && m.kind === "agent")).toHaveLength(1);
   const crew = await connect(socketPath, { kind: "agent", name: "crew-1" });
   expect(crew.member.name).toBe("crew-1");
   await crew.close();

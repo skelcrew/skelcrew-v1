@@ -128,3 +128,64 @@ exit=0
   "would be `hello` refusing the reserved names, which is its own finding" — this spec.
 
 Each keeps its history and gains the sentence that says 028 refuses that `hello` now.
+
+# Fix round 1
+
+Plan, one line per finding:
+
+1. Commit the orchestrator's uncommitted spec amendment with this round's changes, text untouched.
+2. Add a process test that refuses `hello` as the runner on a daemon with the runner *on* — a
+   second case beside the `SKELCREW_RUNNER=0` one, with a temp repo so the runner really starts.
+   Red first by mutating `main.ts` to reserve only when `SKELCREW_RUNNER === "0"`; then restore.
+   `main.ts`'s comment beside `reserved` names both tests verbatim.
+3. `merges.ts`: restore "It does **not** bind a caller that asserts `runner` over the socket" and
+   let the sentences after it say 028 closed that `hello`.
+4. `startServer`'s `reserved` becomes required; the test servers that reserve nothing pass `[]`.
+5. A comment in the runner-on 024 test where the second core handle is opened, naming the
+   `busy_timeout = 0` hazard and why the claim sits after the socket round trips.
+
+Files: `docs/specs/028-the-runners-name-is-reserved.md` (commit only), `packages/daemon/src/main.ts`,
+`packages/daemon/src/merges.ts`, `packages/daemon/src/server/server.ts`,
+`packages/daemon/src/server/process.test.ts`, `packages/daemon/src/server/server.test.ts`,
+`packages/daemon/src/server/protocol.test.ts`, `packages/cli/src/cli.test.ts`.
+
+## Red, for the runner-on refusal
+
+With `main.ts` mutated to `reserved: process.env.SKELCREW_RUNNER === "0" ? [RUNNER_MEMBER_NAME] : []`
+— the reviewer's mutation, which the landed suite could not see — the new test fails because the
+`hello` succeeded and nothing was thrown:
+
+```
+$ bun test packages/daemon/src/server/process.test.ts -t "with the runner on the socket refuses hello as the runner"
+611 |   expect(caught).toBeInstanceOf(RpcError);
+error: expect(received).toBeInstanceOf(expected)
+Expected constructor: [class RpcError extends Error]
+Received value: undefined
+(fail) with the runner on the socket refuses hello as the runner, whose member the daemon made itself
+ 0 pass
+ 1 fail
+```
+
+`main.ts` restored, the same test passes (7 expect() calls).
+
+`startServer`'s `reserved` is required now, and the typecheck is what says so — with `reserved: []`
+removed from `server.test.ts`:
+
+```
+$ bun run --filter '@skelcrew/daemon' typecheck
+src/server/server.test.ts(22,24): error TS2741: Property 'reserved' is missing in type
+'{ core: Core; socketPath: string; }' but required in type
+'{ core: Core; socketPath: string; reserved: readonly string[] }'.
+```
+
+## Checks, round 1
+
+```
+$ bun run check
+ 804 pass
+ 0 fail
+Ran 804 tests across 29 files. [81.43s]
+```
+
+803 tests before this round, 804 after: the one new process test. `check:harness` was not run
+again — this round touched no playbook and not `allowlist.ts`.
