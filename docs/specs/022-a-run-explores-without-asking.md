@@ -78,9 +78,13 @@ when a `result` arrives or a new turn begins, so a sentence from an earlier turn
 to a later ask). `questionFor` takes it and, when present, adds `why: <text>` after the frame,
 as one line: `oneLine`'d and cut to a small fixed budget (200 bytes, in the shape of
 `INPUT_LINE_MAX`), inside the existing byte cap arithmetic so a long reason cannot push the input
-past the cap. The `why:` line is the agent's text, so it goes through the same `relayed`/`quoted`
-treatment the input does, for 015's reason: a line of it must not read as a line the runner
-wrote. `describeCall` and the `allowed`/`denied` comments are unchanged.
+past the cap. The `why:` line is the agent's text, so it is escaped the way every relayed text is
+(`relayed`) and flattened to one line, for 015's reason: a line of it must not read as a line
+the runner wrote, and a single line with no newline in it cannot become one. It is *not*
+`quoted` the way the input is: the example above shows it with the CLI's one marker, and that is
+the binding form. (The spec as approved said "the same `relayed`/`quoted` treatment the input
+does", which contradicted the example; the orchestrator settled it on the example during
+development.) `describeCall` and the `allowed`/`denied` comments are unchanged.
 
 Decisions resolved from the repository: the reason comes from the agent's text turn rather than
 from a new CLI verb, because the playbooks already have the agent narrate and 012 already posts
