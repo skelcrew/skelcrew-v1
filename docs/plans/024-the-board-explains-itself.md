@@ -46,11 +46,10 @@ Run record for `docs/specs/024-the-board-explains-itself.md`.
 - **`<HH:MM>` is the local time of day**, from `formatTime`'s last five characters. A live claim
   is at most an hour old (`CLAIM_TTL_MAX_SECONDS`), so the date is today's but for a lease that
   crosses midnight; the table asks for `HH:MM` and that is what it gets.
-- **Where criterion 5's two raisers are asserted.** The agent-as-`crew` case is end to end in
-  `contracts.test.ts` (the request stands *and* no second claim follows); the owner's own note is
-  asserted at the core, beside the sweep's other cases, where "the request stands" is the whole
-  of it — the runner's `isReady` already refuses any card with an open request, which the `crew`
-  case exercises.
+- **Where criterion 5's two raisers are asserted.** Both end to end in `contracts.test.ts`, as
+  one case per raiser over a small table — the agent's own `skelcrew attention` question as
+  `crew`, and the owner's note — each asserting that the request stands *and* that no second
+  claim follows. The same two raisers are asserted at the core beside the sweep's other cases.
 
 ## Red, then green
 
@@ -92,17 +91,18 @@ Tests first, in all four files.
 Green came from three small changes: the new member of `AttentionResolution`, the withdrawal in
 `sweepClaims`, and `status` in `render.ts` with its two callers.
 
-The two cases that were **green on their first run** are both criterion 5's — the sweep leaving
-a request raised by anyone else standing, at the core and through the runner. They assert
-behaviour that must survive this spec rather than behaviour it adds, which is what criterion 5
-asks for; they are guards, and they would have failed against a withdrawal that read the
-request's addressee instead of its raiser.
+The three cases that were **green on their first run** are all criterion 5's — the sweep leaving
+a request raised by anyone else standing: at the core, and through the runner for each of the two
+raisers the criterion names (the agent as `crew`, and the owner). They assert behaviour that must
+survive this spec rather than behaviour it adds, so they are guards. That they bite was checked
+by dropping the raiser test from the withdrawal (`card.attention !== null` alone) and re-running
+them: two failures in `contracts.test.ts` and one in `core.test.ts`, the condition then restored.
 
 ## Checks
 
 - `bun run check` — passes: `biome ci .` clean over 90 files, `tsc` clean in all three packages,
-  `768 pass / 0 fail` across 29 files. Eight of those cases are new here (two in `core.test.ts`,
-  two in `contracts.test.ts`, three in `cli.test.ts`, one in `render.test.ts`), so the suite
+  `769 pass / 0 fail` across 29 files. Nine of those cases are new here (two in `core.test.ts`,
+  three in `contracts.test.ts`, three in `cli.test.ts`, one in `render.test.ts`), so the suite
   stood at 760 before.
 - `bun run check:harness` — **not run, and not required**: it spawns the pinned coding agent to
   re-evaluate the playbooks' commands and the runner's fixed allowlist, and this spec changes

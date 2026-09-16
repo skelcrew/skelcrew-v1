@@ -1019,45 +1019,69 @@ test("a lapsed lease takes the run's own question with it, and the card is claim
   expect(comments(1).filter((text) => text.includes("run abandoned"))).toHaveLength(1);
 });
 
-test("a lapsed lease leaves the agent's own question standing, and the card is not claimed again", async () => {
-  await initRepo();
-  const clock = onAFakeClock();
-  let runs = 0;
-  start({
-    now: clock.now,
-    driver: fakeDriver(async function* (options) {
-      runs += 1;
-      yield { type: "text", text: "working" };
-      await new Promise<void>((resolve) => {
-        if (options.signal.aborted) resolve();
-        else options.signal.addEventListener("abort", () => resolve(), { once: true });
-      });
-    }),
-  });
-  core.createCard({ title: "Asked for itself" }, owner.id);
-  const working = untilEvent(commentContaining(1, "working"));
-  core.moveCard(1, "spec", owner.id);
-  await working;
-  // What `skelcrew attention` does from the worktree: the agent's own question, as `crew`.
-  agentAsks(1, "which repository should I use?");
-
-  const abandoned = untilEvent(commentContaining(1, "run abandoned"));
-  clock.tick(10 * 60_000);
-  expect(core.sweepClaims()).toEqual([1]);
-
-  expect(core.getCard(1).attention).toMatchObject({
-    raisedBy: crewMember.id,
+/**
+ * Criterion 5, for each of the two raisers it names: a question the run did not raise can still
+ * be answered, so the sweep leaves it, and the card stays out of the runner's queue until a
+ * member answers it — which is `isReady`'s existing rule, unchanged.
+ */
+const OTHER_RAISERS = [
+  {
+    whose: "the agent's own",
     note: "which repository should I use?",
-  });
-  await abandoned;
-  await Bun.sleep(200);
+    // What `skelcrew attention` does from the worktree: the agent's question, as `crew`.
+    raise: (): void => agentAsks(1, "which repository should I use?"),
+    raisedBy: (): number => crewMember.id,
+  },
+  {
+    whose: "the owner's",
+    note: "have a look at this first",
+    raise: (): void => {
+      core.requestAttention(1, { to: owner.id, note: "have a look at this first" }, owner.id);
+    },
+    raisedBy: (): number => owner.id,
+  },
+] as const;
 
-  // Still waiting on the owner, and so not ready: no second claim, and no second run.
-  expect(core.getCard(1).attention?.raisedBy).toBe(crewMember.id);
-  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
-  expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
-  expect(runs).toBe(1);
-});
+for (const raiser of OTHER_RAISERS) {
+  test(`a lapsed lease leaves ${raiser.whose} question standing, and the card is not claimed again`, async () => {
+    await initRepo();
+    const clock = onAFakeClock();
+    let runs = 0;
+    start({
+      now: clock.now,
+      driver: fakeDriver(async function* (options) {
+        runs += 1;
+        yield { type: "text", text: "working" };
+        await new Promise<void>((resolve) => {
+          if (options.signal.aborted) resolve();
+          else options.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }),
+    });
+    core.createCard({ title: "Asked by somebody else" }, owner.id);
+    const working = untilEvent(commentContaining(1, "working"));
+    core.moveCard(1, "spec", owner.id);
+    await working;
+    raiser.raise();
+
+    const abandoned = untilEvent(commentContaining(1, "run abandoned"));
+    clock.tick(10 * 60_000);
+    expect(core.sweepClaims()).toEqual([1]);
+
+    expect(core.getCard(1).attention).toMatchObject({
+      raisedBy: raiser.raisedBy(),
+      note: raiser.note,
+    });
+    await abandoned;
+    await Bun.sleep(200);
+
+    // Still waiting on a member, and so not ready: no second claim, and no second run.
+    expect(core.getCard(1).attention?.raisedBy).toBe(raiser.raisedBy());
+    expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+    expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+    expect(runs).toBe(1);
+  });
+}
 
 // --- the agent acting on its own card ---
 //
