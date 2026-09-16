@@ -25,7 +25,9 @@ import {
   VERSION,
 } from "@skelcrew/shared";
 import { type Core, openCore } from "../../daemon/src/core/core";
+import type { AgentDriver } from "../../daemon/src/runner/agent";
 import { createGit } from "../../daemon/src/runner/git";
+import { loadPlaybooks } from "../../daemon/src/runner/playbooks";
 import { type Runner, startRunner } from "../../daemon/src/runner/runner";
 import { startServer } from "../../daemon/src/server/server";
 
@@ -1387,6 +1389,83 @@ test("queue shows the runner's request with the worktree path; show prints the b
   expect(byRunner[4]).toContain("no playbook");
   expect(json<CardDetail>(await ok(["show", "1", "--json"]))).toEqual(core.getCard(1));
   expect(warnings).toEqual([]);
+});
+
+/**
+ * 022, criterion 3, rendered. The note is built by the runner and printed by the CLI, and what
+ * the owner actually reads is the second of those — so the reason is asserted here as `queue`
+ * prints it, under the marker every note line carries, and not only as the string the card
+ * holds. The agent is scripted: no coding agent is spawned and no model is called.
+ */
+test("queue prints the agent's reason for a permission question, between the frame and the input", async () => {
+  const gitEnv: Record<string, string | undefined> = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_AUTHOR_NAME: "test",
+    GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "test",
+    GIT_COMMITTER_EMAIL: "test@example.invalid",
+  };
+  const repo = join(dir, "repo");
+  mkdirSync(repo);
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["commit", "-q", "--allow-empty", "-m", "init"],
+  ]) {
+    const proc = Bun.spawn(["git", ...args], { cwd: repo, env: gitEnv, stdout: "ignore" });
+    expect(await proc.exited).toBe(0);
+  }
+  const data = join(dir, "data");
+  mkdirSync(data);
+  const driver: AgentDriver = {
+    async *run(options) {
+      yield { type: "text", text: "Reading the manifests to see how the workspaces are laid out." };
+      await options.canUseTool("Bash", { command: "sed -n 1,60p package.json" });
+      yield { type: "result", ok: true };
+    },
+  };
+  runners.push(
+    startRunner({
+      core,
+      dataDir: data,
+      repoRoot: repo,
+      git: createGit({ env: gitEnv }),
+      member: core.ensureMember("runner", "agent"),
+      crew: core.ensureMember("crew", "agent"),
+      warn: () => {},
+      agent: { driver, playbooks: loadPlaybooks() },
+    }),
+  );
+
+  await ok(["add", "Build a TUI"]);
+  const requested = new Promise<void>((resolve) => {
+    const unsubscribe = core.subscribe((event) => {
+      if (event.type !== "attention_requested" || event.cardId !== 1) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+  await ok(["mv", "1", "spec"]);
+  await Promise.race([
+    requested,
+    Bun.sleep(2000).then(() => {
+      throw new Error("no attention request within 2 s");
+    }),
+  ]);
+
+  const queue = await ok(["queue"]);
+  expect(queue.stdout).toContain("#1 Build a TUI  [Spec]");
+  expect(queue.stdout).toContain(
+    [
+      "> allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)",
+      "> why: Reading the manifests to see how the workspaces are laid out.",
+      "> input:",
+      "> > sed -n 1,60p package.json",
+    ].join("\n"),
+  );
+
+  await ok(["resolve", "1", "-m", "no"]);
 });
 
 test("from inside a runner worktree the CLI reaches the repo's daemon with no SKELCREW_DIR: the exit ramp works", async () => {

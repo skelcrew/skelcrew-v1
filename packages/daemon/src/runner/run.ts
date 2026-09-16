@@ -56,6 +56,8 @@ export const TEXT_EXCERPT_BYTES = 2 * 1024;
 export const TOOL_SUMMARY_MS = 30_000;
 /** One-line renderings of a tool's input are cut here. */
 const INPUT_LINE_MAX = 200;
+/** The agent's reason for a question is one line of the note, and is cut here. */
+const WHY_LINE_MAX = 200;
 const COMMAND_IN_SUMMARY_MAX = 60;
 /** A batch's summary is one comment, so it is cut like every other write to a card. */
 const SUMMARY_MAX_BYTES = COMMENT_MAX_BYTES / 4;
@@ -278,6 +280,24 @@ function describeInput(tool: string, input: Record<string, unknown>): string {
 }
 
 /**
+ * The agent's own reason for a call, as the note's `why:` line and the newline after it — or
+ * nothing at all, which is what the question carries when no text turn preceded the ask.
+ *
+ * Escaped first, like every other relay here, so the cut is measured on what is actually shown.
+ * Flattened next, and that is what makes it safe to interpolate unquoted: the party choosing
+ * this text is the party being gated, and with every line break gone it cannot become a line of
+ * its own — 015's reason, and the same one the input is quoted for. Then cut to its own budget,
+ * which the caller's byte arithmetic counts as part of the note's fixed part, so a long reason
+ * cannot push the input past the cap. `oneLine` cuts by character and `cutMarked` by byte, so
+ * the budget is the tighter of the two and the line is marked wherever it bit.
+ */
+function whyLine(raw: string | undefined): string {
+  if (raw === undefined) return "";
+  const line = cutMarked(oneLine(relayed(raw), WHY_LINE_MAX), WHY_LINE_MAX);
+  return line.length === 0 ? "" : `why: ${line}\n`;
+}
+
+/**
  * "ran 4 tools: Read ×2, Bash `bun test`, Edit": Bash calls named, the rest counted. A
  * window can hold more distinct commands than a comment does, and a summary over the cap is
  * rejected by the core — so it is cut and marked here rather than dropped from the card.
@@ -401,6 +421,64 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     summaryTimer ??= setTimeout(flushTools, input.summaryMs);
   };
 
+  // --- the agent's current turn ---
+  /**
+   * The text of the agent's current turn, which is where it says what it is about to do — kept
+   * so that a question raised in the same turn can carry it (022). A sentence from an earlier
+   * turn describes a call that has already been made or already been decided, so beside the next
+   * command it would be true of nothing: worse than no sentence at all, because the owner
+   * answers from it. So it is cleared at every boundary a turn can end on — see `endTurn`.
+   * Copied onto the ask when the call is made rather than read when the question is raised, so a
+   * queued ask keeps its own turn's sentence however long it waits behind another.
+   */
+  let turnText: string | undefined;
+
+  /**
+   * Calls the agent has made in this turn that have not come back. A turn ends when the *last*
+   * of them does, which is why this is a count and not a flag: the agent routinely reads with a
+   * pre-allowed `Read` and asks for a shell command in the same turn, and the harness runs the
+   * `Read` without asking, so its result arrives *before* the shell command reaches `canUseTool`.
+   * Clearing on any result would drop the sentence in exactly the workflow this spec's playbooks
+   * ask for (review round 2, against the real harness: text, tool_use, tool_use, tool_result,
+   * then the question).
+   */
+  let outstandingCalls = 0;
+
+  /**
+   * A turn is over: the next thing the agent says belongs to the next one. There are three
+   * boundaries — the last of the turn's calls coming back (`callReturned`), this run's own
+   * question being answered (`answered`), and a member's comment reaching the agent as a new
+   * message (`flushHeld`). A `result` needs none: the loop breaks on one, and a call made after
+   * that is settled by `over` without a question.
+   *
+   * The count goes with the text, so a call still outstanding when the owner's answer or a
+   * comment ends the turn cannot hold the count above zero for the rest of the run and stop
+   * later results ending their own turns. Its result — the harness does send one for a call
+   * `canUseTool` denied, measured against the pinned SDK in review round 2 — then reaches
+   * `callReturned` with the count already at zero. That is a result for a call the turn under
+   * way never made, so it ends no turn. Until review round 3 it did, and the only thing that
+   * kept it from clearing a sentence that was there is that the agent cannot speak while a call
+   * of its own is outstanding: no text arrives between a call and its result, so there was
+   * nothing yet to clear. That is the harness's shape rather than this run's guarantee, and
+   * the floor is the guarantee.
+   */
+  const endTurn = (): void => {
+    turnText = undefined;
+    outstandingCalls = 0;
+  };
+
+  /** A call the agent made in this turn, and its result: the turn ends when the last comes back. */
+  const callMade = (): void => {
+    outstandingCalls += 1;
+  };
+  const callReturned = (): void => {
+    // Nothing outstanding: a call from a turn that has already ended, coming back late. The
+    // turn under way made it no promise, so it does not end on it — see `endTurn` above.
+    if (outstandingCalls === 0) return;
+    outstandingCalls -= 1;
+    if (outstandingCalls === 0) endTurn();
+  };
+
   // --- comments, forwarded ---
   /**
    * Comments seen in the current dispatch, forwarded on the next microtask. The core
@@ -423,7 +501,20 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
    */
   const held: Comment[] = [];
   const flushHeld = (): void => {
-    for (const comment of held.splice(0)) messages.push(comment.data.text);
+    const forwarded = held.splice(0);
+    for (const comment of forwarded) messages.push(comment.data.text);
+    // A message read is a turn begun, so what the agent said before reading it is not the
+    // reason for what it asks after (022).
+    //
+    // The turn ends here, where the comment is queued, and not where the agent reads it — so a
+    // comment posted between the agent's sentence and its next shell call takes the reason off
+    // that question, though the agent asked before it had read a word. That is the safe
+    // direction and it is left as it is: the cost is a question with no reason on it, never a
+    // question with a reason that belongs to something else, and the owner is the one who
+    // caused it. The dequeue is not the read either — `userMessages` in `claude.ts` drains this
+    // inbox into the harness as fast as it yields, well before the model sees a message — so
+    // moving the clear there would buy a different early clear rather than an accurate one.
+    if (forwarded.length > 0) endTurn();
   };
 
   // --- tools the list does not pre-allow: asked, one at a time ---
@@ -432,6 +523,8 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
   interface Ask {
     tool: string;
     input: Record<string, unknown>;
+    /** The agent's last text turn when the call was made, or undefined when there was none. */
+    why: string | undefined;
     settle: (decision: ToolDecision) => void;
   }
 
@@ -470,9 +563,14 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
    * commands sit on the first line, the input goes last under its own label, and `quoted`
    * leaves no line of it that can be either. Same class as milestone 015, where control
    * characters repaint a rendered line rather than laying out a fake one; 015 is not this.
+   *
+   * **Between the two sits the agent's reason for the call**, when it wrote one in the same turn
+   * (022): `whyLine` above, on one line, inside this function's byte arithmetic so that a long
+   * reason costs the reason and never the input. A command the owner cannot read from their
+   * phone is a run that waits until they are at a machine; the sentence is what they answer from.
    */
   const questionFor = (pending: Ask): string => {
-    const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\ninput:\n`;
+    const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\n${whyLine(pending.why)}input:\n`;
     // Escaped where it is composed, before it is quoted or measured: the payload is the
     // agent's text, and the note's cap below has to be measured on what is actually posted.
     // The sink escapes it in any case (`postingCore`); this is about the cut, not the safety.
@@ -544,7 +642,7 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
 
   const ask = (tool: string, toolInput: Record<string, unknown>): Promise<ToolDecision> =>
     new Promise<ToolDecision>((resolve) => {
-      const pending: Ask = { tool, input: toolInput, settle: resolve };
+      const pending: Ask = { tool, input: toolInput, why: turnText, settle: resolve };
       if (abort.signal.aborted) {
         over(pending);
         return;
@@ -589,6 +687,9 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     const text = answerTo(resolution);
     asking = undefined;
     question.raised(undefined);
+    // The answer resumes the agent in a new turn, so what it said before the answer is not the
+    // reason for whatever it asks next.
+    endTurn();
     if (text !== undefined && ALLOWING_ANSWERS.has(text.trim().toLowerCase())) {
       pending.settle({ behavior: "allow" });
       post(`allowed ${describeCall(pending)}`);
@@ -701,12 +802,18 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
       const event = step.value;
       switch (event.type) {
         case "text":
+          turnText = event.text;
           post(excerpt(event.text, logPath));
           break;
         case "tool_use":
+          callMade();
           noteTool({ name: event.name, input: event.input });
           break;
         case "tool_result":
+          // One of the turn's calls has come back. The turn ends when the last of them has (022):
+          // a result for one of several calls the agent made together leaves the rest — and the
+          // question one of them is about to raise — inside the turn that said why.
+          callReturned();
           break;
         case "result":
           result = event;

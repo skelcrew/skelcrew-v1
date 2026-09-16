@@ -45,6 +45,15 @@ until the owner is at their machine, so where a pre-allowed way of doing somethi
 use it. If something you genuinely need is refused, say what you needed with
 `skelcrew attention <id> "<what you needed>"` rather than working around it.
 
+**Read with your own tools, not with the shell.** Read a file with `Read`, find files with
+`Glob`, search inside them with `Grep` — those three run unprompted, so a run that reads this
+way never stops to ask. Use the shell only for what they cannot do (this repository's own
+checks, git, gh, and the `skelcrew` CLI), and then one command at a time: never joined with `&&`,
+`;` or a pipe, and never a loop, because a joined command is only ever as allowed as its
+least-allowed part and a loop is never recognised. Before a shell command that is not
+pre-allowed, say in one sentence what it is for — if it does stop to ask, that sentence is what
+the card shows the owner beside the command.
+
 One rule no list can enforce, and you must: **Never write a credential into the repository, the
 card, or a pull request.** The environment this run was given may carry the owner's own model
 login — `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` — and a value

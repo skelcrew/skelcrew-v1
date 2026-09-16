@@ -73,14 +73,27 @@ command at a time, and the one-sentence reason before a command that will ask. W
 with no fenced or backticked command, so `instructedCommands` harvests nothing new and
 `check:harness`'s command count is unchanged (spec 6, code 25, review 12 today).
 
-Runner: `run.ts` keeps the text of the last `text` event of the current assistant turn (reset
-when a `result` arrives or a new turn begins, so a sentence from an earlier turn is not attached
-to a later ask). `questionFor` takes it and, when present, adds `why: <text>` after the frame,
+Runner: `run.ts` keeps the text of the last `text` event of the current assistant turn. **A turn
+ends** when the last tool call the agent made in it has its result, when the owner answers this
+run's question, or when a member's comment reaches the agent as a new message; the kept text is
+cleared at each. A tool result that answers one of *several* calls the agent made in the same
+turn does not end it: the agent routinely reads with a pre-allowed `Read` and asks for a shell
+command in the same turn, and the `Read`'s result comes back before the shell command's
+question is raised, so clearing on any result would lose the sentence in exactly the workflow
+this spec asks for. (Review round 1 found the text surviving a turn boundary; round 2 found a
+sibling's result ending the turn early; the orchestrator wrote this paragraph after round 2.
+The first version said "reset when a `result` arrives or a new turn begins", which named the
+boundary without defining it.) So a sentence from an earlier turn is not attached
+to a later ask. `questionFor` takes it and, when present, adds `why: <text>` after the frame,
 as one line: `oneLine`'d and cut to a small fixed budget (200 bytes, in the shape of
 `INPUT_LINE_MAX`), inside the existing byte cap arithmetic so a long reason cannot push the input
-past the cap. The `why:` line is the agent's text, so it goes through the same `relayed`/`quoted`
-treatment the input does, for 015's reason: a line of it must not read as a line the runner
-wrote. `describeCall` and the `allowed`/`denied` comments are unchanged.
+past the cap. The `why:` line is the agent's text, so it is escaped the way every relayed text is
+(`relayed`) and flattened to one line, for 015's reason: a line of it must not read as a line
+the runner wrote, and a single line with no newline in it cannot become one. It is *not*
+`quoted` the way the input is: the example above shows it with the CLI's one marker, and that is
+the binding form. (The spec as approved said "the same `relayed`/`quoted` treatment the input
+does", which contradicted the example; the orchestrator settled it on the example during
+development.) `describeCall` and the `allowed`/`denied` comments are unchanged.
 
 Decisions resolved from the repository: the reason comes from the agent's text turn rather than
 from a new CLI verb, because the playbooks already have the agent narrate and 012 already posts
