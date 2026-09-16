@@ -38,6 +38,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 22 | 025 Several cards at once | landed, PR #22 — two review rounds, both in teardown; developed in parallel with 023 and 024 from three sessions |
 | 23 | 026 The board on one screen | specified; split on 2026-09-16 into the read-only screen (026) and acting from it (027); card 2 on the owner's own board is this |
 | 24 | 027 Acting from the screen | specified |
+| 25 | 028 The runner's name is reserved | specified; 024's round-3 finding |
 | | 005 | dropped |
 
 ## Background
@@ -1013,6 +1014,17 @@ one rule in a small diff; a screen's plumbing (raw mode, redraw, the subscriptio
 that change cards are separable, and the plumbing should be reviewed on its own first. 026's
 tripwire that the board module makes no mutating call is removed by 027 and replaced by a table
 of every action against the call it makes.
+
+## 028 — The runner's name is reserved
+
+024's round-3 finding: a client that says `hello` as an agent named `runner` is handed the
+daemon's own runner member, because members are found by name and kind and created when
+missing. It can then release or renew the real runner's leases, and after 024 its own lapsed
+claim takes its question with it. The daemon refuses that `hello`; `crew` stays joinable,
+because spawned agents join as it over the socket. A gate, not a boundary: the socket is local
+and the owner's `hello` needs no credential. 024's two daemon-level tests, which impersonate the
+runner to make a lapsing claim, are rewritten to pre-make the claim in the data directory
+before the daemon starts — which is a restart after a sleep, the scenario 024 was for.
 
 ## Later, deliberately unplanned
 
