@@ -997,6 +997,85 @@ test("a reason written before the previous answer is not attached to the next qu
   expect(decisions).toEqual([{ behavior: "allow" }, { behavior: "allow" }]);
 });
 
+/**
+ * Criterion 4, its governing sentence. A turn ends when the agent's tools come back: the model
+ * says what it is about to do, runs `Read`, reads the result, and goes on in a new turn. A
+ * sentence from the turn before is true of the call that turn made and of nothing after it, so
+ * it must not be the reason on a question raised later. This is the common shape after this
+ * spec, not a corner: the playbooks push reads onto `Read`, `Glob` and `Grep`, so turns now
+ * routinely end on a tool result with no owner answer to clear anything.
+ */
+test("a reason written before a tool result is not attached to the next turn's question", async () => {
+  await initRepo();
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      yield { type: "text", text: "TURN ONE: reading CLAUDE.md to find the check command." };
+      yield { type: "tool_use", name: "Read", input: { file_path: "CLAUDE.md" } };
+      yield { type: "tool_result", text: "# skelcrew" };
+      decision = await options.canUseTool("Bash", { command: "sed -n 1,60p package.json" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Reads, then asks" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  expect(core.getCard(card.id).attention?.note).toBe(
+    [
+      `allow Bash? (skelcrew resolve ${card.id} -m allow | skelcrew resolve ${card.id} -m deny)`,
+      "input:",
+      "> sed -n 1,60p package.json",
+    ].join("\n"),
+  );
+
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+  expect(decision).toEqual({ behavior: "allow" });
+});
+
+/**
+ * Criterion 4, the same sentence at the other boundary. A member's comment reaches the agent as
+ * a new user message, which starts a new turn just as an answer does — so what the agent said
+ * before reading it is not the reason for what it asks after.
+ */
+test("a reason written before a member's comment is not attached to the next question", async () => {
+  await initRepo();
+  let turned: () => void = () => {};
+  const posted = new Promise<void>((resolve) => {
+    turned = resolve;
+  });
+  start({
+    driver: fakeDriver(async function* (options) {
+      const reader = options.input[Symbol.asyncIterator]();
+      await reader.next();
+      yield { type: "text", text: "Reading the manifests to see how the packages are laid out." };
+      turned();
+      // The owner's comment, read as a user message: everything after it is a new turn.
+      await reader.next();
+      void options.canUseTool("Bash", { command: "sed -n 1,60p package.json" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Told something mid-run" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await posted;
+  core.comment(card.id, "look at the daemon package too", owner.id);
+  await question;
+
+  const note = core.getCard(card.id).attention?.note as string;
+  expect(note).toContain("> sed -n 1,60p package.json");
+  expect(note).not.toContain("why:");
+  expect(note.split("\n")[1]).toBe("input:");
+
+  core.resolveAttention(card.id, "no", owner.id);
+  await done;
+});
+
 /** Criterion 5. The queue is a list, so the reason is one line however the agent wrote it. */
 test("a reason written over several lines is one line on the card", async () => {
   await initRepo();

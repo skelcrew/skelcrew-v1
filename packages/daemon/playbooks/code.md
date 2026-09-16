@@ -60,7 +60,7 @@ owner has denied.
 **Read with your own tools, not with the shell.** Read a file with `Read`, find files with
 `Glob`, search inside them with `Grep` — those three run unprompted, so a run that reads this
 way never stops to ask. Use the shell only for what they cannot do (this repository's own
-checks, git, and the `skelcrew` CLI), and then one command at a time: never joined with `&&`,
+checks, git, gh, and the `skelcrew` CLI), and then one command at a time: never joined with `&&`,
 `;` or a pipe, and never a loop, because a joined command is only ever as allowed as its
 least-allowed part and a loop is never recognised. Before a shell command that is not
 pre-allowed, say in one sentence what it is for — if it does stop to ask, that sentence is what

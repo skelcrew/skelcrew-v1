@@ -17,8 +17,11 @@ Run record for `docs/specs/022-a-run-explores-without-asking.md`.
 3. **`run.ts`** — the run keeps the text of the last `text` event; an ask takes a copy of it when
    it is made; `questionFor` puts it on a `why:` line between the frame and the input, escaped,
    flattened to one line and cut to `WHY_LINE_MAX` bytes, inside the note's existing cap
-   arithmetic. The kept text is cleared when a `result` arrives and when this run's own question
-   is answered, so a sentence from an earlier turn is not attached to a later ask.
+   arithmetic. The kept text is cleared at every boundary a turn can end on — a `tool_result`, a
+   member's comment reaching the agent, and this run's own question being answered — so a
+   sentence from an earlier turn is not attached to a later ask. *(Corrected in review round 1:
+   this said "cleared when a `result` arrives and when this run's own question is answered", and
+   the `tool_result` boundary was missing, which is the Critical finding below.)*
 4. **`run.test.ts`** — criteria 3, 4 and 5 beside 013's question cases.
 5. **`cli.test.ts`** — criterion 3's rendered half: a scripted driver through a real runner, and
    the note as `skelcrew queue` prints it through the real CLI.
@@ -48,10 +51,17 @@ Run record for `docs/specs/022-a-run-explores-without-asking.md`.
   `INPUT_LINE_MAX` is used with `oneLine`, which cuts by character. `WHY_LINE_MAX` is 200 and the
   cut is made in bytes (`cutMarked` over `oneLine`'s result), so the "200 bytes" half is the
   literal one.
-- **When a turn ends.** The stream carries no turn marker, so the kept text is cleared on a
-  `result` and on this run's own question being answered — the two boundaries criterion 4 names.
-  An ask copies the text when the call is made rather than when the question is raised, so a
-  queued ask keeps the sentence from its own turn even if it reaches the card later.
+- **When a turn ends.** The stream does carry turn markers, and the kept text is cleared on each
+  of them: a `tool_result` (the agent's tool came back, so what it says next it says in a new
+  turn), a member's comment reaching the agent as a new user message, and this run's own question
+  being answered. Criterion 4's governing sentence is the general one — "a text event in an
+  earlier turn is not attached" — and the two boundaries it names in brackets are examples of it,
+  not the whole of it. An ask copies the text when the call is made rather than when the question
+  is raised, so a queued ask keeps the sentence from its own turn even if it reaches the card
+  later. *(Corrected in review round 1: this said "the stream carries no turn marker, so the kept
+  text is cleared on a `result` and on this run's own question being answered — the two
+  boundaries criterion 4 names". `tool_result` is a turn marker, the loop already receives it,
+  and reading criterion 4 as naming only two boundaries is what let the defect through.)*
 
 ## Red, then green
 
@@ -100,11 +110,12 @@ half: a question raised with no preceding text has no `why:` line, asserted as a
 
 ## What is not covered by a test
 
-Criterion 4 names two boundaries for the kept text, and only one of them is observable. The
-reset on a `result` is implemented and cannot be reached from a test: the event loop breaks out
-as soon as a `result` arrives (`run.ts`, `if (result !== undefined) break;`), so no ask can be
-raised after one — an ask made after the abort is settled by `over` with no question at all. The
-reset that a test *can* see, and does, is the one on this run's question being answered.
+Nothing, after review round 1: every reset has a case in `run.test.ts`. *(Corrected in review
+round 1: this section said the reset on a `result` was implemented and unreachable from a test.
+That reset was indeed unreachable — the loop breaks as soon as a `result` arrives, so no ask can
+be raised after one, and an ask made after the abort is settled by `over` with no question at
+all — which is why it is now gone rather than untested. The boundaries that a test can see, and
+does, are the three the run has: `tool_result`, a member's comment, and the owner's answer.)*
 
 ## Checks
 
@@ -120,3 +131,80 @@ reset that a test *can* see, and does, is the one on this run's question being a
   paragraph harvests nothing. (Measured from a scratch script over `playbook-commands.ts`, the
   way 021 measured it.)
 - `bun run fix` — applied formatting twice, to `run.test.ts` and then to `playbooks.test.ts`.
+
+## Review round 1
+
+Verdict: one Critical, one Important, two Minor. The Critical and the Important are fixed here,
+one Minor is fixed here, and the last Minor goes to MILESTONES as the reviewer asked. The spec is
+unchanged this round: its *Implementation approach* already says the kept text is reset "when a
+`result` arrives or a new turn begins", and criterion 4 already says a text event in an earlier
+turn is not attached — the first round read the bracketed examples as the whole rule, which is
+the defect.
+
+- **Critical — a sentence from an earlier turn was attached to a later turn's question.**
+  `turnText` was reset in two places only: `case "result"` (unreachable — the loop breaks on a
+  `result`) and `answered`. Nothing reset it when a turn ended on a tool coming back, which is
+  the common shape after this spec: the playbooks now push reads onto `Read`, `Glob` and `Grep`,
+  so a turn ends on a `tool_result` with no owner answer to clear anything. Red first, in
+  `run.test.ts`, on the reviewer's own script — text, `tool_use` `Read`, `tool_result`, then an
+  ask with no text of its own:
+
+  ```
+  expect(core.getCard(card.id).attention?.note).toBe(
+  @@ -1,3 +1,3 @@
+    "allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)
+  + why: TURN ONE: reading CLAUDE.md to find the check command.
+    input:
+  (fail) a reason written before a tool result is not attached to the next turn's question
+  ```
+
+  A member's comment is the other unhandled boundary — it reaches the agent as a new user
+  message, exactly as the owner's answer does — so it gets a case of its own, red first on the
+  same shape:
+
+  ```
+  expect(note).not.toContain("why:");
+  Expected to not contain: "why:"
+  Received: "allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)\nwhy:
+  Reading the manifests to see how the packages are laid out.\ninput:\n> sed -n 1,60p
+  package.json"
+  (fail) a reason written before a member's comment is not attached to the next question
+  ```
+
+  Green from two lines: `turnText = undefined` under `case "tool_result"` in the event loop, and
+  the same in `flushHeld` when it forwards at least one comment. The `case "result"` reset is
+  **removed** rather than kept: it was dead before this round and is dead after it — the loop
+  breaks on a `result`, and a call made after that is settled by `over` with no question raised —
+  and `turnText`'s doc now names the three live boundaries and says why a `result` needs none.
+  No existing assertion changed; the two new cases are additions.
+
+- **Important — the record asserted criterion 4 was met, and gave a false reason.** Both
+  sentences are corrected in place above, each marked as corrected: the steps list (step 3) now
+  names the three boundaries, and "When a turn ends" no longer claims the stream carries no turn
+  marker — `tool_result` is one, and the loop was already receiving it and ignoring it. The
+  "What is not covered by a test" section went with them: it described the `result` reset as
+  implemented-but-unreachable, and that reset is gone.
+
+- **Minor — two questions raised in one turn share one sentence.** Reproduced by the reviewer:
+  one text turn followed by two parallel `canUseTool` calls puts the same sentence on both
+  questions, beside two different commands. No change here — the spec asks for the agent's last
+  text turn and this is that — and it goes to `docs/MILESTONES.md` as the orchestrator's at
+  landing. Recorded here so it is not lost.
+
+- **Minor — the playbook paragraphs omitted `gh`.** `code.md` and `review.md` both said the shell
+  is for "this repository's own checks, git, and the `skelcrew` CLI" while both lists pre-allow
+  the `gh pr` verbs and both playbooks instruct them. Both now read "this repository's own
+  checks, git, gh, and the `skelcrew` CLI". Unbackticked, like `git` beside it: a bare backticked
+  `gh` span would be harvested by `commandsNamed` (and dropped by `instructedCommands` as an
+  argument-less noun), which would move a recorded list for no gain. `spec.md` is left alone —
+  the finding names the two playbooks whose lists carry `gh`. The pinned head of the paragraph
+  ends at "cannot do", so the pin is untouched and `playbooks.test.ts` needed no change.
+
+Checks for this round: `bun run fix` (no fixes applied), `bun run check` — `biome ci .` clean
+over 90 files, `tsc` clean in all three packages, `757 pass / 0 fail` across 29 files (755 before
+this round; +2 question cases) — and `bun run check:harness`, exit 0, "every one of the 71
+commands under test runs unprompted in the harness under its own list, `git push origin
+HEAD:main` is denied under each list, and the repository is unchanged": the same 71, with 71
+`ran` lines in its output. `instructedCommands` after the playbook edit is **spec 6, code 25,
+review 12** with the same command lists as the first round, and `commandsNamed` is unchanged too
+(spec 11, code 47, review 21), which is what an unbackticked word in prose has to mean.

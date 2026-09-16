@@ -443,7 +443,11 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
    */
   const held: Comment[] = [];
   const flushHeld = (): void => {
-    for (const comment of held.splice(0)) messages.push(comment.data.text);
+    const forwarded = held.splice(0);
+    for (const comment of forwarded) messages.push(comment.data.text);
+    // A message read is a turn begun, so what the agent said before reading it is not the
+    // reason for what it asks after (022).
+    if (forwarded.length > 0) turnText = undefined;
   };
 
   // --- tools the list does not pre-allow: asked, one at a time ---
@@ -458,13 +462,17 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
   }
 
   /**
-   * The text of the agent's last turn, which is where it says what it is about to do — kept so
-   * that a question raised in the same turn can carry it (022). Cleared when the session ends
-   * and when this run's own question is answered, because the agent goes on in a new turn from
-   * there: a sentence written before the answer describes a call the owner has already decided,
-   * and beside the next command it would be true of nothing. Copied onto the ask when the call
-   * is made rather than read when the question is raised, so a queued ask keeps its own turn's
-   * sentence however long it waits behind another.
+   * The text of the agent's current turn, which is where it says what it is about to do — kept
+   * so that a question raised in the same turn can carry it (022). A sentence from an earlier
+   * turn describes a call that has already been made or already been decided, so beside the next
+   * command it would be true of nothing: worse than no sentence at all, because the owner
+   * answers from it. So it is cleared at every boundary a turn can end on — a tool result (the
+   * driver's event loop below), this run's own question being answered (`answered`), and a
+   * member's comment reaching the agent as a new message (`flushHeld`). A `result` needs no
+   * clearing: the loop breaks on one, and a call made after that is settled by `over` without a
+   * question.
+   * Copied onto the ask when the call is made rather than read when the question is raised, so a
+   * queued ask keeps its own turn's sentence however long it waits behind another.
    */
   let turnText: string | undefined;
 
@@ -749,10 +757,12 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
           noteTool({ name: event.name, input: event.input });
           break;
         case "tool_result":
+          // The end of an assistant turn: the agent asked for a tool, the result came back,
+          // and whatever it says next it says in a new turn (022).
+          turnText = undefined;
           break;
         case "result":
           result = event;
-          turnText = undefined;
           break;
       }
       if (result !== undefined) break;
