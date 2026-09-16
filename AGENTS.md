@@ -228,6 +228,9 @@ fails, which is what a bump of the harness looks like from here.
 - Tests never spawn real coding agents or call external services; the runner's
   agent-spawning boundary is faked in tests.
 - Never weaken a test, fixture, or assertion to get green.
+- Commit in small, self-contained slices. Each commit is a vertical slice that passes
+  `bun run check` on its own, with a message that says what changed and why. A failing test
+  and the change that makes it pass land together, never apart.
 
 ## Workflow
 
