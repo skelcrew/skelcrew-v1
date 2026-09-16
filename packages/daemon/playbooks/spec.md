@@ -54,8 +54,8 @@ placement that follows an existing pattern, or formatting.
 ## 3. Write the spec onto the card
 
 The card's body is the artefact — the spec lives in skelcrew, and the Code phase is what
-copies it into the repository. Write it by piping it to the CLI, which is how a spec reaches
-the card without touching the repository at all:
+copies it into the repository. Write it with a heredoc into the CLI, which is how a spec
+reaches the card without touching the repository at all:
 
 ```
 skelcrew body <id> <<'SPEC'

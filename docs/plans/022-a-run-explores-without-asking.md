@@ -17,11 +17,14 @@ Run record for `docs/specs/022-a-run-explores-without-asking.md`.
 3. **`run.ts`** — the run keeps the text of the last `text` event; an ask takes a copy of it when
    it is made; `questionFor` puts it on a `why:` line between the frame and the input, escaped,
    flattened to one line and cut to `WHY_LINE_MAX` bytes, inside the note's existing cap
-   arithmetic. The kept text is cleared at every boundary a turn can end on — a `tool_result`, a
-   member's comment reaching the agent, and this run's own question being answered — so a
-   sentence from an earlier turn is not attached to a later ask. *(Corrected in review round 1:
-   this said "cleared when a `result` arrives and when this run's own question is answered", and
-   the `tool_result` boundary was missing, which is the Critical finding below.)*
+   arithmetic. The kept text is cleared at every boundary a turn can end on — the *last* of the
+   turn's tool calls coming back, a member's comment reaching the agent, and this run's own
+   question being answered — so a sentence from an earlier turn is not attached to a later ask.
+   *(Corrected in review round 1: this said "cleared when a `result` arrives and when this run's
+   own question is answered", and the `tool_result` boundary was missing, which is the Critical
+   finding below. Corrected again in review round 2: it then said "a `tool_result`", meaning any
+   one of them, which ends a turn early when the agent makes two calls together — the Important
+   finding of that round.)*
 4. **`run.test.ts`** — criteria 3, 4 and 5 beside 013's question cases.
 5. **`cli.test.ts`** — criterion 3's rendered half: a scripted driver through a real runner, and
    the note as `skelcrew queue` prints it through the real CLI.
@@ -52,16 +55,20 @@ Run record for `docs/specs/022-a-run-explores-without-asking.md`.
   cut is made in bytes (`cutMarked` over `oneLine`'s result), so the "200 bytes" half is the
   literal one.
 - **When a turn ends.** The stream does carry turn markers, and the kept text is cleared on each
-  of them: a `tool_result` (the agent's tool came back, so what it says next it says in a new
-  turn), a member's comment reaching the agent as a new user message, and this run's own question
-  being answered. Criterion 4's governing sentence is the general one — "a text event in an
-  earlier turn is not attached" — and the two boundaries it names in brackets are examples of it,
-  not the whole of it. An ask copies the text when the call is made rather than when the question
-  is raised, so a queued ask keeps the sentence from its own turn even if it reaches the card
-  later. *(Corrected in review round 1: this said "the stream carries no turn marker, so the kept
-  text is cleared on a `result` and on this run's own question being answered — the two
-  boundaries criterion 4 names". `tool_result` is a turn marker, the loop already receives it,
-  and reading criterion 4 as naming only two boundaries is what let the defect through.)*
+  of them: the last of the turn's tool calls coming back (the agent's tools are back, so what it
+  says next it says in a new turn), a member's comment reaching the agent as a new user message,
+  and this run's own question being answered. Criterion 4's governing sentence is the general
+  one — "a text event in an earlier turn is not attached" — and the two boundaries it names in
+  brackets are examples of it, not the whole of it. An ask copies the text when the call is made
+  rather than when the question is raised, so a queued ask keeps the sentence from its own turn
+  even if it reaches the card later. *(Corrected in review round 1: this said "the stream carries
+  no turn marker, so the kept text is cleared on a `result` and on this run's own question being
+  answered — the two boundaries criterion 4 names". `tool_result` is a turn marker, the loop
+  already receives it, and reading criterion 4 as naming only two boundaries is what let the
+  defect through. Corrected
+  again in review round 2: "a `tool_result`" is the marker only when it is the last outstanding
+  call's — the orchestrator amended the spec at `13d916d` to define it, and that definition is
+  what the runner now implements.)*
 
 ## Red, then green
 
@@ -208,3 +215,82 @@ HEAD:main` is denied under each list, and the repository is unchanged": the same
 `ran` lines in its output. `instructedCommands` after the playbook edit is **spec 6, code 25,
 review 12** with the same command lists as the first round, and `commandsNamed` is unchanged too
 (spec 11, code 47, review 21), which is what an unbackticked word in prose has to mean.
+
+## Review round 2
+
+Verdict: one Important and four Minor. The Important and Minor 1 and 2 are fixed here; Minor 3
+and 4 are the orchestrator's, and Minor 4 is recorded below as the reviewer asked. The spec was
+amended by the orchestrator at `13d916d` before this round of work: *Implementation approach* now
+defines when a turn ends — "when the last tool call the agent made in it has its result, when the
+owner answers this run's question, or when a member's comment reaches the agent as a new message"
+— and says in as many words that "a tool result that answers one of *several* calls the agent
+made in the same turn does not end it". That sentence is the target this round lands on.
+
+- **Important — a sibling's result ended the turn early.** Round 1's fix cleared the kept text on
+  *any* `tool_result`. The shape this spec's own playbook paragraph encourages is a `Read`
+  followed by a shell command in the same turn, and the harness runs the `Read` without asking,
+  so its result arrives before the shell command reaches `canUseTool` — and the question then
+  carried no `why:` line. The reviewer ran it against the real harness: `text → tool_use →
+  tool_use → tool_result(Read) → canUseTool(Bash) turnText=undefined`. Red first in
+  `run.test.ts`, on that script in the fake driver:
+
+  ```
+  expect(core.getCard(card.id).attention?.note).toBe(
+  @@ -1,3 +1,3 @@
+    "allow Bash? (skelcrew resolve 1 -m allow | skelcrew resolve 1 -m deny)
+  - why: Reading the hosts file, then fetching the install script.
+    input:
+  - Expected  - 1
+  + Received  + 0
+  (fail) a sibling tool's result does not end the turn, so the question still carries the reason
+  ```
+
+  Green by counting rather than flagging: `outstandingCalls` goes up on each `tool_use` event and
+  down on each `tool_result`, and the turn ends when it reaches zero. Round 1's case — one
+  `tool_use`, one `tool_result`, then an ask with no text of its own — still ends the turn,
+  because the one result balances the one call, and it is green unchanged. The three boundaries
+  now go through one `endTurn()`, which clears the text *and* zeroes the count.
+
+  **Does the harness report a result for a call `canUseTool` denied?** Yes — measured, not
+  assumed. A scratch script (deleted; not committed) ran the pinned SDK in the run's own
+  `permissionMode: "default"` against `harness-check.ts`'s stub model, with a `canUseTool` that
+  denies, and the stream was:
+
+  ```
+  message assistant [tool_use]   event tool_use
+  canUseTool Bash -> deny
+  message user [tool_result]     event tool_result isError=true text="The owner did not allow Bash."
+  message assistant [text]       event text
+  message result
+  ```
+
+  So a denied call balances its own `tool_use` and the count cannot stick above zero on that
+  path. `endTurn()` zeroing the count is the second guard, for the path measurement cannot cover:
+  a call still outstanding when the owner's answer or a member's comment ends the turn stays out
+  of the *next* turn's arithmetic, and its late result then decrements a count already at zero,
+  which floors and clears nothing.
+
+- **Minor 1 — `spec.md` §3 said "piping" where it instructs a heredoc.** The new paragraph above
+  it says never to use a pipe, so the two read as contradicting each other. §3 now reads "Write
+  it with a heredoc into the CLI". The fenced block it introduces is unchanged, so
+  `instructedCommands(spec)` still harvests `skelcrew body PLACEHOLDER <<'SPEC'` and is unchanged
+  at 6.
+
+- **Minor 2 — `turnText` was read in `flushHeld` before its `let`.** Safe only because
+  `core.subscribe` runs after the declaration. The declaration moved above `flushHeld`, into a
+  new *the agent's current turn* section that holds the text, the count and `endTurn` together.
+
+- **Minor 4, for MILESTONES (not fixed here).** The reviewer observed the harness auto-approving
+  some read-only shell — `sed -n` among them — before `canUseTool` is consulted, so a command the
+  runner's own model says would ask never reaches the run's gate. That is 013's and 017's ground,
+  not this spec's: nothing here reads or widens what is pre-allowed, and the tests that script
+  `sed -n 1,60p package.json` go through the fake driver, where the question is raised by the
+  script rather than by the harness. Recorded so it is not lost.
+
+Checks for this round: `bun run fix` (no fixes applied), `bun run check` — `biome ci .` clean over
+90 files, `tsc` clean in all three packages, `758 pass / 0 fail` across 29 files (757 before this
+round; +1 question case) — and `bun run check:harness`, exit 0, "every one of the 71 commands
+under test runs unprompted in the harness under its own list, `git push origin HEAD:main` is
+denied under each list, and the repository is unchanged". `instructedCommands` after the `spec.md`
+wording change is **spec 6, code 25, review 12**, with the same command lists as the rounds
+before.

@@ -421,6 +421,56 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     summaryTimer ??= setTimeout(flushTools, input.summaryMs);
   };
 
+  // --- the agent's current turn ---
+  /**
+   * The text of the agent's current turn, which is where it says what it is about to do — kept
+   * so that a question raised in the same turn can carry it (022). A sentence from an earlier
+   * turn describes a call that has already been made or already been decided, so beside the next
+   * command it would be true of nothing: worse than no sentence at all, because the owner
+   * answers from it. So it is cleared at every boundary a turn can end on — see `endTurn`.
+   * Copied onto the ask when the call is made rather than read when the question is raised, so a
+   * queued ask keeps its own turn's sentence however long it waits behind another.
+   */
+  let turnText: string | undefined;
+
+  /**
+   * Calls the agent has made in this turn that have not come back. A turn ends when the *last*
+   * of them does, which is why this is a count and not a flag: the agent routinely reads with a
+   * pre-allowed `Read` and asks for a shell command in the same turn, and the harness runs the
+   * `Read` without asking, so its result arrives *before* the shell command reaches `canUseTool`.
+   * Clearing on any result would drop the sentence in exactly the workflow this spec's playbooks
+   * ask for (review round 2, against the real harness: text, tool_use, tool_use, tool_result,
+   * then the question).
+   */
+  let outstandingCalls = 0;
+
+  /**
+   * A turn is over: the next thing the agent says belongs to the next one. There are three
+   * boundaries — the last of the turn's calls coming back (`callReturned`), this run's own
+   * question being answered (`answered`), and a member's comment reaching the agent as a new
+   * message (`flushHeld`). A `result` needs none: the loop breaks on one, and a call made after
+   * that is settled by `over` without a question.
+   *
+   * The count goes with the text, so a call still outstanding when the owner's answer or a
+   * comment ends the turn cannot hold the count above zero for the rest of the run and stop
+   * later results ending their own turns. Its result — the harness does send one for a call
+   * `canUseTool` denied, measured against the pinned SDK in review round 2 — then decrements a
+   * count already at zero, which floors and clears nothing that is there.
+   */
+  const endTurn = (): void => {
+    turnText = undefined;
+    outstandingCalls = 0;
+  };
+
+  /** A call the agent made in this turn, and its result: the turn ends when the last comes back. */
+  const callMade = (): void => {
+    outstandingCalls += 1;
+  };
+  const callReturned = (): void => {
+    outstandingCalls = Math.max(0, outstandingCalls - 1);
+    if (outstandingCalls === 0) endTurn();
+  };
+
   // --- comments, forwarded ---
   /**
    * Comments seen in the current dispatch, forwarded on the next microtask. The core
@@ -447,7 +497,7 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     for (const comment of forwarded) messages.push(comment.data.text);
     // A message read is a turn begun, so what the agent said before reading it is not the
     // reason for what it asks after (022).
-    if (forwarded.length > 0) turnText = undefined;
+    if (forwarded.length > 0) endTurn();
   };
 
   // --- tools the list does not pre-allow: asked, one at a time ---
@@ -460,21 +510,6 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     why: string | undefined;
     settle: (decision: ToolDecision) => void;
   }
-
-  /**
-   * The text of the agent's current turn, which is where it says what it is about to do — kept
-   * so that a question raised in the same turn can carry it (022). A sentence from an earlier
-   * turn describes a call that has already been made or already been decided, so beside the next
-   * command it would be true of nothing: worse than no sentence at all, because the owner
-   * answers from it. So it is cleared at every boundary a turn can end on — a tool result (the
-   * driver's event loop below), this run's own question being answered (`answered`), and a
-   * member's comment reaching the agent as a new message (`flushHeld`). A `result` needs no
-   * clearing: the loop breaks on one, and a call made after that is settled by `over` without a
-   * question.
-   * Copied onto the ask when the call is made rather than read when the question is raised, so a
-   * queued ask keeps its own turn's sentence however long it waits behind another.
-   */
-  let turnText: string | undefined;
 
   /** Asked and not yet on the card, oldest first. */
   const queued: Ask[] = [];
@@ -637,7 +672,7 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     question.raised(undefined);
     // The answer resumes the agent in a new turn, so what it said before the answer is not the
     // reason for whatever it asks next.
-    turnText = undefined;
+    endTurn();
     if (text !== undefined && ALLOWING_ANSWERS.has(text.trim().toLowerCase())) {
       pending.settle({ behavior: "allow" });
       post(`allowed ${describeCall(pending)}`);
@@ -754,12 +789,14 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
           post(excerpt(event.text, logPath));
           break;
         case "tool_use":
+          callMade();
           noteTool({ name: event.name, input: event.input });
           break;
         case "tool_result":
-          // The end of an assistant turn: the agent asked for a tool, the result came back,
-          // and whatever it says next it says in a new turn (022).
-          turnText = undefined;
+          // One of the turn's calls has come back. The turn ends when the last of them has (022):
+          // a result for one of several calls the agent made together leaves the rest — and the
+          // question one of them is about to raise — inside the turn that said why.
+          callReturned();
           break;
         case "result":
           result = event;
