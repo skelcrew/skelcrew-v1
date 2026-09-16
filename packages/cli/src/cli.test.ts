@@ -956,6 +956,10 @@ function lineReader(stream: ReadableStream<Uint8Array>) {
         });
       });
     },
+    /** The lines already read but not taken, for a test that asserts silence. */
+    pending(): string[] {
+      return [...queue];
+    },
   };
 }
 
@@ -979,6 +983,10 @@ function recordingNotifier() {
 function spawnWatch(args: string[], env: Record<string, string>) {
   const full: Record<string, string | undefined> = { ...process.env };
   delete full.SKELCREW_AS;
+  // Each test's notifier comes from its own `env` and nowhere else: an inherited
+  // `SKELCREW_NOTIFY` wins over `PATH` inside `selectNotifier`, so a developer who has the
+  // variable set would otherwise have these tests fire real notifications.
+  delete full.SKELCREW_NOTIFY;
   full.SKELCREW_DIR = dir;
   full.TZ = TZ;
   Object.assign(full, env);
@@ -1145,6 +1153,25 @@ test("watch still prints the event line when the notifier fails, and reports the
   // The tail goes on after a failed ping.
   core.comment(card.id, "still here", agent.id);
   expect(await watch.stdout.next()).toContain("still here");
+  watch.proc.kill("SIGINT");
+  expect(await watch.proc.exited).toBe(0);
+});
+
+test("watch with SKELCREW_NOTIFY=none tails as usual and pings nobody, without an error", async () => {
+  const card = core.createCard({ title: "Quiet" }, member("simon").id);
+  const agent = core.ensureMember("crew-1", "agent");
+  const watch = spawnWatch([], { SKELCREW_NOTIFY: "none" });
+  await watch.stderr.next();
+
+  core.requestAttention(card.id, { to: member("simon").id, note: "spec ready" }, agent.id);
+  expect(await watch.stdout.next()).toContain("spec ready");
+
+  // Events are handled in order, so once the next event's line is out, the ping for the
+  // request has been dealt with: `none` is off, not a command named `none` that cannot run.
+  core.comment(card.id, "still here", agent.id);
+  expect(await watch.stdout.next()).toContain("still here");
+  expect(watch.stderr.pending()).toEqual([]);
+
   watch.proc.kill("SIGINT");
   expect(await watch.proc.exited).toBe(0);
 });

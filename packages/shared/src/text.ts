@@ -23,6 +23,14 @@ export type TextKind = "single-line" | "multi-line";
 /** What a multi-line field keeps: tab (U+0009) and line feed (U+000A). */
 const MULTI_LINE_KEEPS = "\t\n";
 
+/**
+ * The bell, U+0007: the one character of the set anything here writes on purpose, rather than
+ * refusing or escaping it — a daemon in a terminal rings it when a question is raised to a
+ * human (023). It is spelled here because this is the file that spells the set out; it is never
+ * part of a stored field, which is why nothing below reads it.
+ */
+export const BELL = "\x07";
+
 /** The C0 controls, DEL, and the C1 controls. */
 function isControlCode(code: number): boolean {
   return code <= 0x1f || (code >= 0x7f && code <= 0x9f);

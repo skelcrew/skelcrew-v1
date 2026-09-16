@@ -1,6 +1,7 @@
 export const VERSION = "0.0.1";
 
 export { type Client, connect, RpcError } from "./client";
+export { type Notifier, notify, selectNotifier } from "./notify";
 export {
   DATA_DIR_NAME,
   DB_FILE,
@@ -34,6 +35,7 @@ export {
   type Result,
 } from "./protocol";
 export {
+  BELL,
   type ControlCharacter,
   escapeControlCharacters,
   findControlCharacter,
