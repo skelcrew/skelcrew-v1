@@ -41,6 +41,7 @@ bun run skelcrew queue                       # what is waiting on you
 bun run skelcrew show 1                      # the card, its body, its activity
 bun run skelcrew mv 1 code -m "approved"     # the Code phase: implement, review, PR
 bun run skelcrew watch                       # the live feed, with a desktop ping when you are needed
+bun run skelcrew                             # the board on one screen, live; q leaves it
 ```
 
 When a run needs you, the daemon in its terminal sends a desktop notification, and the card
