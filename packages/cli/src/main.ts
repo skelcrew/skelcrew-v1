@@ -15,6 +15,7 @@ import {
   resolveDataDir,
   VERSION,
 } from "@skelcrew/shared";
+import { board } from "./board/board";
 import { add } from "./commands/add";
 import { archive } from "./commands/archive";
 import { attention } from "./commands/attention";
@@ -67,7 +68,9 @@ function usage(name?: string): string {
   return [
     "usage:",
     ...lines,
-    ...(name === undefined ? ["", "  skelcrew with no command is: skelcrew queue"] : []),
+    ...(name === undefined
+      ? ["", "  skelcrew with no command is the board in a terminal, and the queue otherwise"]
+      : []),
     "",
     "options:",
     "  --as <name>   speak as that agent member (or set SKELCREW_AS); default: the owner",
@@ -148,13 +151,18 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }
-  // No command is the home view: what is waiting on the invoking member.
+  // No command is the home view: the screen when stdout is a terminal, and what is waiting on
+  // the invoking member otherwise, so a script or an agent that runs it bare gets the answer it
+  // always got. `--json` is that answer too: a screen has no JSON.
+  const screen = word === undefined && process.stdout.isTTY === true && loose.values.json !== true;
   const name = word ?? "queue";
-  const command = COMMANDS[name];
+  const command = screen ? board : COMMANDS[name];
   if (command === undefined) {
     fail(`unknown command "${name}"`, usage());
     return 2;
   }
+  // The screen has no verb of its own, so a usage error under it prints the whole usage.
+  const named = screen ? undefined : name;
 
   let parsed: ReturnType<typeof parseArgs>;
   try {
@@ -165,11 +173,11 @@ async function main(argv: string[]): Promise<number> {
       allowPositionals: true,
     });
   } catch (error) {
-    fail(describe(error), usage(name));
+    fail(describe(error), usage(named));
     return 2;
   }
   if (parsed.values.help === true) {
-    process.stdout.write(`${usage(name)}\n`);
+    process.stdout.write(`${usage(named)}\n`);
     return 0;
   }
   const args: Args = {
@@ -182,7 +190,7 @@ async function main(argv: string[]): Promise<number> {
     input = command.parse(args);
   } catch (error) {
     if (error instanceof UsageError) {
-      fail(error.message, usage(name));
+      fail(error.message, usage(named));
       return 2;
     }
     fail(describe(error));
@@ -193,7 +201,7 @@ async function main(argv: string[]): Promise<number> {
   // empty flag is a usage error; an empty variable goes to the daemon, which refuses it.
   const asFlag = parsed.values.as;
   if (asFlag === "") {
-    fail("--as needs a member name", usage(name));
+    fail("--as needs a member name", usage(named));
     return 2;
   }
   const asName = typeof asFlag === "string" ? asFlag : process.env.SKELCREW_AS;
@@ -232,7 +240,7 @@ async function main(argv: string[]): Promise<number> {
     return outcome.failed ? 1 : 0;
   } catch (error) {
     if (error instanceof UsageError) {
-      fail(error.message, usage(name));
+      fail(error.message, usage(named));
       return 2;
     }
     fail(describe(error));

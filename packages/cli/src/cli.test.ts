@@ -2018,3 +2018,24 @@ test("a daemon message naming a stored member is printed with the sequence escap
   expect(broken).toContain(`claimed by crew\\n${forged}`);
   expect(broken.trimEnd().split("\n")).toHaveLength(1);
 });
+
+// --- the board on one screen (026) ---
+
+/**
+ * 026's criterion 2. The screen is bare `skelcrew` with a terminal on stdout, and there is no
+ * verb for it: these runs are piped, which is what a script and an agent get, and that answer
+ * is the one they always got.
+ */
+test("there is no board subcommand, and bare skelcrew without a terminal is still the queue", async () => {
+  core.createCard({ title: "First card" }, member("simon").id);
+
+  const unknown = await failed(2, ["board"]);
+  expect(unknown).toContain('unknown command "board"');
+
+  const listing = await ok(["help"]);
+  expect(listing.stdout).not.toContain("skelcrew board");
+
+  const bare = await ok([]);
+  expect(bare.stdout.toLowerCase()).toContain("nothing is waiting on you");
+  expect(bare).toEqual(await ok(["queue"]));
+});
