@@ -522,6 +522,22 @@ test("a SKELCREW_MERGE_POLL_SECONDS that is not seconds stops the daemon before 
   expect(existsSync(join(dir, "data"))).toBe(false);
 });
 
+// --- how many run at once (025) ---
+
+test("a SKELCREW_RUNS that is not a count stops the daemon before it creates anything", async () => {
+  const daemon = spawnDaemon({
+    cwd: dir,
+    dataDir: join(dir, "data"),
+    env: { SKELCREW_RUNS: "every" },
+  });
+  expect(await daemon.proc.exited).toBe(1);
+  expect(await daemon.stderr()).toContain(
+    'SKELCREW_RUNS must be a positive whole number of runs, not "every"',
+  );
+  expect(await daemon.stdout()).toBe("");
+  expect(existsSync(join(dir, "data"))).toBe(false);
+});
+
 // --- the driver selection (012) ---
 
 test("an unknown SKELCREW_AGENT stops the daemon before it creates anything", async () => {

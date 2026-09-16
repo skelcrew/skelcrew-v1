@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { type Activity, COMMENT_MAX_BYTES, type Member, worktreesDir } from "@skelcrew/shared";
 import { type Core, openCore } from "../core/core";
+import type { AgentDriver, AgentEvent, AgentRunOptions } from "./agent";
 import { createGit, type Git } from "./git";
-import { type Runner, startRunner } from "./runner";
+import { loadPlaybooks } from "./playbooks";
+import { type Runner, runsFromEnv, startRunner } from "./runner";
 
 /** Hermetic git: no user config, no hooks, a fixed identity. */
 const GIT_ENV: Record<string, string | undefined> = {
@@ -85,7 +87,7 @@ async function worktreePaths(): Promise<string[]> {
     .map((line) => line.slice("worktree ".length));
 }
 
-function start(overrides: { git?: Git } = {}): Runner {
+function start(overrides: { git?: Git; slots?: number; driver?: AgentDriver } = {}): Runner {
   runner = startRunner({
     core,
     dataDir,
@@ -94,6 +96,10 @@ function start(overrides: { git?: Git } = {}): Runner {
     member: runnerMember,
     crew: core.ensureMember("crew", "agent"),
     warn: (line) => warnings.push(line),
+    ...(overrides.slots === undefined ? {} : { slots: overrides.slots }),
+    ...(overrides.driver === undefined
+      ? {}
+      : { agent: { driver: overrides.driver, playbooks: loadPlaybooks() } }),
   });
   return runner;
 }
@@ -392,7 +398,8 @@ test("a move to a non-claimable phase without a worktree records nothing", async
 
 test("two cards made ready together run in id order, one claim at a time, both ending on the owner", async () => {
   await initRepo();
-  start();
+  // One slot: 006's behaviour, which is what `SKELCREW_RUNS=1` promises (025).
+  start({ slots: 1 });
   core.createCard({ title: "First" }, owner.id);
   core.createCard({ title: "Second" }, owner.id);
   let held = 0;
@@ -431,6 +438,422 @@ test("two cards made ready together run in id order, one claim at a time, both e
   expect(core.listAttention({ to: owner.id }).map((r) => r.cardId)).toEqual([1, 2]);
   expect(existsSync(worktreePath(1))).toBe(true);
   expect(existsSync(worktreePath(2))).toBe(true);
+});
+
+// --- how many run at once, as the daemon reads it (025) ---
+
+test("SKELCREW_RUNS sets how many run at once; unset is two; anything else is refused", () => {
+  expect(runsFromEnv({})).toBe(2);
+  expect(runsFromEnv({ SKELCREW_RUNS: "" })).toBe(2);
+  expect(runsFromEnv({ SKELCREW_RUNS: "1" })).toBe(1);
+  expect(runsFromEnv({ SKELCREW_RUNS: "3" })).toBe(3);
+  for (const bad of ["0", "-1", "1.5", "abc", " "]) {
+    expect(() => runsFromEnv({ SKELCREW_RUNS: bad })).toThrow(/SKELCREW_RUNS/);
+  }
+});
+
+// --- several at once (025) ---
+
+/**
+ * The agent, scripted: whatever the test's generator does is the whole session. No test here
+ * spawns a coding agent or calls a model — the driver is that boundary, as in `run.test.ts`.
+ */
+function fakeDriver(script: (options: AgentRunOptions) => AsyncGenerator<AgentEvent>): AgentDriver {
+  return { run: (options) => script(options) };
+}
+
+/** Which card a session belongs to: the run gives it that card's worktree as its cwd. */
+function cardOf(options: AgentRunOptions): number {
+  return Number(basename(options.cwd));
+}
+
+/** Holds every caller until `count` of them have arrived: what two sessions overlapping means. */
+function barrier(count: number): () => Promise<void> {
+  let release: () => void = () => {};
+  const open = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let arrived = 0;
+  return () => {
+    arrived += 1;
+    if (arrived >= count) release();
+    return open;
+  };
+}
+
+/** A session per card that stays live until the test ends it. */
+function holds(): { wait(id: number): Promise<void>; end(id: number): void } {
+  const open = new Map<number, { wait: Promise<void>; end: () => void }>();
+  const entry = (id: number): { wait: Promise<void>; end: () => void } => {
+    const found = open.get(id);
+    if (found !== undefined) return found;
+    let end: () => void = () => {};
+    const wait = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    const made = { wait, end };
+    open.set(id, made);
+    return made;
+  };
+  return {
+    wait: (id) => entry(id).wait,
+    end: (id) => {
+      entry(id).end();
+    },
+  };
+}
+
+/** Resolves when the run tells the agent to stop. */
+function aborted(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
+/** Waits until `check` holds: what a scripted session having started is read with. */
+async function until(check: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`${what} within ${timeoutMs} ms`);
+    await Bun.sleep(10);
+  }
+}
+
+function ended(cardId: number): (event: Activity) => boolean {
+  return (e) => e.cardId === cardId && e.type === "released";
+}
+
+function asked(cardId: number): (event: Activity) => boolean {
+  return (e) => e.cardId === cardId && e.type === "attention_requested";
+}
+
+/** The run log named by a run-start comment. */
+function logPathFrom(comment: string): string {
+  const at = comment.indexOf("run log at ");
+  expect(at).toBeGreaterThanOrEqual(0);
+  return comment.slice(at + "run log at ".length).trim();
+}
+
+test("with two slots, three cards ready together: two run at once and the third fills the freed slot", async () => {
+  await initRepo();
+  const gated = gatedGit();
+  start({ git: gated.git, slots: 2 });
+  core.createCard({ title: "First" }, owner.id);
+  core.createCard({ title: "Second" }, owner.id);
+  core.createCard({ title: "Third" }, owner.id);
+  let held = 0;
+  let maxHeld = 0;
+  core.subscribe((e) => {
+    if (e.type === "claimed" && e.actorId === runnerMember.id) {
+      held += 1;
+      maxHeld = Math.max(maxHeld, held);
+    }
+    if (e.type === "released" && e.actorId === runnerMember.id) held -= 1;
+  });
+  const secondClaimed = untilEvent((e) => e.cardId === 2 && e.type === "claimed");
+  const all = Promise.all([
+    untilEvent(released(1, "no playbook")),
+    untilEvent(released(2, "no playbook")),
+    untilEvent(released(3, "no playbook")),
+  ]);
+  core.moveCard(3, "spec", owner.id);
+  core.moveCard(2, "spec", owner.id);
+  core.moveCard(1, "spec", owner.id);
+
+  // Both runs are held inside git: two claims at once, and the third card still queued.
+  await secondClaimed;
+  expect(core.getCard(1).claim?.by).toBe(runnerMember.id);
+  expect(core.getCard(3).claim).toBeNull();
+  expect(types(events.filter((e) => e.actorId === runnerMember.id))).not.toContain("released");
+
+  gated.open();
+  await all;
+  expect(maxHeld).toBe(2);
+  const runs = events.filter((e) => e.actorId === runnerMember.id);
+  const firstRelease = types(runs).indexOf("released");
+  const claimedThird = runs.findIndex((e) => e.cardId === 3 && e.type === "claimed");
+  expect(runs.findIndex((e) => e.cardId === 2 && e.type === "claimed")).toBeLessThan(firstRelease);
+  expect(claimedThird).toBeGreaterThan(firstRelease);
+  expect(core.listAttention({ to: owner.id }).map((r) => r.cardId)).toEqual([1, 2, 3]);
+  for (const id of [1, 2, 3]) expect(existsSync(join(worktreePath(id), ".git"))).toBe(true);
+  expect(warnings).toEqual([]);
+});
+
+/**
+ * Real git, recording when each call that takes the repository's lock is entered and left.
+ * `holdBranchMs` keeps `createBranch` inside its call that much longer, which is how a test
+ * says "while this run is in setup" without depending on how long git takes.
+ */
+function recordingGit(base: Git, calls: string[], holdBranchMs = 0): Git {
+  const around =
+    <A extends unknown[]>(name: string, call: (...args: A) => Promise<void>, holdMs = 0) =>
+    async (...args: A): Promise<void> => {
+      calls.push(`enter ${name}`);
+      try {
+        await call(...args);
+        if (holdMs > 0) await Bun.sleep(holdMs);
+      } finally {
+        calls.push(`exit ${name}`);
+      }
+    };
+  return {
+    ...base,
+    createBranch: around("createBranch", base.createBranch, holdBranchMs),
+    worktreeAdd: around("worktreeAdd", base.worktreeAdd),
+    worktreePrune: around("worktreePrune", base.worktreePrune),
+    worktreeRemove: around("worktreeRemove", base.worktreeRemove),
+  };
+}
+
+/** The calls that were still in flight when the next one began; none, when nothing overlapped. */
+function overlapping(calls: string[]): string[] {
+  return calls.filter((entry, index) => {
+    if (index % 2 === 1) return false;
+    return calls[index + 1] !== `exit ${entry.slice("enter ".length)}`;
+  });
+}
+
+test("with two slots the branch and worktree calls never overlap, while the two sessions do", async () => {
+  await initRepo();
+  const calls: string[] = [];
+  const sessions: string[] = [];
+  const both = barrier(2);
+  start({
+    git: recordingGit(git, calls),
+    slots: 2,
+    driver: fakeDriver(async function* (options) {
+      sessions.push(`live ${cardOf(options)}`);
+      await both();
+      sessions.push(`done ${cardOf(options)}`);
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "First" }, owner.id);
+  core.createCard({ title: "Second" }, owner.id);
+  const done = Promise.all([untilEvent(ended(1), 5000), untilEvent(ended(2), 5000)]);
+  core.moveCard(1, "spec", owner.id);
+  core.moveCard(2, "spec", owner.id);
+  await done;
+
+  // One card in setup at a time: every entry is closed before the next is made.
+  expect(calls).toEqual([
+    "enter createBranch",
+    "exit createBranch",
+    "enter worktreeAdd",
+    "exit worktreeAdd",
+    "enter createBranch",
+    "exit createBranch",
+    "enter worktreeAdd",
+    "exit worktreeAdd",
+  ]);
+  // And the sessions overlapped: neither could pass the barrier until both were live.
+  expect(sessions.slice(0, 2).sort()).toEqual(["live 1", "live 2"]);
+  expect(sessions.slice(2).sort()).toEqual(["done 1", "done 2"]);
+});
+
+test("a teardown's removal waits for a run's setup: the two never hold the repository at once", async () => {
+  await initRepo();
+  const calls: string[] = [];
+  const hold = holds();
+  const live: number[] = [];
+  start({
+    // Card 3's branch is held long enough that a removal running beside it would show.
+    git: recordingGit(git, calls, 300),
+    slots: 2,
+    driver: fakeDriver(async function* (options) {
+      const id = cardOf(options);
+      live.push(id);
+      await Promise.race([hold.wait(id), aborted(options.signal)]);
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "Torn down later" }, owner.id);
+  core.createCard({ title: "Holds the pump" }, owner.id);
+  core.createCard({ title: "Starts next" }, owner.id);
+
+  // Card 1 runs and ends on the owner, leaving its worktree.
+  const first = untilEvent(ended(1), 5000);
+  core.moveCard(1, "spec", owner.id);
+  await until(() => live.includes(1), "card 1's session live");
+  hold.end(1);
+  await first;
+  expect(existsSync(join(worktreePath(1), ".git"))).toBe(true);
+
+  // Card 2's run is live; moving it away parks the pump in its teardown, which waits for
+  // that run. The three jobs behind it are queued in one turn: a scan (card 3 is ready) and
+  // then card 1's teardown.
+  core.moveCard(2, "spec", owner.id);
+  await until(() => live.includes(2), "card 2's session live");
+  core.moveCard(2, "pr", owner.id);
+  core.moveCard(3, "spec", owner.id);
+  core.archiveCard(1, owner.id);
+
+  // The scan starts card 3's run, and card 1's removal is the job behind it.
+  const removed = untilEvent(commentContaining(1, "worktree removed"), 5000);
+  await removed;
+  await until(() => live.includes(3), "card 3's session live");
+  expect(overlapping(calls)).toEqual([]);
+  expect(existsSync(worktreePath(1))).toBe(false);
+  expect(existsSync(join(worktreePath(3), ".git"))).toBe(true);
+});
+
+test("a teardown whose card came back does not hold the pump for that card's new run", async () => {
+  await initRepo();
+  const hold = holds();
+  const live: number[] = [];
+  start({
+    slots: 2,
+    driver: fakeDriver(async function* (options) {
+      const id = cardOf(options);
+      live.push(id);
+      await Promise.race([hold.wait(id), aborted(options.signal)]);
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "Holds the pump" }, owner.id);
+  core.createCard({ title: "Out and back" }, owner.id);
+  core.createCard({ title: "Still queued" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  await until(() => live.includes(1), "card 1's session live");
+
+  // In one turn, while the pump waits in card 1's teardown for card 1's run: card 2 out of a
+  // claimable phase and back, so a scan is queued with card 2's teardown behind it.
+  core.moveCard(1, "pr", owner.id);
+  core.moveCard(2, "spec", owner.id);
+  core.moveCard(2, "pr", owner.id);
+  core.moveCard(2, "spec", owner.id);
+
+  // That scan starts card 2's new run, and the teardown behind it is card 2's own: it has
+  // nothing to remove and must not wait for the run it found.
+  await until(() => live.includes(2), "card 2's session live");
+  const claimed = untilEvent((e) => e.cardId === 3 && e.type === "claimed", 5000);
+  core.moveCard(3, "spec", owner.id);
+  await claimed;
+  expect(existsSync(join(worktreePath(2), ".git"))).toBe(true);
+  expect(comments(2).some((text) => text.includes("worktree removed"))).toBe(false);
+});
+
+test("with two live runs a card moved to done is abandoned, torn down after its run, and the other goes on", async () => {
+  await initRepo();
+  const hold = holds();
+  const live: number[] = [];
+  const returned: number[] = [];
+  start({
+    slots: 2,
+    driver: fakeDriver(async function* (options) {
+      const id = cardOf(options);
+      live.push(id);
+      await Promise.race([hold.wait(id), aborted(options.signal)]);
+      // A session that does not vanish the instant it is told to stop, so that a teardown
+      // which did not wait for the run would reach the worktree first rather than merely
+      // lose a race with git. Well inside the abort grace.
+      if (options.signal.aborted) await Bun.sleep(150);
+      returned.push(id);
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "Moved to done" }, owner.id);
+  core.createCard({ title: "Carries on" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  core.moveCard(2, "spec", owner.id);
+  await until(() => live.length === 2, "two sessions live");
+
+  const abandoned = untilEvent(commentContaining(1, "run abandoned"), 5000);
+  const removed = untilEvent(commentContaining(1, "worktree removed"), 5000);
+  core.moveCard(1, "done", owner.id);
+  await abandoned;
+  await removed;
+
+  // The teardown followed the abandonment, and the session it waited for had returned.
+  const said = comments(1);
+  const abandonedAt = said.findIndex((text) => text.startsWith("run abandoned"));
+  expect(abandonedAt).toBeGreaterThanOrEqual(0);
+  expect(said[abandonedAt + 1]).toBe("worktree removed");
+  expect(returned).toEqual([1]);
+  expect(existsSync(worktreePath(1))).toBe(false);
+
+  // Card 2's run is untouched: its own comment, its own claim, its session still live.
+  expect(comments(2)).toHaveLength(1);
+  expect(core.getCard(2).claim?.by).toBe(runnerMember.id);
+  expect(types(cardEvents(2))).not.toContain("released");
+
+  const done = untilEvent(ended(2), 5000);
+  hold.end(2);
+  await done;
+  expect(returned).toEqual([1, 2]);
+  expect(existsSync(join(worktreePath(2), ".git"))).toBe(true);
+});
+
+test("stop() ends both live runs as 'daemon stopping' and resolves only once both sessions have returned", async () => {
+  await initRepo();
+  const live: number[] = [];
+  const returned: number[] = [];
+  start({
+    slots: 2,
+    driver: fakeDriver(async function* (options) {
+      live.push(cardOf(options));
+      await aborted(options.signal);
+      returned.push(cardOf(options));
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "First" }, owner.id);
+  core.createCard({ title: "Second" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  core.moveCard(2, "spec", owner.id);
+  await until(() => live.length === 2, "two sessions live");
+
+  await (runner as Runner).stop();
+  runner = undefined;
+  expect([...returned].sort()).toEqual([1, 2]);
+  for (const id of [1, 2]) {
+    expect(comments(id).some((text) => text.includes("run aborted: daemon stopping"))).toBe(true);
+    expect(core.getCard(id).claim).toBeNull();
+    expect(types(cardEvents(id))).toContain("released");
+  }
+});
+
+test("two live runs keep their own run log and their own permission question", async () => {
+  await initRepo();
+  const live: number[] = [];
+  const decided: string[] = [];
+  start({
+    slots: 2,
+    driver: fakeDriver(async function* (options) {
+      const id = cardOf(options);
+      live.push(id);
+      const decision = await options.canUseTool("Bash", { command: `rm -rf build-${id}` });
+      decided.push(`${id}:${decision.behavior}`);
+      yield { type: "result", ok: true };
+    }),
+  });
+  core.createCard({ title: "Asks first" }, owner.id);
+  core.createCard({ title: "Asks too" }, owner.id);
+  const questions = Promise.all([untilEvent(asked(1), 5000), untilEvent(asked(2), 5000)]);
+  core.moveCard(1, "spec", owner.id);
+  core.moveCard(2, "spec", owner.id);
+  await questions;
+
+  const first = core.getCard(1).attention?.note as string;
+  const second = core.getCard(2).attention?.note as string;
+  expect(first).toContain("rm -rf build-1");
+  expect(first).not.toContain("rm -rf build-2");
+  expect(second).toContain("rm -rf build-2");
+  expect(second).not.toContain("rm -rf build-1");
+
+  const logs = [1, 2].map((id) => logPathFrom(comments(id)[0] as string));
+  expect(logs[0]).not.toBe(logs[1]);
+  expect(basename(logs[0] as string).startsWith("1-")).toBe(true);
+  expect(basename(logs[1] as string).startsWith("2-")).toBe(true);
+  expect(existsSync(logs[0] as string)).toBe(true);
+  expect(existsSync(logs[1] as string)).toBe(true);
+
+  const done = Promise.all([untilEvent(ended(1), 5000), untilEvent(ended(2), 5000)]);
+  core.resolveAttention(1, "allow", owner.id);
+  core.resolveAttention(2, "no", owner.id);
+  await done;
+  expect([...decided].sort()).toEqual(["1:allow", "2:deny"]);
 });
 
 // --- the not-ready rule ---
@@ -620,7 +1043,8 @@ test("with git unavailable the run fails with a comment and a request, and the r
 
 test("stop() waits for the run in flight and takes no further card", async () => {
   await initRepo();
-  start();
+  // One slot, so the second card is the one that never starts (025).
+  start({ slots: 1 });
   core.createCard({ title: "In flight" }, owner.id);
   core.createCard({ title: "Never started" }, owner.id);
   const claimed = untilEvent((e) => e.cardId === 1 && e.type === "claimed");
