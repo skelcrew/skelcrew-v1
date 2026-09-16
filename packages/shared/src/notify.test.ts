@@ -37,6 +37,23 @@ test("SKELCREW_NOTIFY wins on every platform and receives title and text as argu
   }
 });
 
+test("SKELCREW_NOTIFY=none is the switch: nothing is selected, on every platform", () => {
+  const bin = binDir("with-osascript", { osascript: 0o755, "notify-send": 0o755 });
+  for (const platform of ["darwin", "linux"]) {
+    const notifier = selectNotifier({ SKELCREW_NOTIFY: "none", PATH: bin }, platform);
+    expect(notifier.name).toBe("none");
+    expect(notifier.argv).toBeUndefined();
+  }
+});
+
+test("notify on the off notifier runs nothing, prints nothing, and reports success", async () => {
+  const printed: string[] = [];
+  const notifier = selectNotifier({ SKELCREW_NOTIFY: "none" }, "darwin");
+  const status = await notify(notifier, "skelcrew", "#1 Title: note", (line) => printed.push(line));
+  expect(status).toBe(0);
+  expect(printed).toEqual([]);
+});
+
 test("on macOS osascript on PATH is selected, with the text and title escaped into AppleScript", () => {
   const bin = binDir("mac", { osascript: 0o755 });
   const notifier = selectNotifier({ PATH: `${dir}/nowhere:${bin}` }, "darwin");

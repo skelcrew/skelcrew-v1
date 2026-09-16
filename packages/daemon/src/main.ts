@@ -1,4 +1,5 @@
 import { findRepoRoot, VERSION } from "@skelcrew/shared";
+import { startAnnouncing } from "./announce";
 import { openCore } from "./core/core";
 import { mergePoll, mergePollIntervalFromEnv } from "./merges";
 import type { AgentDriver } from "./runner/agent";
@@ -72,6 +73,20 @@ const sweeper = setInterval(
   () => sweepTick(core, (line) => console.error(line), runnerId),
   CLAIM_SWEEP_INTERVAL_MS,
 );
+// A question the owner never hears about is a run lost to a sleeping laptop, so a daemon the
+// owner started in a terminal rings that terminal and sends one notification per request
+// raised to a human. Only in a terminal: a daemon under launchd, or with its output
+// redirected, has nobody beside it, and `watch` is the ping for that owner — it notifies
+// wherever it is run, which is where the owner actually is. An owner running both hears twice;
+// 023 took that over a handshake between client and daemon.
+const stopAnnouncing = startAnnouncing({
+  core,
+  env: process.env,
+  platform: process.platform,
+  isTerminal: process.stdout.isTTY === true,
+  out: (text) => process.stdout.write(text),
+  warn: (line) => console.error(line),
+});
 console.log(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
 
 // The execution half: off with SKELCREW_RUNNER=0, and off when there is no repository to
@@ -115,6 +130,7 @@ if (process.env.SKELCREW_RUNNER !== "0") {
 
 async function shutdown(): Promise<void> {
   clearInterval(sweeper);
+  stopAnnouncing();
   if (merges !== undefined) clearInterval(merges);
   await runner?.stop();
   server.stop();
