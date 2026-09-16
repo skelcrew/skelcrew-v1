@@ -916,6 +916,152 @@ test("an input past the note's byte cap is cut, marked, and points at the run lo
   await done;
 });
 
+// --- why the agent wants it (022) ---
+
+/**
+ * Criterion 3. The owner answering from their phone sees the command and two resolve commands,
+ * and nothing saying what the command is for — so the question waits until they are at a
+ * machine and can read shell. The agent's own last text turn says exactly that, so it goes on
+ * the card with the question: after the frame, before the input, on one labelled line.
+ */
+test("a question carries the agent's own reason for it, between the frame and the input", async () => {
+  await initRepo();
+  let decision: ToolDecision | undefined;
+  start({
+    driver: fakeDriver(async function* (options) {
+      yield {
+        type: "text",
+        text: "Checking whether Bun can put the terminal into raw mode, which a TUI needs.",
+      };
+      decision = await options.canUseTool("Bash", { command: "script -q /dev/null bun -e 'x'" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Probes the terminal" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  expect(core.getCard(card.id).attention?.note).toBe(
+    [
+      `allow Bash? (skelcrew resolve ${card.id} -m allow | skelcrew resolve ${card.id} -m deny)`,
+      "why: Checking whether Bun can put the terminal into raw mode, which a TUI needs.",
+      "input:",
+      "> script -q /dev/null bun -e 'x'",
+    ].join("\n"),
+  );
+
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+  expect(decision).toEqual({ behavior: "allow" });
+});
+
+/**
+ * Criterion 4, second half. The reason belongs to the ask that was made in the same turn as it.
+ * Once the owner has answered, the agent goes on in a new turn, and a sentence written before
+ * the answer describes a call the owner has already decided — attaching it to the next question
+ * would put a true sentence beside the wrong command, which is worse than no sentence at all.
+ */
+test("a reason written before the previous answer is not attached to the next question", async () => {
+  await initRepo();
+  const decisions: ToolDecision[] = [];
+  start({
+    driver: fakeDriver(async function* (options) {
+      yield { type: "text", text: "Looking at how the packages are laid out." };
+      decisions.push(await options.canUseTool("Bash", { command: "sed -n 1,60p package.json" }));
+      decisions.push(
+        await options.canUseTool("Bash", { command: "cat packages/cli/package.json" }),
+      );
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Asks twice, says why once" }, owner.id);
+  const first = untilEvent(asked(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await first;
+  const firstNote = core.getCard(card.id).attention?.note as string;
+
+  const second = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.resolveAttention(card.id, "allow", owner.id);
+  await second;
+  const secondNote = core.getCard(card.id).attention?.note as string;
+  core.resolveAttention(card.id, "allow", owner.id);
+  await done;
+
+  expect(firstNote.split("\n")[1]).toBe("why: Looking at how the packages are laid out.");
+  expect(secondNote).toContain("> cat packages/cli/package.json");
+  expect(secondNote).not.toContain("why:");
+  expect(secondNote.split("\n")[1]).toBe("input:");
+  expect(decisions).toEqual([{ behavior: "allow" }, { behavior: "allow" }]);
+});
+
+/** Criterion 5. The queue is a list, so the reason is one line however the agent wrote it. */
+test("a reason written over several lines is one line on the card", async () => {
+  await initRepo();
+  start({
+    driver: fakeDriver(async function* (options) {
+      yield { type: "text", text: "Reading the manifests.\n\nThey say which packages exist." };
+      void options.canUseTool("Bash", { command: "sed -n 1,60p package.json" });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Says why over three lines" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  const note = core.getCard(card.id).attention?.note as string;
+  expect(note.split("\n")).toEqual([
+    `allow Bash? (skelcrew resolve ${card.id} -m allow | skelcrew resolve ${card.id} -m deny)`,
+    "why: Reading the manifests. They say which packages exist.",
+    "input:",
+    "> sed -n 1,60p package.json",
+  ]);
+
+  core.resolveAttention(card.id, "no", owner.id);
+  await done;
+});
+
+/**
+ * Criterion 5, the rest of it. A turn can be pages long and the input can be longer than a
+ * comment holds, and neither may cost the other: the reason is cut to its own small budget and
+ * marked, the input keeps the rest of the note, and the whole of it still fits a comment.
+ */
+test("a reason past its budget is cut and marked, inside the note's own cap", async () => {
+  await initRepo();
+  const reason = `Reading ${"the package manifests ".repeat(40)}to see the layout.`;
+  const command = `git log ${"y".repeat(COMMENT_MAX_BYTES)}`;
+  start({
+    driver: fakeDriver(async function* (options) {
+      yield { type: "text", text: reason };
+      void options.canUseTool("Bash", { command });
+      yield { type: "result", ok: true };
+    }),
+  });
+  const card = core.createCard({ title: "Says why at length" }, owner.id);
+  const question = untilEvent(asked(card.id));
+  const done = untilEvent(released(card.id));
+  core.moveCard(card.id, "spec", owner.id);
+  await question;
+
+  const note = core.getCard(card.id).attention?.note as string;
+  const why = note.split("\n")[1] as string;
+  expect(why).toStartWith("why: Reading the package manifests ");
+  expect(why).toEndWith("…");
+  expect(Buffer.byteLength(why, "utf8")).toBeLessThanOrEqual("why: ".length + 200);
+  expect(note.split("\n")[2]).toBe("input:");
+  // And the input is cut by the note's own cap, as it was before there was a reason to carry.
+  expect(Buffer.byteLength(note, "utf8")).toBeLessThanOrEqual(COMMENT_MAX_BYTES);
+  expect(note).toContain("truncated");
+  expect(note.length).toBeGreaterThan(1000);
+
+  core.resolveAttention(card.id, "no", owner.id);
+  await done;
+});
+
 test("allow, yes and ok each let the tool run", async () => {
   await initRepo();
   for (const word of ["allow", "yes", "ok", "Allow", " OK "]) {

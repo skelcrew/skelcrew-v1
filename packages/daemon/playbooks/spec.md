@@ -11,6 +11,14 @@ you. Nothing you do is a conversation: the card moves on artefacts and the owner
 
 ## 1. Ground yourself before designing
 
+**Read with your own tools, not with the shell.** Read a file with `Read`, find files with
+`Glob`, search inside them with `Grep` — those three run unprompted, so a run that reads this
+way never stops to ask. Use the shell only for what they cannot do (git, and the `skelcrew`
+CLI), and then one command at a time: never joined with `&&`, `;` or a pipe, and never a loop,
+because a joined command is only ever as allowed as its least-allowed part and a loop is never
+recognised. Before a shell command that is not pre-allowed, say in one sentence what it is
+for — if it does stop to ask, that sentence is what the card shows the owner beside the command.
+
 1. **Read `AGENTS.md` or `CLAUDE.md` at the repository root in full, first**, if either
    exists. The constraints there are correctness requirements — a spec that violates one is
    wrong, however elegant. They also name the repository's check commands and conventions.

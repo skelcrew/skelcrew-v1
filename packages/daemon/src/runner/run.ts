@@ -56,6 +56,8 @@ export const TEXT_EXCERPT_BYTES = 2 * 1024;
 export const TOOL_SUMMARY_MS = 30_000;
 /** One-line renderings of a tool's input are cut here. */
 const INPUT_LINE_MAX = 200;
+/** The agent's reason for a question is one line of the note, and is cut here. */
+const WHY_LINE_MAX = 200;
 const COMMAND_IN_SUMMARY_MAX = 60;
 /** A batch's summary is one comment, so it is cut like every other write to a card. */
 const SUMMARY_MAX_BYTES = COMMENT_MAX_BYTES / 4;
@@ -278,6 +280,24 @@ function describeInput(tool: string, input: Record<string, unknown>): string {
 }
 
 /**
+ * The agent's own reason for a call, as the note's `why:` line and the newline after it — or
+ * nothing at all, which is what the question carries when no text turn preceded the ask.
+ *
+ * Escaped first, like every other relay here, so the cut is measured on what is actually shown.
+ * Flattened next, and that is what makes it safe to interpolate unquoted: the party choosing
+ * this text is the party being gated, and with every line break gone it cannot become a line of
+ * its own — 015's reason, and the same one the input is quoted for. Then cut to its own budget,
+ * which the caller's byte arithmetic counts as part of the note's fixed part, so a long reason
+ * cannot push the input past the cap. `oneLine` cuts by character and `cutMarked` by byte, so
+ * the budget is the tighter of the two and the line is marked wherever it bit.
+ */
+function whyLine(raw: string | undefined): string {
+  if (raw === undefined) return "";
+  const line = cutMarked(oneLine(relayed(raw), WHY_LINE_MAX), WHY_LINE_MAX);
+  return line.length === 0 ? "" : `why: ${line}\n`;
+}
+
+/**
  * "ran 4 tools: Read ×2, Bash `bun test`, Edit": Bash calls named, the rest counted. A
  * window can hold more distinct commands than a comment does, and a summary over the cap is
  * rejected by the core — so it is cut and marked here rather than dropped from the card.
@@ -432,8 +452,21 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
   interface Ask {
     tool: string;
     input: Record<string, unknown>;
+    /** The agent's last text turn when the call was made, or undefined when there was none. */
+    why: string | undefined;
     settle: (decision: ToolDecision) => void;
   }
+
+  /**
+   * The text of the agent's last turn, which is where it says what it is about to do — kept so
+   * that a question raised in the same turn can carry it (022). Cleared when the session ends
+   * and when this run's own question is answered, because the agent goes on in a new turn from
+   * there: a sentence written before the answer describes a call the owner has already decided,
+   * and beside the next command it would be true of nothing. Copied onto the ask when the call
+   * is made rather than read when the question is raised, so a queued ask keeps its own turn's
+   * sentence however long it waits behind another.
+   */
+  let turnText: string | undefined;
 
   /** Asked and not yet on the card, oldest first. */
   const queued: Ask[] = [];
@@ -470,9 +503,14 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
    * commands sit on the first line, the input goes last under its own label, and `quoted`
    * leaves no line of it that can be either. Same class as milestone 015, where control
    * characters repaint a rendered line rather than laying out a fake one; 015 is not this.
+   *
+   * **Between the two sits the agent's reason for the call**, when it wrote one in the same turn
+   * (022): `whyLine` above, on one line, inside this function's byte arithmetic so that a long
+   * reason costs the reason and never the input. A command the owner cannot read from their
+   * phone is a run that waits until they are at a machine; the sentence is what they answer from.
    */
   const questionFor = (pending: Ask): string => {
-    const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\ninput:\n`;
+    const frame = `allow ${pending.tool}? (skelcrew resolve ${id} -m allow | skelcrew resolve ${id} -m deny)\n${whyLine(pending.why)}input:\n`;
     // Escaped where it is composed, before it is quoted or measured: the payload is the
     // agent's text, and the note's cap below has to be measured on what is actually posted.
     // The sink escapes it in any case (`postingCore`); this is about the cut, not the safety.
@@ -544,7 +582,7 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
 
   const ask = (tool: string, toolInput: Record<string, unknown>): Promise<ToolDecision> =>
     new Promise<ToolDecision>((resolve) => {
-      const pending: Ask = { tool, input: toolInput, settle: resolve };
+      const pending: Ask = { tool, input: toolInput, why: turnText, settle: resolve };
       if (abort.signal.aborted) {
         over(pending);
         return;
@@ -589,6 +627,9 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
     const text = answerTo(resolution);
     asking = undefined;
     question.raised(undefined);
+    // The answer resumes the agent in a new turn, so what it said before the answer is not the
+    // reason for whatever it asks next.
+    turnText = undefined;
     if (text !== undefined && ALLOWING_ANSWERS.has(text.trim().toLowerCase())) {
       pending.settle({ behavior: "allow" });
       post(`allowed ${describeCall(pending)}`);
@@ -701,6 +742,7 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
       const event = step.value;
       switch (event.type) {
         case "text":
+          turnText = event.text;
           post(excerpt(event.text, logPath));
           break;
         case "tool_use":
@@ -710,6 +752,7 @@ export async function runPlaybook(input: RunInput): Promise<ContractOutcome | un
           break;
         case "result":
           result = event;
+          turnText = undefined;
           break;
       }
       if (result !== undefined) break;

@@ -305,6 +305,48 @@ test("every playbook says never to write a credential from the environment anywh
   }
 });
 
+/**
+ * 022. The first evening of real use cost five permission questions, every one of them a read
+ * the agent could have done with `Read`, `Glob` or `Grep` and did with the shell instead — a
+ * `for` loop over `cat`, `sed` piped to `head`. Nothing was wrong with the list; the playbooks
+ * never said which way to read, and a model given a shell uses it. So each playbook says it, in
+ * one paragraph, and the paragraph is pinned here the way the credential rule is: a shared head
+ * and a shared tail, asserted to be in the *same* paragraph, because a rule split across two
+ * places is a rule an agent reads half of.
+ *
+ * The opening sentence is what finds the paragraph in the first place; the head below carries it
+ * so that a playbook cannot keep the opening and lose what follows it.
+ */
+const READ_WITH_TOOLS_OPENING = "**Read with your own tools, not with the shell.**";
+
+const READ_WITH_TOOLS = `${READ_WITH_TOOLS_OPENING} Read a file with \`Read\`, find files with \`Glob\`, search inside them with \`Grep\` — those three run unprompted, so a run that reads this way never stops to ask. Use the shell only for what they cannot do`;
+
+const READ_WITH_TOOLS_TAIL =
+  "and then one command at a time: never joined with `&&`, `;` or a pipe, and never a loop, because a joined command is only ever as allowed as its least-allowed part and a loop is never recognised. Before a shell command that is not pre-allowed, say in one sentence what it is for — if it does stop to ask, that sentence is what the card shows the owner beside the command.";
+
+/**
+ * The one paragraph of `playbook` holding `marker`, as one line. Each paragraph is unwrapped
+ * before it is searched, so where the playbook's own line breaks fall is not part of the claim —
+ * what the assertions below pin is that the rule is *one* paragraph rather than two.
+ */
+function paragraphWith(playbook: string, marker: string): string {
+  const paragraph = playbook
+    .split("\n\n")
+    .map(unwrapped)
+    .find((part) => part.includes(marker));
+  expect([marker, paragraph === undefined]).toEqual([marker, false]);
+  return paragraph as string;
+}
+
+test("every playbook says to read with Read, Glob and Grep, and to run one shell command at a time", () => {
+  const playbooks = loadPlaybooks();
+  for (const kind of PLAYBOOK_KINDS) {
+    const paragraph = paragraphWith(playbooks[kind], READ_WITH_TOOLS_OPENING);
+    expect([kind, paragraph.includes(READ_WITH_TOOLS)]).toEqual([kind, true]);
+    expect([kind, paragraph.includes(READ_WITH_TOOLS_TAIL)]).toEqual([kind, true]);
+  }
+});
+
 test("the Code playbook says what runs unprompted and what the owner is asked for", () => {
   const code = loadPlaybooks().code.toLowerCase();
   expect(code).toContain("asks the owner");
