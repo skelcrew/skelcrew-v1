@@ -889,11 +889,21 @@ export function openCore(path: string, options: { owner?: string; now?: () => nu
             type: "run_interrupted",
             data: { by: claim.by, expiresAt: claim.expiresAt },
           });
-          // A request the lapsed holder raised goes with the claim: nothing answers a question
-          // once the run that asked it is gone, and the card would otherwise be neither running
-          // nor queued until a member cleared it by hand. A request raised by anyone else — the
+          // A request a lapsed *run* raised goes with the claim: nothing answers a question once
+          // the run that asked it is gone, and the card would otherwise be neither running nor
+          // queued until a member cleared it by hand. A request raised by anyone else — the
           // agent's own question, the owner's note — stands, because it can still be answered.
-          if (card.attention !== null && card.attention.raisedBy === claim.by) {
+          // A human's claim is not a run: nothing heartbeats the claim `skelcrew claim` makes,
+          // so the owner's own claim lapses while the owner is still there to answer the note
+          // they left, and withdrawing it would hand the card they took to the runner. Fails
+          // closed: a holder the members table cannot identify withdraws nothing.
+          const holder = selectMember.get(claim.by) ?? undefined;
+          if (
+            card.attention !== null &&
+            card.attention.raisedBy === claim.by &&
+            holder !== undefined &&
+            holder.kind !== "human"
+          ) {
             updateAttention.run(null, at, card.id);
             log(card.id, claim.by, {
               type: "attention_resolved",

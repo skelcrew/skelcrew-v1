@@ -108,7 +108,12 @@ function cut(text: string, width: number): string {
   return chars.length <= width ? text : `${chars.slice(0, width - 1).join("")}…`;
 }
 
-/** Local time of day, minute precision: `HH:MM`. A live claim is at most an hour old. */
+/**
+ * Local time of day, minute precision: `HH:MM`. A heartbeat moves only the expiry, so a claim
+ * is as old as the work it holds — a Code run plus its review rounds, each bounded by the
+ * runner's run limit — and one that began yesterday evening reads as yesterday's time of day.
+ * The table asks for `HH:MM`; a date belongs to the card's detail, which `show` prints in full.
+ */
 function clockTime(ms: number): string {
   return formatTime(ms).slice(-5);
 }
@@ -168,10 +173,13 @@ export function row(
     formatId(card.id).padStart(widths.id),
     phaseTrack(card.phase),
     phaseName(card.phase).padEnd(PHASE_NAME_WIDTH),
-    status(card, me, members, now).padEnd(widths.status),
+    // A listing where no card has a status carries no column for it: padding nothing to
+    // nothing still costs the separator, which would push every title two spaces right.
+    // An archived card's status is `archived`, so the column is never empty on its listing,
+    // and the title needs no `(archived)` after it to say the same thing twice.
+    ...(widths.status === 0 ? [] : [status(card, me, members, now).padEnd(widths.status)]),
     oneLine(card.title),
   ];
-  if (card.archivedAt !== null) cells.push("(archived)");
   return cells.join("  ");
 }
 

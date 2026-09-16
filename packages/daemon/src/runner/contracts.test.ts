@@ -1083,6 +1083,46 @@ for (const raiser of OTHER_RAISERS) {
   });
 }
 
+/**
+ * Criterion 5's second half, added after review round 1: the owner takes a card by hand with
+ * `skelcrew claim` and leaves a note on it. Nothing heartbeats a human's claim, so it lapses on
+ * its own — but the note is not a run's question, the owner is still there to answer it, and
+ * the card the owner took is not the runner's to start.
+ */
+test("a lapsed claim held by the owner withdraws nothing, and the runner does not take the card", async () => {
+  await initRepo();
+  const clock = onAFakeClock();
+  let runs = 0;
+  core.createCard({ title: "Taken by hand" }, owner.id);
+  core.moveCard(1, "spec", owner.id);
+  // The owner takes it before any runner is watching: `skelcrew claim 1`, then a note.
+  core.claimCard(1, {}, owner.id);
+  core.requestAttention(1, { to: crewMember.id, note: "rebase onto main first" }, owner.id);
+  start({
+    now: clock.now,
+    driver: fakeDriver(async function* () {
+      runs += 1;
+      yield { type: "result", ok: true };
+    }),
+  });
+
+  const interrupted = untilEvent((e) => e.cardId === 1 && e.type === "run_interrupted");
+  clock.tick(10 * 60_000);
+  expect(core.sweepClaims()).toEqual([1]);
+  await interrupted;
+  await Bun.sleep(200);
+
+  // The note stands, so the card is not ready: no claim of the runner's, and no run.
+  expect(core.getCard(1).attention).toMatchObject({
+    raisedBy: owner.id,
+    note: "rebase onto main first",
+  });
+  expect(core.getCard(1).activity.some((e) => e.type === "attention_resolved")).toBe(false);
+  expect(core.getCard(1).activity.filter((e) => e.type === "claimed")).toHaveLength(1);
+  expect(core.getCard(1).claim).toBeNull();
+  expect(runs).toBe(0);
+});
+
 // --- the agent acting on its own card ---
 //
 // 014 drove all three self-actions as the `runner` member, because the agent spoke as the

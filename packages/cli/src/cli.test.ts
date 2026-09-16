@@ -1361,7 +1361,8 @@ test("ls says what each card is doing, in a column between the phase and the tit
     ["~", "#4", TRACK.code, "Code", "interrupted", "Interrupted"],
     [" ", "#5", TRACK.code, "Code", "queued", "Queued"],
     [" ", "#6", TRACK.idea, "Idea", "Idle"],
-    [" ", "#7", TRACK.idea, "Idea", "archived", "Gone", "(archived)"],
+    // The status says archived, so the title carries no `(archived)` suffix after it.
+    [" ", "#7", TRACK.idea, "Idea", "archived", "Gone"],
   ]);
   // The whole note is still on the card, and every column before the status is fixed-width,
   // so the status begins at the same character on every row.
@@ -1376,6 +1377,70 @@ test("ls says what each card is doing, in a column between the phase and the tit
     `   #6  ${TRACK.idea}  Idea  `,
     `   #7  ${TRACK.idea}  Idea  `,
   ]);
+});
+
+/**
+ * The status column is one screen cell, so it escapes what it carries itself. A tab is the
+ * character that makes the difference: a stored note is a multi-line field, so `main.ts`'s
+ * sink keeps it, and one tab in a note would otherwise jump the title of that row to the next
+ * tab stop while the column's width counted it as a single character.
+ */
+test("a tab in a note is escaped in the status column, and the titles still line up", async () => {
+  const simon = member("simon").id;
+  const agent = core.ensureMember("crew-1", "agent");
+  for (const title of ["Tabbed", "Queued"]) {
+    const card = core.createCard({ title }, simon);
+    core.moveCard(card.id, "code", simon);
+  }
+  core.requestAttention(1, { to: simon, note: "allow\tBash?" }, agent.id);
+
+  const board = lines(await ok(["ls"]));
+  expect(board[0]).toContain("waiting on you: allow\\tBash?");
+  expect(board[0]).not.toContain("\t");
+  expect(core.getCard(1).attention?.note).toBe("allow\tBash?");
+  expect(board[0]?.indexOf("Tabbed")).toBe(board[1]?.indexOf("Queued") as number);
+});
+
+/**
+ * A board with nothing to say about any card holds no status column at all: the cell is a
+ * column, and a column of nothing but padding still pushes every title right.
+ */
+test("no card with a status means no status column, and the title follows the phase", async () => {
+  const simon = member("simon").id;
+  for (const title of ["Idea one", "Idea two"]) core.createCard({ title }, simon);
+
+  expect(lines(await ok(["ls"]))).toEqual([
+    `   #1  ${TRACK.idea}  Idea  Idea one`,
+    `   #2  ${TRACK.idea}  Idea  Idea two`,
+  ]);
+});
+
+/**
+ * `--json` prints the daemon's result and never calls the renderer, so it must not need what
+ * only the renderer needs: the member names the status column puts after `waiting on`. Driven
+ * as an agent, because `hello` lists the members for a human and this asks what `ls` fetches.
+ */
+test("ls --json does not need the member list the status column renders with", async () => {
+  const simon = member("simon").id;
+  core.ensureMember("crew-1", "agent");
+  core.createCard({ title: "On the board" }, simon);
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(home);
+  const withoutMembers: Core = {
+    ...core,
+    listMembers: () => {
+      throw new Error("no member list here");
+    },
+  };
+  const server = startServer({ core: withoutMembers, socketPath: join(home, "skelcrew.sock") });
+  extraServers.push({ stop: () => server.stop() });
+
+  const asJson = await ok(["ls", "--json", "--as", "crew-1"], { dataDir: home });
+  expect(json<Card[]>(asJson)).toEqual(core.listCards());
+  // The text board is what needs the names, and it says so rather than inventing one.
+  expect(await failed(1, ["ls", "--as", "crew-1"], { dataDir: home })).toContain(
+    "no member list here",
+  );
 });
 
 /** Criterion 3: the same status text, as the header's second line. */

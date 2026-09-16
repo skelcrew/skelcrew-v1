@@ -133,7 +133,8 @@ export type ActivityEvent =
  *
  * `interrupted` is the sweep's: a request raised by a claim's holder goes with the claim when
  * the lease lapses, because nothing can answer a question the run that asked it no longer
- * exists to hear. Attributed to the former holder, as `run_interrupted` is.
+ * exists to hear. Only a non-human holder's — a human's claim lapses with the human still at
+ * the keyboard, so the request stands. Attributed to the former holder, as `run_interrupted` is.
  */
 export type AttentionResolution =
   | { how: "moved"; phase: Phase }

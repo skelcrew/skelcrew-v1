@@ -1828,6 +1828,29 @@ describe("claims", () => {
     ]);
   });
 
+  /**
+   * The withdrawal is a lapsed *run's*, and a human's claim is not a run: nothing heartbeats
+   * the claim `skelcrew claim` makes, so the owner's own claim lapses after two minutes at the
+   * keyboard, and the owner is still there to answer the note they left. Withdrawing it would
+   * also hand the card straight back to the runner, which is the card the owner had taken.
+   */
+  test("sweepClaims leaves a human holder's own request standing", () => {
+    const card = cardIn("code");
+    core.claimCard(card.id, { ttlSeconds: 10 }, owner.id);
+    core.requestAttention(card.id, { to: agent.id, note: "rebase onto main first" }, owner.id);
+    clock = T0 + 20_000;
+    const seqBefore = lastSeq();
+
+    expect(core.sweepClaims()).toEqual([card.id]);
+
+    expect(core.getCard(card.id).attention).toMatchObject({
+      raisedBy: owner.id,
+      note: "rebase onto main first",
+    });
+    expect(core.getCard(card.id).claim).toBeNull();
+    expect(core.activitySince(seqBefore).map((e) => e.type)).toEqual(["run_interrupted"]);
+  });
+
   test("sweepClaims with no claims at all returns nothing and records nothing", () => {
     cardIn("spec");
     const before = core.activitySince(0);

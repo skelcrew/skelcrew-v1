@@ -43,9 +43,13 @@ Run record for `docs/specs/024-the-board-explains-itself.md`.
 - **A blank status prints no `now:` line.** The table's blank row is "nothing to say"; a `now:`
   label with nothing after it says nothing, and the four states criterion 3 names all have text.
   `ls` still holds the column open for such a card, so the columns line up.
-- **`<HH:MM>` is the local time of day**, from `formatTime`'s last five characters. A live claim
-  is at most an hour old (`CLAIM_TTL_MAX_SECONDS`), so the date is today's but for a lease that
-  crosses midnight; the table asks for `HH:MM` and that is what it gets.
+- **`<HH:MM>` is the local time of day**, from `formatTime`'s last five characters. The table
+  asks for `HH:MM` and that is what it gets, with no date — which is a real loss of information,
+  because a claim is not short-lived: a heartbeat moves only the expiry, never `claimedAt`, so a
+  claim is as old as the work it holds (a Code run plus its review rounds, each bounded by the
+  runner's run limit), and `running since 23:40` can be from the previous day. The whole
+  timestamp is on the card, which `show` prints. (Corrected after review round 1; the bullet
+  used to say `CLAIM_TTL_MAX_SECONDS` bounded a claim's age, and it bounds one renewal.)
 - **Where criterion 5's two raisers are asserted.** Both end to end in `contracts.test.ts`, as
   one case per raiser over a small table — the agent's own `skelcrew attention` question as
   `crew`, and the owner's note — each asserting that the request stands *and* that no second
@@ -109,3 +113,77 @@ them: two failures in `contracts.test.ts` and one in `core.test.ts`, the conditi
   neither (the diff touches no file under `packages/daemon/playbooks/` and not `allowlist.ts`).
 - No test here spawns a coding agent or calls a model: `contracts.test.ts`'s driver is a
   scripted generator, which is the file's own boundary.
+
+## Fix round 1
+
+Five findings from the review, each with the test that pins it.
+
+**1 (must fix) — the sweep withdrew a human holder's own request.** The condition asked only
+`attention.raisedBy === claim.by`, and a human can hold a claim: `skelcrew claim` makes one that
+nothing heartbeats, so it lapses after two minutes, and the sweep cleared the owner's own note
+with it and handed the card to the runner. `core.ts`'s `sweepClaims` now reads the holder from
+the members table and withdraws only when the holder exists and its kind is not `human`, which
+is the rule the spec's *Desired behavior* now states; a holder the table cannot identify
+withdraws nothing. `types.ts`'s doc comment said the justification was "nothing can answer a
+question the run that asked it no longer exists to hear", which is false for a human holder, and
+now says so.
+
+Red first, twice:
+
+```
+(fail) claims > sweepClaims leaves a human holder's own request standing
+expect(core.getCard(card.id).attention).toMatchObject({...})
+Matcher error: received value must be a non-null object
+```
+
+and through the real runner, which is the criterion-5 case as the reviewer reproduced it:
+
+```
+(fail) a lapsed claim held by the owner withdraws nothing, and the runner does not take the card
+-   "note": "rebase onto main first",       (expected)
++   "note": "run finished without a spec; the work is in …/worktrees/1",   (received)
+```
+
+— the owner's note gone and a Spec run finished over the work the owner had taken by hand.
+Pinned by `core.test.ts`'s "sweepClaims leaves a human holder's own request standing" and
+`contracts.test.ts`'s "a lapsed claim held by the owner withdraws nothing, and the runner does
+not take the card", which asserts the note stands, no `attention_resolved`, one `claimed` event
+(the owner's) and no run.
+
+**2 (prose) — "a live claim is at most an hour old" was false.** `heartbeat` moves only
+`expiresAt`, so `CLAIM_TTL_MAX_SECONDS` bounds one renewal and not a claim's age. `render.ts`'s
+`clockTime` comment and the `<HH:MM>` bullet above now say what does bound it — the runner's run
+limit times the review rounds one claim spans — and keep the time-only display.
+
+**4 (minor) — the status column's escaping had no test.** A tab is the one character the column
+has to escape itself: a note is a multi-line field, so `main.ts`'s sink keeps it. `cli.test.ts`'s
+"a tab in a note is escaped in the status column, and the titles still line up" stores
+`allow\tBash?` and asserts the cell reads `allow\\tBash?` with no raw tab on the row. It bites:
+with `oneLine` dropped from `firstLine` it fails with
+`Received: "!  #1  ○○●○○  Code  waiting on you: allow<TAB>Bash?  Tabbed"`, and `firstLine` was
+restored afterwards.
+
+**5 (minor) — `ls --json` made a round trip it does not use.** `listMembers` was awaited before
+the result was returned, whichever output mode was in force, so `ls --json` failed when a call
+only the renderer needs failed. `ls.ts` now reads the `--json` flag (as `watch` does) and fetches
+the members only for the text board. Pinned by `cli.test.ts`'s "ls --json does not need the
+member list the status column renders with", which serves a core whose `listMembers` throws:
+`ls --json` prints the cards, and the text board fails with that error rather than inventing a
+name. (Driven with `--as`, because `hello` lists the members itself for a human.)
+
+**6 (minor) — two rendering redundancies.** An archived row said `archived` in the status column
+and `(archived)` after the title; the suffix is gone, since an archived card's status always
+says it. And a board where every status is blank still paid for the column's separator, putting
+the title four spaces after the phase; the cell is now skipped when the column's width is zero.
+The existing expected row in "ls says what each card is doing" asserted the old suffix — a test
+of the old behaviour, so its expected string was updated rather than worked around — and
+`cli.test.ts`'s "no card with a status means no status column, and the title follows the phase"
+pins the spacing on an all-Idea board.
+
+### Checks
+
+- `bun run check` — passes: `biome ci .` clean over 90 files, `tsc` clean in all three packages,
+  `774 pass / 0 fail` across 29 files. Five cases are new in this round (one in `core.test.ts`,
+  one in `contracts.test.ts`, three in `cli.test.ts`), so the suite stood at 769 before it.
+- `bun run check:harness` — not run, and not required: this round changes no playbook and not
+  the runner's fixed allowlist.
