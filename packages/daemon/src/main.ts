@@ -8,7 +8,13 @@ import { createGit } from "./runner/git";
 import { selectAgent } from "./runner/none";
 import { loadPlaybooks, type Playbooks } from "./runner/playbooks";
 import { runLimitFromEnv } from "./runner/run";
-import { CREW_MEMBER_NAME, RUNNER_MEMBER_NAME, type Runner, startRunner } from "./runner/runner";
+import {
+  CREW_MEMBER_NAME,
+  RUNNER_MEMBER_NAME,
+  type Runner,
+  runsFromEnv,
+  startRunner,
+} from "./runner/runner";
 import { daemonAnswers, dataPaths, prepareDataDir, resolveDataDir } from "./server/paths";
 import { startServer } from "./server/server";
 import { sweepTick } from "./sweep";
@@ -27,14 +33,16 @@ if (dir === undefined) {
   process.exit(1);
 }
 
-// A typo in the agent selection, the run limit or the poll interval stops the daemon; it does
-// not pick a default.
+// A typo in the agent selection, the run limit, how many run at once, or the poll interval
+// stops the daemon; it does not pick a default.
 let agentKind: ReturnType<typeof selectAgent>;
 let runLimitMs: number;
+let runs: number;
 let mergePollMs: number;
 try {
   agentKind = selectAgent(process.env);
   runLimitMs = runLimitFromEnv(process.env);
+  runs = runsFromEnv(process.env);
   mergePollMs = mergePollIntervalFromEnv(process.env);
 } catch (error) {
   stop(error);
@@ -108,6 +116,7 @@ if (process.env.SKELCREW_RUNNER !== "0") {
       member,
       crew: core.ensureMember(CREW_MEMBER_NAME, "agent"),
       warn: (line) => console.error(line),
+      slots: runs,
       runLimitMs,
       ...(agent === undefined ? {} : { agent }),
     });

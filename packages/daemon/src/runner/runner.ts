@@ -1,10 +1,10 @@
 /**
  * The execution half. A client of the core like the socket is: it watches the activity
- * stream for cards becoming ready, claims one at a time as the `runner` member, prepares a
- * branch and a worktree, and runs the phase's playbook in it through a driver (`run.ts`) —
- * or, with no driver, hands the card to the owner as 006 did. Every step lands on the card;
- * nothing here reaches into the database or the target repository except through `git` and
- * the agent.
+ * stream for cards becoming ready, claims up to `slots` of them as the `runner` member,
+ * prepares a branch and a worktree for each, and runs the phase's playbook in it through a
+ * driver (`run.ts`) — or, with no driver, hands the card to the owner as 006 did. Every step
+ * lands on the card; nothing here reaches into the database or the target repository except
+ * through `git` and the agent.
  *
  * **The agent it spawns is a member of its own, `crew`, and the claim stays the runner's.**
  * Everything the runner does as itself — the claim, the heartbeat, the branch it records, the
@@ -12,6 +12,36 @@
  * does through the CLI is `crew`'s. That split is what makes the gates hold: the core already
  * refuses a non-human actor acting on another member's live claim, and the agent is now on the
  * other side of those refusals whatever process it calls from.
+ *
+ * **Jobs stay serial; runs do not.** The pump still performs one job at a time (006), but a
+ * scan no longer *is* a run: it claims ready cards in id order until `slots` are held and
+ * starts each run detached, so the next job — a teardown, a later scan — happens at once. Up
+ * to `slots` cards therefore move together, each in its own worktree with its own agent,
+ * claim, heartbeat, permission question, review budget, run log and endings; nothing in a run
+ * reads runner-wide state another run writes, and the claim is what makes that safe, since a
+ * card one run claimed is not ready for the next scan.
+ *
+ * **`SKELCREW_RUNS=1` is 006's dispatch, not the whole of 006.** One slot holds one claim at a
+ * time, as it did — `slots` gates nothing else — but runs are detached at every slot count, so
+ * the pump goes on while that one run is live: a teardown of another card lands during the run
+ * rather than behind it, where 006's serial pump made it wait. What keeps that safe is the
+ * mutex below, not the pump. Anyone setting it to 1 to get a strictly serial daemon back should
+ * know that much of the change stays.
+ *
+ * Two things are shared and are handled here rather than in a run. **The repository is touched
+ * by one card at a time**: a run's setup — resolving the base branch, creating the branch,
+ * adding the worktree, reading the allowlist, opening the run log and posting the run-start
+ * comment — and a teardown's removal both go through one mutex (`exclusive`), because git takes
+ * the repository's lock for ref and worktree writes and two at once can fail on it. The
+ * collision would be the runner's own doing, so it is serialised rather than retried, and it is
+ * serialised at every slot count: under 006 the serial pump kept these apart for free, and with
+ * runs outside the pump it no longer does. `reconcile` takes the same mutex and calls the inner
+ * form of a teardown, since `exclusive` is not reentrant. The agent sessions, where the minutes
+ * go, overlap freely outside all of it. And **teardown waits for the live run** before it takes
+ * that mutex: a worktree is never removed under a live session, and a run being waited on needs
+ * the mutex itself. A teardown whose card is back in a claimable phase returns before either
+ * wait — its worktree is the next run's, and holding the pump for a run it will not touch would
+ * stop every scan behind it.
  */
 import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -63,6 +93,22 @@ export const CREW_MEMBER_NAME = "crew";
  * with a new budget. That is a recorded limit of 019 rather than a feature.
  */
 export const REVIEW_ROUNDS_MAX = 3;
+/**
+ * How many cards the runner moves at once. Two, because two is a team and one is today: the
+ * owner's queue fills from several cards rather than one. `SKELCREW_RUNS` overrides it.
+ */
+export const RUNS_DEFAULT = 2;
+/** `SKELCREW_RUNS`, or the default; anything but a positive whole number is an error. */
+export function runsFromEnv(env: Record<string, string | undefined>): number {
+  const value = env.SKELCREW_RUNS;
+  if (value === undefined || value === "") return RUNS_DEFAULT;
+  const runs = Number(value);
+  if (!Number.isInteger(runs) || runs <= 0) {
+    throw new Error(`SKELCREW_RUNS must be a positive whole number of runs, not "${value}"`);
+  }
+  return runs;
+}
+
 /** The lease a run holds, and how often it is renewed while the run lasts. */
 export const RUN_CLAIM_TTL_SECONDS = 120;
 export const RUN_HEARTBEAT_MS = 30_000;
@@ -92,6 +138,8 @@ export interface RunnerOptions {
   agent?: { driver: AgentDriver; playbooks: Playbooks };
   /** The environment the agent inherits from. Defaults to the daemon's own. */
   env?: Record<string, string | undefined>;
+  /** How many cards run at once. Defaults to `RUNS_DEFAULT`; `SKELCREW_RUNS` is where it comes from. */
+  slots?: number;
   /** A run's time limit. Defaults to 60 minutes. */
   runLimitMs?: number;
   /** How long an aborted agent gets to end before the run goes on without it. Defaults to 5 s. */
@@ -104,8 +152,8 @@ export interface RunnerOptions {
 
 export interface Runner {
   /**
-   * Takes no further card and tells a live run to stop (it ends as `daemon stopping`);
-   * resolves once the job in flight has finished.
+   * Takes no further card and tells every live run to stop (each ends as `daemon stopping` on
+   * its own card); resolves once the job in flight and the last of those runs have finished.
    */
   stop(): Promise<void>;
 }
@@ -172,6 +220,7 @@ export function startRunner(options: RunnerOptions): Runner {
   const core = postingCore(options.core);
   const warn = options.warn ?? ((line: string) => console.error(line));
   const now = options.now ?? Date.now;
+  const slots = options.slots ?? RUNS_DEFAULT;
   const runLimitMs = options.runLimitMs ?? RUN_LIMIT_MINUTES_DEFAULT * 60_000;
   const abortGraceMs = options.abortGraceMs ?? ABORT_GRACE_MS_DEFAULT;
   const summaryMs = options.summaryMs ?? TOOL_SUMMARY_MS;
@@ -197,7 +246,43 @@ export function startRunner(options: RunnerOptions): Runner {
 
   const jobs: Job[] = [];
   let stopped = false;
+  /** The last pump started: what `stop()` waits for. */
   let pumping: Promise<void> | undefined;
+  /**
+   * Whether a pump is live. `pump` clears it the moment it finds no job left rather than a turn
+   * later, so a job enqueued in that turn starts a new pump instead of queueing behind one that
+   * has already ended. With runs in the pump that turn never came; with runs detached from it,
+   * the pump empties between two events all the time.
+   */
+  let draining = false;
+  /** The runs in flight, by card: what a slot is, what a teardown waits for, what `stop` awaits. */
+  const live = new Map<number, Promise<void>>();
+  /**
+   * The setup mutex. Whatever is handed here waits for everything handed here before it, so at
+   * most one card is creating a branch or adding a worktree — the git calls that take the
+   * repository's lock — however many runs are live. A step that throws frees it like any other.
+   * A step that finds it free starts at once rather than a turn later, because the first job of
+   * the runner's life goes through it and a `stop()` in that same turn must not overtake it.
+   */
+  let setupBusy = false;
+  const setupWaiting: Array<() => void> = [];
+  async function exclusive<T>(step: () => Promise<T>): Promise<T> {
+    if (setupBusy) {
+      await new Promise<void>((resolve) => {
+        setupWaiting.push(resolve);
+      });
+    }
+    setupBusy = true;
+    try {
+      return await step();
+    } finally {
+      // Handed straight on rather than released: a caller arriving while the next in line is
+      // still being woken queues behind it instead of jumping it.
+      const next = setupWaiting.shift();
+      if (next === undefined) setupBusy = false;
+      else next();
+    }
+  }
 
   function worktreePath(cardId: number): string {
     return join(dir, String(cardId));
@@ -217,21 +302,25 @@ export function startRunner(options: RunnerOptions): Runner {
         (queued.kind !== "teardown" || job.kind !== "teardown" || queued.cardId === job.cardId),
     );
     if (!duplicate) jobs.push(job);
-    pumping ??= pump().finally(() => {
-      pumping = undefined;
-    });
+    if (draining) return;
+    draining = true;
+    pumping = pump();
   }
 
   /** One job at a time; a job that throws is reported and the next one still runs. */
   async function pump(): Promise<void> {
-    while (!stopped) {
-      const job = jobs.shift();
-      if (job === undefined) return;
-      try {
-        await perform(job);
-      } catch (error) {
-        warn(`skelcrew runner: ${job.kind} failed: ${message(error)}`);
+    try {
+      while (!stopped) {
+        const job = jobs.shift();
+        if (job === undefined) return;
+        try {
+          await perform(job);
+        } catch (error) {
+          warn(`skelcrew runner: ${job.kind} failed: ${message(error)}`);
+        }
       }
+    } finally {
+      draining = false;
     }
   }
 
@@ -241,7 +330,7 @@ export function startRunner(options: RunnerOptions): Runner {
         await reconcile();
         break;
       case "scan":
-        await scan();
+        scan();
         break;
       case "teardown":
         await teardown(job.cardId);
@@ -251,15 +340,43 @@ export function startRunner(options: RunnerOptions): Runner {
 
   // --- a run, with no playbook ---
 
-  async function scan(): Promise<void> {
+  /**
+   * Claims ready cards in id order until the slots are full, and starts each run detached: the
+   * scan is a job, a run is not, so the pump goes on to its next job at once. A card claimed
+   * here is not ready for the next scan, which is what keeps one card to one run.
+   */
+  function scan(): void {
     const ids = core
       .listCards()
       .filter((card) => isReady(card, now()))
       .map((card) => card.id);
     for (const id of ids) {
-      if (stopped) return;
-      await run(id);
+      if (stopped || live.size >= slots) return;
+      // A card whose run is still live is never taken again, whatever its claim now says: a
+      // claim that lapsed or was swept under a working run reads as ready here, and a second
+      // run would then be *this* member's too — so the first would find the claim its own and
+      // end on a card that is no longer its own. Names are not credentials (016), least of
+      // all our own name. The slot such a run frees is filled when it settles, below.
+      if (live.has(id)) continue;
+      begin(id);
     }
+  }
+
+  function begin(id: number): void {
+    const running = run(id)
+      .catch((error) => {
+        warn(`skelcrew runner: card ${id}: run failed: ${message(error)}`);
+      })
+      .finally(() => {
+        live.delete(id);
+        // The slot is free only now — the `released` event that ends a run fires from inside
+        // it, while the run still holds its slot — so the scan that fills it is queued here.
+        // Unless the card still carries a claim of ours: that is a lease that lapsed under a
+        // run, which the sweep reports as `run_interrupted`, and scanning over it here would
+        // start a second run of the same card a moment after the first gave up on it.
+        if (find(id)?.claim?.by !== member.id) enqueue({ kind: "scan" });
+      });
+    live.set(id, running);
   }
 
   async function run(id: number): Promise<void> {
@@ -339,24 +456,29 @@ export function startRunner(options: RunnerOptions): Runner {
     };
     let step = "resolve base branch";
     try {
-      const base = await git.defaultBranch(repoRoot);
-      stillHeld();
-      step = "create branch";
       /**
-       * Where the branch stood before the agent started. The Code contract compares its own
+       * The branch and the worktree, one card at a time: these are the calls that take the
+       * repository's lock, so however many runs are live, only one is here. `branchHead` is
+       * where the branch stood before the agent started — the Code contract compares its own
        * end against this: commits past the base are not this run's work unless the branch
        * moved, since a revision run that records the pull request and commits nothing would
        * otherwise hand the card on using the previous run's. A branch this run creates starts
        * at the base, so a run that commits nothing leaves it there and fails the same way.
        */
-      let branchHead = await git.revParse(repoRoot, `refs/heads/${branch}`);
-      if (branchHead === undefined) {
-        await git.createBranch(repoRoot, branch, base.sha);
-        branchHead = base.sha;
-      }
-      stillHeld();
-      step = "add worktree";
-      await ensureWorktree(path, branch);
+      const { base, branchHead } = await exclusive(async () => {
+        const resolved = await git.defaultBranch(repoRoot);
+        stillHeld();
+        step = "create branch";
+        let head = await git.revParse(repoRoot, `refs/heads/${branch}`);
+        if (head === undefined) {
+          await git.createBranch(repoRoot, branch, resolved.sha);
+          head = resolved.sha;
+        }
+        stillHeld();
+        step = "add worktree";
+        await ensureWorktree(path, branch);
+        return { base: resolved, branchHead: head };
+      });
       stillHeld();
       step = "update card";
       core.setRefs(id, { branch }, member.id);
@@ -392,28 +514,34 @@ export function startRunner(options: RunnerOptions): Runner {
         // opens one would otherwise park the card pointing at a file holding none of this.
         logPath = undefined;
         step = `read the ${kind} allowlist`;
-        // Read from the remote-tracking head of the default branch — a ref no *tool call* on
-        // the fixed list can write — so an instruction file a run writes, commits, or points a
-        // branch at grants nothing to it or to the next run. The file tools are anchored at
-        // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
-        // call and is not bound by any of it, and neither is a command the target repository's
-        // own instructions pre-allow for it; see *What a subprocess reaches* and
-        // `narrowedCommands` in `./allowlist`. What keeps the base commit meaningful is that
-        // the owner merged it.
-        const allowlist = await allowlistFor(git, repoRoot, base.name, path, kind);
-        stillHeld();
-        step = `read the ${kind} branch head`;
-        // Re-read per run: the previous run's commits are where this one starts, so "the
-        // branch moved during this run" is about this round and not about the claim.
-        const head = (await git.revParse(repoRoot, `refs/heads/${branch}`)) ?? branchHead;
-        stillHeld();
-        step = `open the ${kind} run log`;
-        logPath = createRunLog(dataDir, id, now());
-        core.comment(id, opening(logPath, allowlist.scanned), member.id);
-        // Where this run's own record starts: everything past its opening comment is what
-        // happened during it — the contracts' "recorded by this run", and the ending's reason.
-        const sinceSeq = core.getCard(id).activity.at(-1)?.seq ?? 0;
-        question = runQuestion();
+        // The rest of this run's setup, one card at a time like the branch and the worktree
+        // above: the session below is what overlaps with other runs, not this.
+        const prepared = await exclusive(async () => {
+          // Read from the remote-tracking head of the default branch — a ref no *tool call* on
+          // the fixed list can write — so an instruction file a run writes, commits, or points a
+          // branch at grants nothing to it or to the next run. The file tools are anchored at
+          // this worktree, which is what puts that ref beyond them. A subprocess is not a tool
+          // call and is not bound by any of it, and neither is a command the target repository's
+          // own instructions pre-allow for it; see *What a subprocess reaches* and
+          // `narrowedCommands` in `./allowlist`. What keeps the base commit meaningful is that
+          // the owner merged it.
+          const allowlist = await allowlistFor(git, repoRoot, base.name, path, kind);
+          stillHeld();
+          step = `read the ${kind} branch head`;
+          // Re-read per run: the previous run's commits are where this one starts, so "the
+          // branch moved during this run" is about this round and not about the claim.
+          const head = (await git.revParse(repoRoot, `refs/heads/${branch}`)) ?? branchHead;
+          stillHeld();
+          step = `open the ${kind} run log`;
+          const log = createRunLog(dataDir, id, now());
+          logPath = log;
+          core.comment(id, opening(log, allowlist.scanned), member.id);
+          // Where this run's own record starts: everything past its opening comment is what
+          // happened during it — the contracts' "recorded by this run", and the ending's reason.
+          const sinceSeq = core.getCard(id).activity.at(-1)?.seq ?? 0;
+          question = runQuestion();
+          return { allowlist, head, log, sinceSeq };
+        });
         step = `run the ${kind} playbook`;
         return await runPlaybook({
           core,
@@ -428,21 +556,21 @@ export function startRunner(options: RunnerOptions): Runner {
           card: core.getCard(id),
           phase,
           kind,
-          sinceSeq,
+          sinceSeq: prepared.sinceSeq,
           now,
           git,
           repoRoot,
           path,
           branch,
-          branchHead: head,
+          branchHead: prepared.head,
           base: base.name,
           driver: agent.driver,
           playbook: agent.playbooks[kind],
           env: agentEnvironment(baseEnv, dataDir, crew.name),
-          allowedTools: allowlist.tools,
-          deniedTools: allowlist.denied,
+          allowedTools: prepared.allowlist.tools,
+          deniedTools: prepared.allowlist.denied,
           question,
-          logPath,
+          logPath: prepared.log,
           limitMs: runLimitMs,
           graceMs: abortGraceMs,
           summaryMs,
@@ -619,12 +747,37 @@ export function startRunner(options: RunnerOptions): Runner {
     report("worktree removed");
   }
 
-  async function teardown(cardId: number): Promise<void> {
-    // Queued by a move or an archive, run later: by now the card may be back in a
-    // claimable phase (moved on and back while the pump was busy), and its worktree is
-    // then the next run's, not something to remove.
+  /**
+   * The card is back in a claimable phase and not archived, so its worktree is the next run's
+   * rather than something to remove: it was moved on and back while the pump was busy.
+   */
+  function reusable(cardId: number): boolean {
     const card = find(cardId);
-    if (card !== undefined && card.archivedAt === null && claimable(card.phase)) return;
+    return card !== undefined && card.archivedAt === null && claimable(card.phase);
+  }
+
+  async function teardown(cardId: number): Promise<void> {
+    // Read before the wait as well as after it. A scan ahead of this job may already have
+    // started a fresh run of the card that came back, and waiting for *that* run — a run this
+    // teardown will not touch — would hold the pump, and with it every scan, for as long as it
+    // lasts. The pump is serial and a run is not: the two are no longer the same wait.
+    if (reusable(cardId)) return;
+    // A worktree is never removed under a live session: the run that holds it ends first —
+    // as an abandonment, when the move that queued this teardown took its claim. The serial
+    // pump gave that ordering for free until runs left it; now it is said here. Waited for
+    // before the mutex is taken and never while holding it, since that run needs the mutex
+    // itself to finish its own setup.
+    await live.get(cardId);
+    // The wait is a window like any other: the owner may have moved the card back during it.
+    if (reusable(cardId)) return;
+    // Under the same mutex as a run's setup: `worktreeRemove` takes the repository's lock that
+    // `worktreeAdd` takes, and the pump — which used to keep every teardown and every run's git
+    // apart by being serial — no longer runs the runs.
+    await exclusive(() => teardownCard(cardId));
+  }
+
+  /** The card's worktree, removed or kept, with the outcome on the card. Holds no mutex. */
+  async function teardownCard(cardId: number): Promise<void> {
     const path = worktreePath(cardId);
     try {
       await teardownPath(path, (text) => core.comment(cardId, text, member.id));
@@ -640,7 +793,15 @@ export function startRunner(options: RunnerOptions): Runner {
 
   // --- startup ---
 
-  async function reconcile(): Promise<void> {
+  /**
+   * Under the setup mutex, so a startup prune or removal cannot cross a first run's
+   * `worktreeAdd`. It is still the pump's first job, before any scan, as it was in 006.
+   */
+  function reconcile(): Promise<void> {
+    return exclusive(reconcileAll);
+  }
+
+  async function reconcileAll(): Promise<void> {
     // A claim by this member that survived a restart belongs to a run that no longer exists.
     for (const card of core.listCards()) {
       if (card.claim === null || card.claim.by !== member.id) continue;
@@ -666,7 +827,10 @@ export function startRunner(options: RunnerOptions): Runner {
         continue;
       }
       if (card.archivedAt !== null || !claimable(card.phase)) {
-        await teardown(card.id);
+        // The inner form: this is `teardown`'s own two conditions, and the mutex it would take
+        // is already held here — `exclusive` is not reentrant. Nothing is live to wait for
+        // either: reconcile is the pump's first job and no run has been started.
+        await teardownCard(card.id);
         continue;
       }
       // Claimable: the next run reuses it, unless it is not a worktree at all.
@@ -723,8 +887,11 @@ export function startRunner(options: RunnerOptions): Runner {
       stopped = true;
       unsubscribe();
       jobs.length = 0;
+      // One signal every live run listens to: each ends as `daemon stopping` on its own card
+      // and releases its own claim, and this resolves after the last of them.
       stopping.abort();
       await pumping;
+      await Promise.all(live.values());
     },
   };
 }
