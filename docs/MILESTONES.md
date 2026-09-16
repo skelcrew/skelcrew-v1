@@ -39,6 +39,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 23 | 026 The board on one screen | specified; split on 2026-09-16 into the read-only screen (026) and acting from it (027); card 2 on the owner's own board is this |
 | 24 | 027 Acting from the screen | specified |
 | 25 | 028 The runner's name is reserved | specified; 024's round-3 finding |
+| 26 | 029 The daemon's wiring is tested | specified; 024's and 025's shared finding |
 | | 005 | dropped |
 
 ## Background
@@ -1025,6 +1026,16 @@ because spawned agents join as it over the socket. A gate, not a boundary: the s
 and the owner's `hello` needs no credential. 024's two daemon-level tests, which impersonate the
 runner to make a lapsing claim, are rewritten to pre-make the claim in the data directory
 before the daemon starts — which is a restart after a sleep, the scenario 024 was for.
+
+## 029 — The daemon's wiring is tested
+
+The finding 024 and 025 made on the same day: the startup file hands settings to parts, every
+part is tested with fakes, and deleting a handoff leaves every check green. 024 covered its own
+line; 025's `slots` is still uncovered. This spec observes `SKELCREW_RUNS=1` through the real
+daemon — the second card is claimed only after the first is released, an ordering on the cards
+— and writes the rule into `main.ts`: a setting that crosses the file is observed by a test that
+starts the daemon, or the comment beside it says why it cannot be. The run limit cannot be,
+under `none`; it is observed against the run instead, and a test-only driver is rejected.
 
 ## Later, deliberately unplanned
 
