@@ -8,6 +8,12 @@ import { readFileSync } from "node:fs";
 import type { ParseArgsOptionsConfig } from "node:util";
 import { type Client, PHASES, type Phase } from "@skelcrew/shared";
 
+/**
+ * What every message about a daemon that is not there says to run (030). One sentence, in one
+ * place, so the commands, the screen and `watch` cannot come to say different things.
+ */
+export const START_A_DAEMON = "run `skelcrew` in a terminal, or `skelcrew --headless`";
+
 export class UsageError extends Error {
   constructor(message: string) {
     super(message);

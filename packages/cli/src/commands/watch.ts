@@ -1,6 +1,13 @@
 import { type Activity, type Member, notify, selectNotifier } from "@skelcrew/shared";
 import { activityLine, formatId, oneLine } from "../render";
-import { type Command, flag, noExtraPositionals, string, UsageError } from "./command";
+import {
+  type Command,
+  flag,
+  noExtraPositionals,
+  START_A_DAEMON,
+  string,
+  UsageError,
+} from "./command";
 
 type Input = { since?: number };
 
@@ -85,9 +92,7 @@ export const watch: Command<Input, null> = {
       ctx.client.closed.then(() => "lost" as const),
     ]);
     if (outcome === "lost") {
-      throw new Error(
-        `lost the daemon on ${ctx.socketPath}; run \`bun run daemon\` from the repository and watch again`,
-      );
+      throw new Error(`lost the daemon on ${ctx.socketPath}; ${START_A_DAEMON}, and watch again`);
     }
     return { result: null, render: () => "" };
   },
