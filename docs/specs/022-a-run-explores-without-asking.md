@@ -84,7 +84,7 @@ this spec asks for. (Review round 1 found the text surviving a turn boundary; ro
 sibling's result ending the turn early; the orchestrator wrote this paragraph after round 2.
 The first version said "reset when a `result` arrives or a new turn begins", which named the
 boundary without defining it.) So a sentence from an earlier turn is not attached
-to a later ask). `questionFor` takes it and, when present, adds `why: <text>` after the frame,
+to a later ask. `questionFor` takes it and, when present, adds `why: <text>` after the frame,
 as one line: `oneLine`'d and cut to a small fixed budget (200 bytes, in the shape of
 `INPUT_LINE_MAX`), inside the existing byte cap arithmetic so a long reason cannot push the input
 past the cap. The `why:` line is the agent's text, so it is escaped the way every relayed text is
