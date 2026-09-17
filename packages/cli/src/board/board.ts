@@ -174,6 +174,9 @@ function textOf(chunk: unknown): string {
  * at the start of a read would make the second case three keys — the letter, `[` and `B` — and
  * `[B` would land in whatever the owner was typing (031, of the prompt: "neither becomes text").
  *
+ * Tab is the one control character below `" "` that is a key (033, where it flips between the
+ * card and the chat); every other one but Enter, Backspace and Ctrl-C is still dropped.
+ *
  * Exported for its test: what each chunk decodes to is a table, and an absence — Left moving
  * nothing — reads the same on the screen whether it was dropped or was never a key at all.
  */
@@ -199,6 +202,7 @@ export function keysOf(chunk: string): string[] {
       continue;
     }
     if (char === INTERRUPT_KEY) keys.push("ctrl-c");
+    else if (char === "\t") keys.push("tab");
     else if (char === "\r" || char === "\n") keys.push("enter");
     else if (BACKSPACE_KEYS.includes(char)) keys.push("backspace");
     else if (char >= " ") keys.push(char);

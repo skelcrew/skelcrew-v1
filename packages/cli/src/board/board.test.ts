@@ -439,6 +439,11 @@ test("the arrow keys are read, and every other escape sequence is still dropped"
     ["a\u001b[C", ["a"]],
     // And the escape character with nothing after it is Esc, wherever in the read it falls.
     ["a\u001b", ["a", "escape"]],
+    // 033's criterion 9: Tab is a key, and it is the only one the decoder gained. It falls
+    // below `" "`, so it was dropped with the other control characters until the chat view
+    // had a use for it; every row above this one reads as it always did.
+    ["\t", ["tab"]],
+    ["a\tb", ["a", "tab", "b"]],
   ] as const) {
     expect(keysOf(chunk)).toEqual([...keys]);
   }
