@@ -40,8 +40,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 24 | 027 Acting from the screen | landed, PR #27 — three review rounds; the shell's directory came from agent-written text, and a pasted newline ran as keys |
 | 25 | 028 The runner's name is reserved | landed, PR #26 — two review rounds; the spec's test setup could not work with the runner on, amended |
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
-| 27 | 030 The screen starts the daemon | specified |
-| 28 | 031 The arrow keys move the cursor | specified |
+| 27 | 030 The screen starts the daemon | landed, PR #28 — four review rounds, the fourth by the owner's leave; a Critical in the idle rule |
+| 28 | 031 The arrow keys move the cursor | landed, PR #29 — two review rounds; the decoder read sequences only at the start of a read |
 | 29 | 032 A card is added, started and archived from the screen | specified; the milestone's first slice, editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
 | | 005 | dropped |
@@ -1197,6 +1197,40 @@ is live, or closing a window becomes a `run_interrupted`.
 Piped and scripted invocations — every command, `watch`, bare `skelcrew` without a terminal,
 and therefore every agent — never start a daemon. Their error keeps saying what to run.
 
+Landed as PR #28. `skelcrew` in a terminal starts the daemon when none is listening and opens
+the screen over it; `skelcrew --headless` is the daemon alone, for an always-on machine or a
+second terminal; `bun run daemon` goes away. A daemon the screen started stops when idle: no
+client, no live run, and a client has been and gone.
+
+Four review rounds, the fourth authorised by the owner beyond the usual three. Round 1, five
+Importants: a failed start left an un-ignored `.skelcrew/`; a crash reported Bun's version
+footer as the error; two `skelcrew` at once on a fresh directory failed both; an anonymous
+socket probe could end an idle daemon; the live-run half of the idle rule had no test. Round
+2, a Critical: with a card already queued, the daemon finished the run and exited before the
+screen connected — fixed with the "a client has been and gone" term. Round 3, one Important:
+the lost-daemon sentence had no test. Round 4 approved. The verifier ran the screen,
+`--headless` and SIGHUP under a real pseudo-terminal by hand.
+
+Two spec sentences were wrong and are recorded, not edited: the idle rule omits the "a client
+has been and gone" term the Critical forced; and "a piped invocation never spawns" ignores
+`--headless`.
+
+**Carried findings.**
+
+- **A daemon the screen started but never reached never stops**, and the fifteen-second timeout
+  branch does not kill it; the next `skelcrew` attaches and `q` ends it. The timeout branch is
+  untested.
+- **The exit line can mislead**: it says "runs" when another client is what holds the daemon,
+  and can say `daemon stopped` for a loser child not yet reaped.
+- **A failed `BEGIN EXCLUSIVE` is masked by `ROLLBACK`'s own error**, and a persistent WAL
+  refusal is silent.
+- **`whyItIsGone` may name an earlier warning rather than the cause.**
+- **The daemon entry accepts any other argv silently**; `--headless <word> --help` exits 0
+  where `--headless <word>` exits 2.
+- **Under the screen, 023's bell and notification are off, and 018's merge poll pauses while
+  no daemon runs.** Spec decisions, worth a day of use to confirm.
+- **A claim made by hand does not keep the daemon alive.** 024's rule, by design.
+
 ## 031 — The arrow keys move the cursor
 
 Asked for by the owner on 2026-09-16, the first day of using the screen: `Up` and `Down` beside
@@ -1206,6 +1240,23 @@ working everywhere and nothing is reachable by arrows alone. The decoder in `boa
 drops every escape sequence; 031 reads exactly the four byte sequences the two keys send and
 maps them onto the moves the reducer already makes. In the prompt they do nothing and never
 become text. `Left`, `Right`, `Page Up` and the rest stay uninterpreted.
+
+Landed as PR #29. `Up` and `Down` move the cursor beside `k` and `j`, in the board and the
+card view; nothing is reachable by arrows alone, and the design choice "no navigation that
+needs the arrow keys" stands.
+
+Two review rounds. Round 1, one Important: the decoder handled escape sequences only at the
+start of a read, so `a` then `Down` in one read became `a[B` in the prompt. Fixed with a
+decoder-table case and a loop test. Round 2 approved by execution and mutation.
+
+**Carried findings.**
+
+- **A sequence split across two reads yields a spurious `escape`** — pre-existing at read
+  boundaries, one position wider now; with the prompt open it cancels the typed text. A
+  partial-sequence buffer would be its own change.
+- **A trailing escape character after other keys now cancels the prompt** where it was
+  swallowed before; the spec is silent on it.
+- **An unknown sequence drops real keys after it in the same read.**
 
 ## 032 — The rest of a day on the screen
 

@@ -51,7 +51,13 @@ Do this before forming any opinion about the design:
    provisional as provisional — ask before building on it.
 4. Investigate the actual code and data the idea touches. Read the real files. Check real
    data shapes, schemas, and fixtures yourself rather than assuming them. Look at how similar
-   things are already done here.
+   things are already done here. **Every sentence about what the code does today is run, not
+   remembered.** "As it does today", "so X is not in the list until", "in the same synchronous
+   mutation" — each names the command, test, or line that shows it, and if you cannot name
+   one, run the thing. Three specs in a row (024, 026, 032) made a present-tense claim that
+   was false; each cost a verification or review round, and the last was written the day
+   after the rule was recorded in `docs/MILESTONES.md`. A rule in a findings file did not
+   hold; this sentence is where it lives now.
 5. Skim `docs/specs/` for existing specs that overlap, and `git log` for recent related work.
 6. Read `docs/MILESTONES.md`, if it exists, for where this work sits in the sequence: what it
    is expected to move, what a later milestone will handle instead, and what has already been
