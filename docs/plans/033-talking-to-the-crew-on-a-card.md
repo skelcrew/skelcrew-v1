@@ -176,3 +176,18 @@ spawn real processes and wait on wall-clock deadlines (5 s, 30 s), all passed wh
 was run alone, and the whole suite passed clean several times. Two shell processes belonging to
 another session were burning a core each throughout (22 hours old, `ps` at 100% CPU). This
 diff touches `packages/cli` only.
+
+## Fix round 1
+
+The reviewer's seven findings, in four slices, each a commit that passes `bun run check`.
+
+1. **The board's sentence stays on the board** (finding 1) — and the orchestrator's three spec
+   amendments, committed with it.
+2. **The chat draws every line the header and a note have** (findings 2 and 7).
+3. **Tab keeps the typed line** (finding 3).
+4. **A pasted newline that sent nothing does not end the chunk** (finding 6), and the two
+   wordings (findings 4 and 5).
+
+Files expected: `packages/cli/src/board/keys.ts`, `frame.ts`, `board.ts`, `state.ts`, and their
+tests; `docs/specs/033-talking-to-the-crew-on-a-card.md` (the orchestrator's amendments, as they
+stand in the tree).

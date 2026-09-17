@@ -511,6 +511,24 @@ function openChat(start: State): State {
   return press(start, "enter").state;
 }
 
+test("the screen's sentence stays behind on the board, and does not outlast a key", () => {
+  // The listening line is the chat's own: a sentence said on the board — `a` on a card with no
+  // open question — would otherwise sit on it, hiding the question the view exists to show.
+  const said = press(asking({}, null), "a").state;
+  expect(said.message).not.toBe("");
+  expect(openChat(said).message).toBe("");
+  // Both ways into the view: Enter from the board, and Tab from the card view.
+  const card = press(openChat(said), "tab").state;
+  expect(press({ ...card, message: "#7 has no open question" }, "tab").state.message).toBe("");
+
+  // And any key inside the view clears what the daemon said last, so the line goes back to
+  // saying who is listening as soon as the owner does anything.
+  const refused = { ...openChat(asking()), message: "a comment cannot be that long" };
+  for (const key of ["x", "backspace", "enter", "up", "escape", "tab"]) {
+    expect(press(refused, key).state.message).toBe("");
+  }
+});
+
 test("in the chat every printable key is text, and Enter sends the line as a comment", () => {
   const chat = openChat(asking());
   expect(chat.view).toEqual({ kind: "chat", cardId: 7, scroll: 0, text: "" });

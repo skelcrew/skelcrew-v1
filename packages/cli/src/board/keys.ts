@@ -17,6 +17,16 @@ function chatOn(cardId: number): ChatView {
 }
 
 /**
+ * The chat, with whatever the screen said last left behind. The chat has no bottom line of its
+ * own for a sentence: the listening line is where one is read, and a sentence carried in from
+ * the board would sit there over the card's open question, which is the one thing the view is
+ * there to show (033, after review round 1).
+ */
+function entersChat(state: State, cardId: number): Pressed {
+  return { state: { ...state, view: chatOn(cardId), message: "" } };
+}
+
+/**
  * What the loop is asked to do. Every action but `quit` and `open-shell` is one of the CLI's
  * own calls with the parameters its command would send (027's criterion 6).
  */
@@ -224,8 +234,12 @@ function chatScrollTo(state: State, view: ChatView, scroll: number): Pressed {
  * conversation, Enter sends, and everything printable is text — an `a` here is a letter, not
  * an answer. Anything typed brings the conversation back to the newest, which is where the
  * line being written belongs.
+ *
+ * Any key at all clears what the daemon said last, so the listening line holds a refusal until
+ * the owner does something and then goes back to saying who is listening.
  */
 function pressChat(state: State, view: ChatView, key: string): Pressed {
+  if (state.message.length > 0) return pressChat({ ...state, message: "" }, view, key);
   const typed = (text: string): Pressed => ({
     state: { ...state, view: { ...view, text, scroll: 0 } },
   });
@@ -281,7 +295,7 @@ function pressBoard(state: State, key: string): Pressed {
       // Entering a card is entering the chat on it (033): the card itself is one Tab away.
       const cardId = cardIdAt(state, state.cursor);
       if (cardId === undefined) return { state };
-      return { state: { ...state, view: chatOn(cardId) } };
+      return entersChat(state, cardId);
     }
     case "?":
       return { state: { ...state, view: { kind: "help", from: state.view } } };
@@ -297,7 +311,7 @@ function pressCard(state: State, cardId: number, scroll: number, key: string): P
   if (acted !== undefined) return acted;
   switch (key) {
     case "tab":
-      return { state: { ...state, view: chatOn(cardId) } };
+      return entersChat(state, cardId);
     // The scroll counts lines up from the newest, so `k` goes back and `j` returns.
     case "j":
       return scrollTo(state, scroll - 1);

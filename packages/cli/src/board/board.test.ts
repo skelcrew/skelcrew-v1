@@ -1035,6 +1035,35 @@ test("a line typed in the chat is a comment on that card, and allow answers its 
   await running;
 });
 
+test("a sentence said on the board does not take the chat's listening line", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  // `a` on the board row of a card with no open question says so on the bottom line.
+  terminal.type("j");
+  terminal.type("j");
+  terminal.type("a");
+  await until("the sentence", () => (terminal.frames().at(-1) ?? "").includes("no open question"));
+
+  // Entering the chat leaves it behind: the listening line says who is listening, which is the
+  // one thing the view is there to tell the owner while she writes.
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  expect(listening(terminal)).toContain("crew is listening");
+  expect(listening(terminal)).not.toContain("no open question");
+
+  // And it does not come back while she types.
+  terminal.type("any news");
+  await until("the line", () => input(terminal).includes("any news"));
+  expect(listening(terminal)).toContain("crew is listening");
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
 test("a refused line goes back into the input, with the daemon's word above it", async () => {
   const fake = fakeClient();
   const terminal = fakeTerminal();
