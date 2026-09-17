@@ -45,6 +45,8 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | landed, PR #31 — three review rounds, one Critical: a pasted tab ran as keys and answered a question |
 | 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
+| 32 | 035 A running card stays running on the screen | planned; found in real use 2026-09-17; the screen's copy of a lease expires while the daemon's is renewed |
+| 33 | 036 The crew may look at the board | planned; found in real use 2026-09-17; `skelcrew ls` asked for permission |
 | | 005 | dropped |
 
 ## Background
@@ -1477,6 +1479,50 @@ To settle in the spec: the hint is a pure function of the state, in `frame.ts` b
 `bottomLine`, tested the way `KEYS` is; the order of keys is by how often the owner presses
 them, which is a guess until 033 has been used; whether the `?` list itself should be cut to
 fit or grow two columns, which closes 032's finding at the same time.
+
+## 035 — A running card stays running on the screen
+
+Found on 2026-09-17, the first afternoon of real use of the chat view: a Spec run on card 3
+asked a permission question, the owner allowed it, and the chat's listening line then read
+`no run is live; the next run reads what you write here`, so the owner thought nothing had
+happened. The run was live the whole time — `skelcrew ls` in a terminal said `running since
+16:23`, the daemon's lease was being renewed every heartbeat, and the agent ran four more tools
+a minute later. Verified by reading the daemon's claim (`show 3 --json`: expiry two minutes
+ahead of the clock) and the screen's code.
+
+The cause, in the screen: `state.ts`'s `apply` sets a card's claim from the `claimed` event,
+whose `expiresAt` is the lease's first expiry, two minutes out; `heartbeat` in `core.ts` renews
+the lease and logs no event (by design — a heartbeat every thirty seconds is not activity);
+and `board.ts`'s `onEvent` refetches a card it already has only into `detail`, never into
+`state.cards`. So two minutes into any run the screen's copy of the lease has expired, and
+024's `status`, which reads the clock, says `interrupted` on the board row and the chat's
+listening line says no run is live, until an event on that card is followed by a refetch —
+which for a running card is never, since the refetch does not replace the card. Every run
+looks dead on the screen after two minutes; `ls` and `queue` in a terminal are right because
+they fetch fresh. 026, 027, 032 and 033 all passed review with this latent, because their
+tests use fake clocks and short runs, and the reviewers' live sessions were under two minutes.
+
+The fix, to settle in the spec: the screen should trust events, not its clock, for whether a
+run is live. The daemon's sweep is the authority on a lapse and announces one within five
+seconds as `run_interrupted`; until that event arrives, a claim the runner holds is live. So
+`status` needs a form for the screen that does not consult `expiresAt` — or the screen refetches
+the card on every event that names it, which fixes the chat (the run's own comments are events)
+but not a quiet run. Prefer the event-trust form: it is what the daemon means, and it makes
+024's `~` (lapsed, not yet swept) a terminal-only marker, which is where the clock is fresh.
+Say what a card looks like on the screen in the five seconds between a real lapse and the
+sweep's event: still running, which is honest, since the daemon has not said otherwise.
+
+## 036 — The crew may look at the board
+
+Found the same afternoon: a Spec run wanted `skelcrew ls` and the harness stopped to ask,
+because the runner's fixed allowlist pre-allows only the CLI verbs the playbooks instruct —
+`show`, `comment`, `body`, `refs`, `attention`, `review` (`allowlist.ts:230-284`). `ls` and
+`queue` are read-only and are what any member does to see the board; CLAUDE.md's "agents are
+members, not plugins" says the agent gets them too. The spec adds `Bash(skelcrew ls *)` and
+`Bash(skelcrew queue *)` to every run kind's list, and 022's rule applies: the playbooks say
+when to use them, so `check:harness` covers them. A grant, so the spec red-teams it: `ls` and
+`queue` take `--all` and `--json` and nothing that writes; composed with the other grants
+they read what `show` already reads. Not `watch`, which never returns.
 
 ## Later, deliberately unplanned
 
