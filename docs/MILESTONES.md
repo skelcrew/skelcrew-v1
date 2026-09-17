@@ -43,6 +43,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 27 | 030 The screen starts the daemon | specified |
 | 28 | 031 The arrow keys move the cursor | specified |
 | 29 | 032 A card is added, started and archived from the screen | specified; the milestone's first slice, editing and the feed view follow |
+| 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
 | | 005 | dropped |
 
 ## Background
@@ -1233,6 +1234,58 @@ Constraints carried from 026: every key is one CLI call; no colour, no mouse, no
 the frame and the reducer stay pure and tested without a terminal. The display-width finding
 (the status column pads in UTF-16 units) should be closed by 027 or here, whichever touches the
 row first.
+
+## 033 — Talking to the crew on a card
+
+The owner's word on 2026-09-17: this is the one that matters, the point where skelcrew stops
+being a board over agents and becomes a harness — the owner and the crew in one place, on the
+work. It comes straight after 032, ahead of the editor and the feed view.
+
+Asked for by the owner on 2026-09-17: inside a card, a prompt at the bottom of the screen, the
+way a coding agent's own terminal has one, where the owner types to the agent working that card
+and reads what it says back. Today that is `c` on the card view: press a key, type one line,
+Enter, and the line reaches a live run as a message (012, 015) and lands on the card as a
+comment; the agent's replies are its text turns, posted as comments by `runner` and drawn in
+the feed as they arrive (026). Everything the owner wants is there in parts; what is missing is
+the shape of a conversation — a line that is always open while the card is, and the feed above
+it reading as an exchange.
+
+What it is, so the constraints hold. It is comments on the card, rendered as a conversation,
+and nothing else: no chat channel beside the card, no chat state in the daemon, no model call
+by skelcrew, and no phase that needs it — CLAUDE.md's "conversation is never load-bearing"
+stands, and this is the allowed kind, feedback and mid-run answers travelling as comments.
+The agent hears the owner only while a run of that card is live, because the message is
+forwarded into the session; with no run live the comment waits on the card and the next run
+reads it as it reads every comment. The card view must say which of the two is true — a run
+is listening, or nothing is and the next run will read this — so the owner is never typing
+into silence without knowing it. Nothing the owner types starts a run: cards drive the runner,
+and a question typed on an Idea card is a note on it until the owner moves the card.
+
+The shape, in the owner's words the same day: entering a card should feel like entering a
+harness. Three parts, top to bottom — the card's data (header and body, what `show` prints
+first); the agent's output, drawn the way a coding agent's own terminal draws its session,
+text turns and tool activity alike, scrolling as the run works; and an input line for
+prompting. So the card view becomes: the card, then something that looks like Claude Code
+running on it. That settles the question of what shows: the agent's tool summaries interleave
+with its text, as they do in the harness the owner already knows, because they are the work
+happening and hiding them would make the exchange read as talk about nothing. The owner's own
+lines sit in the same stream, distinguished by who wrote them, which the activity carries.
+
+Two views, not two modes — the owner's alternative, and the better one: the chat view is a
+fourth `View` beside board, card and help, and 027's card view stays exactly as reviewed. In
+the card view every letter is a key; in the chat view every letter is text; nothing to
+escape from. `Enter` on a row opens the chat view, because entering a card should feel like
+entering a harness; one key that is not a letter (`Tab`) flips between the two; `Esc` leaves
+either for the board, as today; `c` on the board stays. A permission question, which the
+agent's own terminal shows inline and answers with a keypress, is an attention request here:
+it shows above the input, and the input understands `allow` and `deny` while one is open, so
+the common answer never needs the flip. A found benefit: 027's open finding that a
+paste onto the screen runs as keys is mostly closed inside a card, because the line is where
+a paste lands.
+
+Out of it: a chat with the crew outside any card (no card, no conversation); a model on the
+owner's side answering free text (a member, later, per the Slack notes); waking an agent to
+answer when no run is live (a run kind of its own, if ever, and cards drive the runner).
 
 ## Later, deliberately unplanned
 
