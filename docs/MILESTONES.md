@@ -1271,12 +1271,15 @@ with its text, as they do in the harness the owner already knows, because they a
 happening and hiding them would make the exchange read as talk about nothing. The owner's own
 lines sit in the same stream, distinguished by who wrote them, which the activity carries.
 
-To settle in the spec: the input line is open whenever the card is, so the keys that act
-(`a`, `d`, `m`, `b`, `s`, `x`, `o`) need a way to be keys and not letters — `Esc` to leave the
-line for the keys and any printable to return, the way an editor has two modes, is the
-likely answer; `c` on the board stays. A permission question, which the agent's own terminal
-shows inline and answers with a keypress, is an attention request here and should show in the
-same place, above the input, answered from it. A found benefit: 027's open finding that a
+Two views, not two modes — the owner's alternative, and the better one: the chat view is a
+fourth `View` beside board, card and help, and 027's card view stays exactly as reviewed. In
+the card view every letter is a key; in the chat view every letter is text; nothing to
+escape from. `Enter` on a row opens the chat view, because entering a card should feel like
+entering a harness; one key that is not a letter (`Tab`) flips between the two; `Esc` leaves
+either for the board, as today; `c` on the board stays. A permission question, which the
+agent's own terminal shows inline and answers with a keypress, is an attention request here:
+it shows above the input, and the input understands `allow` and `deny` while one is open, so
+the common answer never needs the flip. A found benefit: 027's open finding that a
 paste onto the screen runs as keys is mostly closed inside a card, because the line is where
 a paste lands.
 
