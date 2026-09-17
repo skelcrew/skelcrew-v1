@@ -21,7 +21,7 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, sep } from "node:path";
 import { type Activity, type Client, worktreesDir } from "@skelcrew/shared";
 import { type Command, START_A_DAEMON } from "../commands/command";
-import { formatId } from "../render";
+import { formatId, oneLine } from "../render";
 import {
   ARROW_KEYS,
   BACKSPACE_KEYS,
@@ -78,27 +78,37 @@ export interface BoardDeps {
 }
 
 /**
- * The call the action is. These are the calls `resolve.ts`, `mv.ts` and `comment.ts` make,
- * with the parameters those commands send: the screen and the CLI cannot come to disagree
- * about what a key means, because they make the same request (027's criterion 6).
+ * The call the action is, and the sentence the status line shows when the call itself says
+ * something. These are the calls `resolve.ts`, `mv.ts`, `comment.ts`, `add.ts` and
+ * `archive.ts` make, with the parameters those commands send: the screen and the CLI cannot
+ * come to disagree about what a key means, because they make the same request (027's
+ * criterion 6). Everything else a call did reaches the screen as the events it caused.
  */
-async function perform(client: Client, action: Action): Promise<void> {
+async function perform(client: Client, action: Action): Promise<string | undefined> {
   switch (action.kind) {
     case "resolve":
       await client.call("resolveAttention", { id: action.id, text: action.text });
-      return;
+      return undefined;
     case "move":
       // Moves first, then comments, as `mv` does: a rejected move posts nothing.
       await client.call("moveCard", { id: action.id, phase: action.phase });
       if (action.message !== undefined) {
         await client.call("comment", { id: action.id, text: action.message });
       }
-      return;
+      return undefined;
     case "comment":
       await client.call("comment", { id: action.id, text: action.text });
-      return;
+      return undefined;
+    case "add": {
+      // The id is the daemon's, so the new card is named back to the owner who filed it.
+      const filed = await client.call("createCard", { title: action.title });
+      return `${formatId(filed.id)} ${oneLine(filed.title)} added`;
+    }
+    case "archive":
+      await client.call("archiveCard", { id: action.id });
+      return undefined;
     default:
-      return;
+      return undefined;
   }
 }
 
@@ -314,9 +324,10 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       }
       if (action !== undefined) {
         try {
-          await perform(client, action);
-          // What the call did reaches the screen as the events it caused, like anything else.
-          state = { ...state, message: "" };
+          const said = await perform(client, action);
+          // What the call did reaches the screen as the events it caused, like anything else;
+          // what only its own answer carries — a filed card's id — is the sentence it returns.
+          state = { ...state, message: said ?? "" };
         } catch (error) {
           // Refused: the daemon's own sentence, and nothing else on the screen changes.
           state = { ...state, message: error instanceof Error ? error.message : String(error) };

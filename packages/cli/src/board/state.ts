@@ -31,7 +31,15 @@ export type Prompt =
   | { kind: "deny"; cardId: number; text: string }
   /** `phase` is fixed when the prompt opens: the move the owner was told about is the one sent. */
   | { kind: "back"; cardId: number; phase: Phase; text: string }
-  | { kind: "comment"; cardId: number; text: string };
+  | { kind: "comment"; cardId: number; text: string }
+  /** A new card's title. The one prompt about no card in particular (032). */
+  | { kind: "add"; text: string }
+  /**
+   * The question before an archive, which cannot be undone: it takes no text (032). The
+   * `title` is taken when the question opens, so the line goes on naming the card it asks
+   * about even in the moment before the question closes on the card leaving the board.
+   */
+  | { kind: "archive"; cardId: number; title: string };
 
 export interface State {
   /** The member the screen is rendered for: whoever the CLI connected as. */
@@ -140,6 +148,11 @@ function withRequest(state: State, cardId: number, request?: OpenAttention): Ope
   return [...rest, request].sort((a, b) => a.raisedAt - b.raisedAt);
 }
 
+/** The same view with the card underneath it gone: the keys stay up, over the board. */
+function closed(view: View): View {
+  return view.kind === "help" ? { kind: "help", from: { kind: "board" } } : { kind: "board" };
+}
+
 /** A cursor that outlived its row sits on the last one. */
 function clamp(state: State): State {
   const last = Math.max(0, rowCount(state) - 1);
@@ -210,13 +223,23 @@ export function apply(state: State, event: Activity): State {
       const held = withCard(state, cardId, (each) => ({ ...each, attention: null }));
       return clamp({ ...held, requests: withRequest(held, cardId) });
     }
-    case "card_archived":
-      // The board is the unarchived cards, and an archived card's request went with it.
+    case "card_archived": {
+      // The board is the unarchived cards, and an archived card's request went with it. A card
+      // view open on it closes to the board: there is no row behind it to come back to. The keys
+      // screen stays open — no key has closed it — but the card it was opened from becomes the
+      // board, so the key that closes it does not land on a card that has left. So does the
+      // question about archiving it: the card is gone, so there is nothing left to ask.
+      const behind = state.view.kind === "help" ? state.view.from : state.view;
+      const open = behind.kind === "card" && behind.cardId === cardId;
+      const asking = state.prompt?.kind === "archive" && state.prompt.cardId === cardId;
       return clamp({
         ...state,
         cards: state.cards.filter((each) => each.id !== cardId),
         requests: withRequest(state, cardId),
+        view: open ? closed(state.view) : state.view,
+        prompt: asking ? null : state.prompt,
       });
+    }
     default:
       return state;
   }

@@ -1,7 +1,8 @@
 /**
- * 026's criterion 8 and 027's criteria 5, 6 and 7: the terminal loop over injected streams —
- * no real terminal, no pty, no real shell — and the table of every action the keys yield
- * against the calls the CLI's own commands make, which replaces 026's tripwire.
+ * 026's criterion 8, 027's criteria 5, 6 and 7, and 032's criteria 5, 6 and 7: the terminal
+ * loop over injected streams — no real terminal, no pty, no real shell — and the table of every
+ * action the keys yield against the calls the CLI's own commands make, which replaces 026's
+ * tripwire.
  */
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -18,11 +19,13 @@ import {
   type MethodName,
   RpcError,
 } from "@skelcrew/shared";
+import { add as addCommand } from "../commands/add";
+import { archive as archiveCommand } from "../commands/archive";
 import type { Args, Command, Context } from "../commands/command";
 import { comment as commentCommand } from "../commands/comment";
 import { mv as mvCommand } from "../commands/mv";
 import { resolve as resolveCommand } from "../commands/resolve";
-import { CURSOR_HOME } from "./ansi";
+import { CURSOR_HOME, dim } from "./ansi";
 import { type BoardDeps, type KeyInput, keysOf, runBoard, type Screen } from "./board";
 import type { Action } from "./keys";
 
@@ -113,9 +116,19 @@ interface Fake {
 }
 
 /** The methods the screen may call that change a card; the rest are the reads it loads from. */
-const CHANGES: MethodName[] = ["resolveAttention", "moveCard", "comment"];
+const CHANGES: MethodName[] = [
+  "resolveAttention",
+  "moveCard",
+  "comment",
+  "createCard",
+  "archiveCard",
+];
 
-function fakeClient(cards: Card[] = CARDS): Fake {
+function fakeClient(initial: Card[] = CARDS): Fake {
+  // Every card the daemon has, including the ones filed while the screen is open; `listCards`
+  // answers with the unarchived ones, as the real one does, and `getCard` still answers for a
+  // card that has just been archived.
+  const cards = [...initial];
   let handler: ((event: Activity) => void) | undefined;
   let lost = () => {};
   const closed = new Promise<void>((resolve) => {
@@ -127,7 +140,7 @@ function fakeClient(cards: Card[] = CARDS): Fake {
   const feed = new Map<number, Activity[]>(
     cards.map((each) => [each.id, [comment(each.id, "reading the spec")]]),
   );
-  const call = (async (method: MethodName, params: { id?: number }) => {
+  const call = (async (method: MethodName, params: { id?: number; title?: string }) => {
     calls.push([method, params]);
     if (refused !== undefined && CHANGES.includes(method)) {
       throw new RpcError({
@@ -138,7 +151,7 @@ function fakeClient(cards: Card[] = CARDS): Fake {
     }
     switch (method) {
       case "listCards":
-        return cards;
+        return cards.filter((each) => each.archivedAt === null);
       case "listAttention":
         return cards
           .filter((each) => each.attention?.to === ME.id)
@@ -156,6 +169,18 @@ function fakeClient(cards: Card[] = CARDS): Fake {
       case "resolveAttention":
       case "moveCard":
         return cards.find((each) => each.id === params.id) as Card;
+      case "createCard": {
+        const next = Math.max(0, ...cards.map((each) => each.id)) + 1;
+        const filed = card(next, params.title as string, { phase: "idea" });
+        cards.push(filed);
+        return filed;
+      }
+      case "archiveCard": {
+        const found = cards.find((each) => each.id === params.id) as Card;
+        const archived: Card = { ...found, archivedAt: NOW };
+        cards[cards.indexOf(found)] = archived;
+        return archived;
+      }
       default:
         return null;
     }
@@ -599,7 +624,10 @@ test("a refused call puts the daemon's message on the screen and changes nothing
   await running;
 });
 
-/** The cards the table presses its keys on: one in Code with a request offering PR. */
+/**
+ * The cards the table presses its keys on: one in Code with a request offering PR, and one in
+ * Idea for the key that starts a card, which does nothing in Code.
+ */
 function asking(): Card[] {
   return [
     card(3, "acting from the screen", {
@@ -612,6 +640,7 @@ function asking(): Card[] {
         raisedAt: 1,
       },
     }),
+    card(4, "starting from the screen", { phase: "idea" }),
   ];
 }
 
@@ -677,6 +706,12 @@ test("every key sends exactly what its CLI command sends", async () => {
       argv: ["3", "spec", "-m", "needs a test"],
     },
     { keys: ["c", ..."looks good", "\r"], command: commentCommand, argv: ["3", "looks good"] },
+    // 032: `s` starts a card. `G` is the last row, which is the Idea card: `s` does nothing on
+    // the one in Code, where the run's artefact ends the phase.
+    { keys: ["G", "s"], command: mvCommand, argv: ["4", "spec"] },
+    // And `n` files one by title, and `x` archives after its question.
+    { keys: ["n", ..."a new card", "\r"], command: addCommand, argv: ["a new card"] },
+    { keys: ["x", "\r"], command: archiveCommand, argv: ["3"] },
   ];
 
   const sent: Call[] = [];
@@ -687,16 +722,24 @@ test("every key sends exactly what its CLI command sends", async () => {
     sent.push(...screen);
   }
 
-  // Nothing else: the keys that answer make these three calls and no fourth.
+  // Nothing else: the keys that answer make these five calls and no sixth.
   const methods = new Set(sent.map(([method]) => method));
-  expect([...methods].sort()).toEqual(["comment", "moveCard", "resolveAttention"]);
+  expect([...methods].sort()).toEqual([
+    "archiveCard",
+    "comment",
+    "createCard",
+    "moveCard",
+    "resolveAttention",
+  ]);
 
-  // And the table is every action the reducer can yield: a seventh key with a call of its own
+  // And the table is every action the reducer can yield: another key with a call of its own
   // does not typecheck until it has a row here.
   const covered: Record<Exclude<Action["kind"], "quit" | "open-shell">, boolean> = {
     resolve: table.some((row) => row.command === resolveCommand),
     move: table.some((row) => row.command === mvCommand),
     comment: table.some((row) => row.command === commentCommand),
+    add: table.some((row) => row.command === addCommand),
+    archive: table.some((row) => row.command === archiveCommand),
   };
   expect(Object.values(covered).every(Boolean)).toBe(true);
 });
@@ -933,6 +976,140 @@ test("the shell is $SHELL, and sh when the owner has none", async () => {
 
   shell.exit();
   await until("the screen again", () => terminal.frames().length > drawn);
+  terminal.type("q");
+  await running;
+});
+
+// --- 032: filing a card, and archiving one, through the loop ---
+
+/** The `card_created` event the daemon records when a card is filed (`core.ts`). */
+function created(card: Card): Activity {
+  return {
+    seq: 8,
+    cardId: card.id,
+    actorId: ME.id,
+    type: "card_created",
+    data: { title: card.title },
+    createdAt: NOW,
+  };
+}
+
+/** The ids of the board half's rows, in the order they are drawn. */
+function boardIds(frame: string): string[] {
+  const lines = frame.split("\r\n");
+  // The board half starts after its own dim header; a card's title may say "board" too.
+  const header = lines.findIndex((line) => line.startsWith(dim("board")));
+  return lines
+    .slice(header + 1)
+    .map((line) => line.match(/#(\d+)/)?.[1])
+    .filter((id): id is string => id !== undefined);
+}
+
+test("a card filed while the screen is open appears on the board, in id order", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  expect(boardIds(terminal.frames().at(-1) as string)).toEqual(["1", "2"]);
+
+  // Filed in a terminal, not from the screen: the screen only ever sees the event.
+  const filed = await fake.client.call("createCard", { title: "filed in a terminal" });
+  fake.emit(created(filed));
+  await until("the new row", () =>
+    (terminal.frames().at(-1) ?? "").includes("filed in a terminal"),
+  );
+  expect(boardIds(terminal.frames().at(-1) as string)).toEqual(["1", "2", "3"]);
+
+  terminal.type("q");
+  await running;
+});
+
+test("n files a card and the status line names it; a refusal says why", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+
+  terminal.type("n");
+  terminal.type("a card from the screen");
+  terminal.type("\r");
+  await until("the status line", () => (terminal.frames().at(-1) ?? "").includes("added"));
+
+  expect(fake.calls.slice(read)).toEqual([["createCard", { title: "a card from the screen" }]]);
+  expect(terminal.frames().at(-1)).toContain("#3 a card from the screen added");
+
+  // Refused: the daemon's own sentence, and nothing filed.
+  fake.refuse("a title cannot be that long");
+  const before = fake.calls.length;
+  terminal.type("n");
+  terminal.type("another\r");
+  await until("the refusal", () =>
+    (terminal.frames().at(-1) ?? "").includes("a title cannot be that long"),
+  );
+  expect(fake.calls.slice(before)).toEqual([["createCard", { title: "another" }]]);
+
+  terminal.type("q");
+  await running;
+});
+
+test("x archives the card, and the card view closes when it was the open card", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+
+  // Card 1, open in the card view: the archive question, then Enter.
+  terminal.type("\r");
+  await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  terminal.type("x");
+  await until("the question", () =>
+    (terminal.frames().at(-1) ?? "").includes("archive #1 the board on one screen?"),
+  );
+  terminal.type("\r");
+  await until("the call", () =>
+    fake.calls.slice(read).some(([method]) => method === "archiveCard"),
+  );
+  expect(fake.calls.slice(read).filter(([method]) => method === "archiveCard")).toEqual([
+    ["archiveCard", { id: 1 }],
+  ]);
+
+  // The card leaves the board on its event, and the view it was open in closes to the board.
+  fake.emit({ seq: 9, cardId: 1, actorId: ME.id, type: "card_archived", data: {}, createdAt: NOW });
+  // The board's own header, which the card view never draws: the card's status line says
+  // "waiting on you" too.
+  await until("the board again", () =>
+    (terminal.frames().at(-1) ?? "").includes(dim("waiting on you")),
+  );
+  const last = terminal.frames().at(-1) as string;
+  expect(boardIds(last)).toEqual(["2"]);
+  expect(last).not.toContain("the board on one screen");
+
+  terminal.type("q");
+  await running;
+});
+
+test("a card archived under the open question takes the question with it", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+
+  terminal.type("x");
+  await until("the question", () =>
+    (terminal.frames().at(-1) ?? "").includes("archive #1 the board on one screen?"),
+  );
+
+  // Someone else archives that card while the question about it is open: there is nothing left
+  // to ask, so the question goes rather than standing over a card that is no longer there.
+  fake.emit({ seq: 9, cardId: 1, actorId: ME.id, type: "card_archived", data: {}, createdAt: NOW });
+  await until("the question gone", () => !(terminal.frames().at(-1) ?? "").includes("archive #1"));
+
+  // And Enter is Enter again: it opens the card under the cursor, and archives nothing.
+  terminal.type("\r");
+  await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  expect(fake.calls.slice(read).filter(([method]) => method === "archiveCard")).toEqual([]);
+
+  // Out of the card view, and then out of the screen.
+  terminal.type("q");
   terminal.type("q");
   await running;
 });

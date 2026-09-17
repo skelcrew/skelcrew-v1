@@ -28,8 +28,13 @@ the screen or from a terminal, appears in the board without a restart, which tod
 - `packages/cli/src/board/state.ts`: `Prompt` is `deny` | `back` | `comment`, each with a
   `cardId` and `text`. `apply(state, event)` handles `comment`, `card_moved`, `claimed`,
   `released`, `run_interrupted`, `attention_requested`, `attention_resolved` and
-  `card_archived` — and not `card_created` (`packages/shared/src/types.ts:103`), so a card
-  filed while the screen is open is not in `state.cards` until the screen is reopened.
+  `card_archived` — and not `card_created` (`packages/shared/src/types.ts:103`). (The spec as
+  approved concluded "so a card filed while the screen is open is not in `state.cards` until
+  the screen is reopened". That was false: `board.ts`'s `onEvent` reads back any card an event
+  names that the board lacks and inserts it in id order, 026's design, so a new card already
+  appears. The orchestrator corrected it during development, when the implementer found the
+  guard test green before writing anything — the third "today" sentence in as many specs
+  written without running the code, against the rule 026's landing recorded.)
 - `packages/cli/src/board/board.ts:84`, `perform`: makes the call for `resolve`, `move` and
   `comment`; `open-shell` is handled in the loop.
 - `packages/cli/src/board/frame.ts:248`, `helpFrame`, lists the keys from a `KEYS` table.
@@ -86,18 +91,19 @@ empty) and, for `archive`, accepts only Enter and Esc. `sent` grows two cases. T
 for `s` comes from `PHASES` in `@skelcrew/shared`, the way `previousPhase` does, and stops at
 Code: the phases whose exit belongs to a run or the daemon are not the owner's to force from a
 key, and each gets its sentence. `perform` in `board.ts` makes `createCard` and `archiveCard`,
-and puts `#<id> <title> added` on the status line from `createCard`'s result. `apply` in
-`state.ts` handles `card_created` by fetching the card the way it fetches a card it has not
-seen, and inserting it in id order. `frame.ts` renders the `add` prompt with a label and the
-`archive` prompt as its question; `KEYS` gains three lines.
+and puts `#<id> <title> added` on the status line from `createCard`'s result. A new card
+reaches the board through the loop's existing read-back of any card an event names (see the
+correction above); no `apply` change is needed, and criterion 6's test is the guard that it
+stays so. `frame.ts` renders the `add` prompt with a label and the `archive` prompt as its
+question; `KEYS` gains three lines.
 
 Decisions resolved from the repository: a confirmation for `x`, because 026 made the prompt the
 one place a question is asked and `archiveCard` cannot be undone; no confirmation for `s`,
 because a move is reversible with `b` and 027 made moves one key; `n` on the board only,
 because the card view is one card and filing another there has no row to land on; `s` stops
 at Code, because CLAUDE.md says a phase ends in an artefact the runner verifies, and forcing
-Code into PR from a key would skip the contract. The `card_created` gap is fixed here rather
-than in its own spec because `n` is unusable without it.
+Code into PR from a key would skip the contract. (The approved text ended "the `card_created`
+gap is fixed here because `n` is unusable without it"; there was no gap.)
 
 ## Acceptance criteria
 
@@ -124,7 +130,11 @@ than in its own spec because `n` is unusable without it.
    when the archived card was the open card, the view returns to the board; a refused
    `createCard` puts the daemon's message on the status line.
 8. The help view lists `n`, `s` and `x`.
-9. 027's tests pass unchanged except the table in criterion 5, which gains rows.
+9. No 026 or 027 test is weakened or removed; existing tests may gain assertions for the new
+   prompts and keys, and an inert-key list may swap a letter that is now bound for one that is
+   not. (The approved text said "pass unchanged except the table"; two 027 frame tests gained
+   assertions, which is the right place for them. Corrected by the orchestrator after review
+   round 1.)
 10. `docs/MILESTONES.md` marks 032 landed at landing.
 
 ## Tests
