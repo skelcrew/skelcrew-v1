@@ -22,6 +22,8 @@ export type Action =
   | { kind: "comment"; id: number; text: string }
   /** `add <title>`. */
   | { kind: "add"; title: string }
+  /** `archive <id>`. */
+  | { kind: "archive"; id: number }
   /** The owner's shell, in the card's worktree. No call. */
   | { kind: "open-shell"; id: number };
 
@@ -73,7 +75,7 @@ const STAYS: Record<Phase, ((id: string) => string) | null> = {
 };
 
 /**
- * The keys that answer, on one card: the same seven wherever the cursor is, because the card
+ * The keys that answer, on one card: the same eight wherever the cursor is, because the card
  * view shows one card and the board's selected row is one card. `undefined` when the key is
  * not one of them.
  */
@@ -117,6 +119,12 @@ function act(state: State, cardId: number, key: string): Pressed | undefined {
     }
     case "c":
       return opens(state, { kind: "comment", cardId, text: "" });
+    case "x": {
+      // A question first: there is no unarchive. The title is taken now, so the question goes
+      // on naming the card even if the card leaves the board while it is open.
+      const card = state.cards.find((each) => each.id === cardId);
+      return opens(state, { kind: "archive", cardId, title: card?.title ?? "" });
+    }
     case "o":
       return { state, action: { kind: "open-shell", id: cardId } };
     default:
@@ -138,6 +146,8 @@ function sent(prompt: Prompt): Action {
       return { kind: "comment", id: prompt.cardId, text: prompt.text };
     case "add":
       return { kind: "add", title: prompt.text };
+    case "archive":
+      return { kind: "archive", id: prompt.cardId };
   }
 }
 
@@ -151,6 +161,13 @@ function printable(key: string): boolean {
  * characters edit, and nothing else is interpreted — a `q` here is a letter, not the way out.
  */
 function pressPrompt(state: State, prompt: Prompt, key: string): Pressed {
+  if (prompt.kind === "archive") {
+    // A question rather than a line: Enter archives, Esc keeps the card, and every other key
+    // leaves the question exactly as it is rather than answering it by accident.
+    if (key === "enter") return { state: { ...state, prompt: null }, action: sent(prompt) };
+    if (key === "escape") return { state: { ...state, prompt: null } };
+    return { state };
+  }
   switch (key) {
     case "enter":
       // A card needs a title, and the prompt closes so that the sentence can be read: the

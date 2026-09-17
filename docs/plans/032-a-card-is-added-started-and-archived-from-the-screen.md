@@ -77,3 +77,41 @@ Test count: 879 before, 885 after (three in `keys.test.ts`, three in `board.test
   0 fail. `bun run fix` was run once for Biome's formatting of a new block in `board.test.ts`.
 - `bun run check:harness` was **not** run: it spawns the pinned coding agent and covers the
   playbooks and the runner's allowlist, and this spec changes neither.
+
+## Fix round 1
+
+Review round 1 found one must-fix and three minor ones. The must-fix was the history itself:
+one 472-line commit carried three independent keys, against CLAUDE.md's rule that a commit is
+a vertical slice passing `bun run check` on its own. The branch was unpushed, so it was re-cut
+from `00e8566` into four commits, each of which was checked before it was made:
+
+| Commit | What | `bun run check` |
+| --- | --- | --- |
+| `776e734` | The spec's two amendments and this run record | 879 pass, 0 fail |
+| `ed8dc8b` | `s` starts the selected card | 880 pass, 0 fail |
+| `c7377df` | `n` files a card by title | 883 pass, 0 fail |
+| this one | `x` archives after a question | 886 pass, 0 fail |
+
+The three minor findings, all landed in the slice they belong to:
+
+- **`s` had no coverage above the reducer** (in `ed8dc8b`). The table test's fixture held one
+  card in Code, where `s` does nothing, so no row pressed it. The fixture gained a card in
+  Idea, and the table a row: `G` then `s` sends exactly what `mv 4 spec` sends.
+- **`STAYS` was a partial record** (in `ed8dc8b`), so a sixth phase would have got a silent
+  `s`-move. It is now `Record<Phase, ((id: string) => string) | null>` with `idea: null` and
+  `spec: null` named, so a new phase is a compile error.
+- **The archive question emptied if the card left the board under it** (in this commit).
+  `archiveQuestion` looked the title up in `state.cards`, so a card archived by someone else
+  while the question was open left the line reading `archive #1 ? …` over a call the daemon
+  would refuse. The title is now taken into the prompt when the question opens, and `apply`
+  closes that question when its card leaves `state.cards` on `card_archived`. Red first, all
+  three failing for the intended reason: `expect(opened.state.prompt).toEqual({ kind:
+  "archive", cardId: 7, title: "asking" })` received the prompt without a title; the frame
+  gave `"archive #1 ? Enter archives, Esc keeps it"` where `"archive #1 gone? …"` was
+  expected; and through the loop, "timed out waiting for the question gone". Only the
+  `archive` prompt is closed this way — the other prompts' same shape is 027's and pre-existing,
+  and the review said to leave it.
+
+Test count: 879 before the branch, 886 after. Two daemon tests — `process.test.ts`'s sweep
+tests — timed out once each under a full `check` mid-round and passed on every other run,
+including in isolation; nothing on this branch touches `packages/daemon`.

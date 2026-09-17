@@ -230,6 +230,26 @@ test("the message is the bottom line, and the prompt takes it while one is open"
     "new card: a new card",
   );
 
+  // And the archive question, which takes no text and so has no cursor — it names the card it
+  // is about and both ways to answer it.
+  const question = bottom({ prompt: { kind: "archive", cardId: 1, title: "waiting on me" } });
+  expect(plain(question)).toBe("archive #1 waiting on me? Enter archives, Esc keeps it");
+  expect(question).not.toContain(`${ESC}[7m`);
+
+  // The title is the prompt's own, taken when the question opened: a card that has left the
+  // board under it is still named by the line that asks about it.
+  expect(
+    plain(
+      bottom({ cards: [], requests: [], prompt: { kind: "archive", cardId: 1, title: "gone" } }),
+    ),
+  ).toBe("archive #1 gone? Enter archives, Esc keeps it");
+
+  // A long title is what gets cut, rather than the two ways to answer: Enter cannot be undone,
+  // so what it does has to stay on the screen.
+  const longTitle = bottom({ prompt: { kind: "archive", cardId: 7, title: "a".repeat(200) } });
+  expect(width(longTitle)).toBeLessThanOrEqual(size.columns);
+  expect(plain(longTitle)).toEndWith("? Enter archives, Esc keeps it");
+
   // The prompt covers the message, and the board is still drawn above it.
   const both = frame(
     state({ message: "the daemon said no", prompt: { kind: "comment", cardId: 1, text: "" } }),
@@ -264,8 +284,8 @@ test("the keys screen names every key, including the ones that answer", () => {
     columns: 100,
     rows: 24,
   }).map(plain);
-  // 032's criterion 8, in part: `n` and `s` beside the six 027 added.
-  for (const key of ["a", "d", "m", "b", "c", "o", "n", "s"]) {
+  // 032's criterion 8: `n`, `s` and `x` beside the six 027 added.
+  for (const key of ["a", "d", "m", "b", "c", "o", "n", "s", "x"]) {
     expect(shown.some((line) => line.trimStart().startsWith(key))).toBe(true);
   }
 });

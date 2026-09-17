@@ -79,10 +79,10 @@ export interface BoardDeps {
 
 /**
  * The call the action is, and the sentence the status line shows when the call itself says
- * something. These are the calls `resolve.ts`, `mv.ts`, `comment.ts` and `add.ts` make, with
- * the parameters those commands send: the screen and the CLI cannot come to disagree about
- * what a key means, because they make the same request (027's criterion 6). Everything else a
- * call did reaches the screen as the events it caused.
+ * something. These are the calls `resolve.ts`, `mv.ts`, `comment.ts`, `add.ts` and
+ * `archive.ts` make, with the parameters those commands send: the screen and the CLI cannot
+ * come to disagree about what a key means, because they make the same request (027's
+ * criterion 6). Everything else a call did reaches the screen as the events it caused.
  */
 async function perform(client: Client, action: Action): Promise<string | undefined> {
   switch (action.kind) {
@@ -104,6 +104,9 @@ async function perform(client: Client, action: Action): Promise<string | undefin
       const filed = await client.call("createCard", { title: action.title });
       return `${formatId(filed.id)} ${oneLine(filed.title)} added`;
     }
+    case "archive":
+      await client.call("archiveCard", { id: action.id });
+      return undefined;
     default:
       return undefined;
   }

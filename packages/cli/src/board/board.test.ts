@@ -20,6 +20,7 @@ import {
   RpcError,
 } from "@skelcrew/shared";
 import { add as addCommand } from "../commands/add";
+import { archive as archiveCommand } from "../commands/archive";
 import type { Args, Command, Context } from "../commands/command";
 import { comment as commentCommand } from "../commands/comment";
 import { mv as mvCommand } from "../commands/mv";
@@ -115,10 +116,18 @@ interface Fake {
 }
 
 /** The methods the screen may call that change a card; the rest are the reads it loads from. */
-const CHANGES: MethodName[] = ["resolveAttention", "moveCard", "comment", "createCard"];
+const CHANGES: MethodName[] = [
+  "resolveAttention",
+  "moveCard",
+  "comment",
+  "createCard",
+  "archiveCard",
+];
 
 function fakeClient(initial: Card[] = CARDS): Fake {
-  // Every card the daemon has, including the ones filed while the screen is open.
+  // Every card the daemon has, including the ones filed while the screen is open; `listCards`
+  // answers with the unarchived ones, as the real one does, and `getCard` still answers for a
+  // card that has just been archived.
   const cards = [...initial];
   let handler: ((event: Activity) => void) | undefined;
   let lost = () => {};
@@ -142,7 +151,7 @@ function fakeClient(initial: Card[] = CARDS): Fake {
     }
     switch (method) {
       case "listCards":
-        return cards;
+        return cards.filter((each) => each.archivedAt === null);
       case "listAttention":
         return cards
           .filter((each) => each.attention?.to === ME.id)
@@ -165,6 +174,12 @@ function fakeClient(initial: Card[] = CARDS): Fake {
         const filed = card(next, params.title as string, { phase: "idea" });
         cards.push(filed);
         return filed;
+      }
+      case "archiveCard": {
+        const found = cards.find((each) => each.id === params.id) as Card;
+        const archived: Card = { ...found, archivedAt: NOW };
+        cards[cards.indexOf(found)] = archived;
+        return archived;
       }
       default:
         return null;
@@ -694,8 +709,9 @@ test("every key sends exactly what its CLI command sends", async () => {
     // 032: `s` starts a card. `G` is the last row, which is the Idea card: `s` does nothing on
     // the one in Code, where the run's artefact ends the phase.
     { keys: ["G", "s"], command: mvCommand, argv: ["4", "spec"] },
-    // And `n` files one by title.
+    // And `n` files one by title, and `x` archives after its question.
     { keys: ["n", ..."a new card", "\r"], command: addCommand, argv: ["a new card"] },
+    { keys: ["x", "\r"], command: archiveCommand, argv: ["3"] },
   ];
 
   const sent: Call[] = [];
@@ -706,9 +722,15 @@ test("every key sends exactly what its CLI command sends", async () => {
     sent.push(...screen);
   }
 
-  // Nothing else: the keys that answer make these four calls and no fifth.
+  // Nothing else: the keys that answer make these five calls and no sixth.
   const methods = new Set(sent.map(([method]) => method));
-  expect([...methods].sort()).toEqual(["comment", "createCard", "moveCard", "resolveAttention"]);
+  expect([...methods].sort()).toEqual([
+    "archiveCard",
+    "comment",
+    "createCard",
+    "moveCard",
+    "resolveAttention",
+  ]);
 
   // And the table is every action the reducer can yield: another key with a call of its own
   // does not typecheck until it has a row here.
@@ -717,6 +739,7 @@ test("every key sends exactly what its CLI command sends", async () => {
     move: table.some((row) => row.command === mvCommand),
     comment: table.some((row) => row.command === commentCommand),
     add: table.some((row) => row.command === addCommand),
+    archive: table.some((row) => row.command === archiveCommand),
   };
   expect(Object.values(covered).every(Boolean)).toBe(true);
 });
@@ -957,7 +980,7 @@ test("the shell is $SHELL, and sh when the owner has none", async () => {
   await running;
 });
 
-// --- 032: filing a card through the loop ---
+// --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */
 function created(card: Card): Activity {
@@ -1024,6 +1047,69 @@ test("n files a card and the status line names it; a refusal says why", async ()
   );
   expect(fake.calls.slice(before)).toEqual([["createCard", { title: "another" }]]);
 
+  terminal.type("q");
+  await running;
+});
+
+test("x archives the card, and the card view closes when it was the open card", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+
+  // Card 1, open in the card view: the archive question, then Enter.
+  terminal.type("\r");
+  await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  terminal.type("x");
+  await until("the question", () =>
+    (terminal.frames().at(-1) ?? "").includes("archive #1 the board on one screen?"),
+  );
+  terminal.type("\r");
+  await until("the call", () =>
+    fake.calls.slice(read).some(([method]) => method === "archiveCard"),
+  );
+  expect(fake.calls.slice(read).filter(([method]) => method === "archiveCard")).toEqual([
+    ["archiveCard", { id: 1 }],
+  ]);
+
+  // The card leaves the board on its event, and the view it was open in closes to the board.
+  fake.emit({ seq: 9, cardId: 1, actorId: ME.id, type: "card_archived", data: {}, createdAt: NOW });
+  // The board's own header, which the card view never draws: the card's status line says
+  // "waiting on you" too.
+  await until("the board again", () =>
+    (terminal.frames().at(-1) ?? "").includes(dim("waiting on you")),
+  );
+  const last = terminal.frames().at(-1) as string;
+  expect(boardIds(last)).toEqual(["2"]);
+  expect(last).not.toContain("the board on one screen");
+
+  terminal.type("q");
+  await running;
+});
+
+test("a card archived under the open question takes the question with it", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+
+  terminal.type("x");
+  await until("the question", () =>
+    (terminal.frames().at(-1) ?? "").includes("archive #1 the board on one screen?"),
+  );
+
+  // Someone else archives that card while the question about it is open: there is nothing left
+  // to ask, so the question goes rather than standing over a card that is no longer there.
+  fake.emit({ seq: 9, cardId: 1, actorId: ME.id, type: "card_archived", data: {}, createdAt: NOW });
+  await until("the question gone", () => !(terminal.frames().at(-1) ?? "").includes("archive #1"));
+
+  // And Enter is Enter again: it opens the card under the cursor, and archives nothing.
+  terminal.type("\r");
+  await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  expect(fake.calls.slice(read).filter(([method]) => method === "archiveCard")).toEqual([]);
+
+  // Out of the card view, and then out of the screen.
+  terminal.type("q");
   terminal.type("q");
   await running;
 });

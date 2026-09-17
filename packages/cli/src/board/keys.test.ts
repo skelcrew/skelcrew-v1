@@ -154,8 +154,9 @@ test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () 
   }
 
   // Every printable key that is not a key is the same state and no action, on every view.
-  // `a`, `d`, `m`, `b`, `c` and `o` were in this list until 027 gave them to the daemon.
-  for (const key of ["z", "1", " ", "J", "x"]) {
+  // `a`, `d`, `m`, `b`, `c` and `o` were in this list until 027 gave them to the daemon, and
+  // `x` until 032 gave it the archive question beside `n` and `s`.
+  for (const key of ["z", "1", " ", "J", "X"]) {
     const pressed = press(board, key);
     expect(pressed.state).toBe(board);
     expect(pressed.action).toBeUndefined();
@@ -345,7 +346,7 @@ test("the same keys act on the card the card view shows", () => {
   expect(press(typed.state, "escape").state.view).toEqual(open.view);
 });
 
-// --- 032: filing a card, and starting one ---
+// --- 032: filing a card, starting one, and archiving one ---
 
 test("n opens the prompt for a title; Enter files it, an empty title says a card needs one", () => {
   const board = asking();
@@ -414,4 +415,34 @@ test("s starts the card, and says why it does not on the phases a run or the mer
   }
   const idea = press(asking({ phase: "idea" }), "enter").state;
   expect(press(idea, "s").action).toEqual({ kind: "move", id: 7, phase: "spec" });
+});
+
+test("x asks before archiving: Enter archives, Esc keeps it, and nothing else is read", () => {
+  const board = asking();
+  const opened = press(board, "x");
+  expect(opened.action).toBeUndefined();
+  // The title is taken when the question opens, so the line goes on saying what Enter archives
+  // even if the card leaves the board while it is open.
+  expect(opened.state.prompt).toEqual({ kind: "archive", cardId: 7, title: "asking" });
+
+  const archived = typing(board, ["x", "enter"]);
+  expect(archived.action).toEqual({ kind: "archive", id: 7 });
+  expect(archived.state.prompt).toBeNull();
+
+  const kept = typing(board, ["x", "escape"]);
+  expect(kept.action).toBeUndefined();
+  expect(kept.state.prompt).toBeNull();
+  expect(quiet(kept.state)).toEqual(board);
+
+  // The question takes no text: every other key leaves it exactly as it is.
+  for (const key of ["a", " ", "q", "backspace", "down", "?"]) {
+    const pressed = press(opened.state, key);
+    expect(pressed.action).toBeUndefined();
+    expect(pressed.state).toBe(opened.state);
+  }
+
+  // And the same key on the card the card view shows.
+  const open = press(board, "enter").state;
+  const fromCard = typing(open, ["x", "enter"]);
+  expect(fromCard.action).toEqual({ kind: "archive", id: 7 });
 });

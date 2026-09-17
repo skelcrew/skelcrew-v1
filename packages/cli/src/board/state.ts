@@ -33,7 +33,13 @@ export type Prompt =
   | { kind: "back"; cardId: number; phase: Phase; text: string }
   | { kind: "comment"; cardId: number; text: string }
   /** A new card's title. The one prompt about no card in particular (032). */
-  | { kind: "add"; text: string };
+  | { kind: "add"; text: string }
+  /**
+   * The question before an archive, which cannot be undone: it takes no text (032). The
+   * `title` is taken when the question opens, so the line goes on naming the card it asks
+   * about even in the moment before the question closes on the card leaving the board.
+   */
+  | { kind: "archive"; cardId: number; title: string };
 
 export interface State {
   /** The member the screen is rendered for: whoever the CLI connected as. */
@@ -212,13 +218,20 @@ export function apply(state: State, event: Activity): State {
       const held = withCard(state, cardId, (each) => ({ ...each, attention: null }));
       return clamp({ ...held, requests: withRequest(held, cardId) });
     }
-    case "card_archived":
-      // The board is the unarchived cards, and an archived card's request went with it.
+    case "card_archived": {
+      // The board is the unarchived cards, and an archived card's request went with it. A card
+      // view open on it closes to the board: there is no row behind it to come back to. So does
+      // the question about archiving it: the card is gone, so there is nothing left to ask.
+      const open = state.view.kind === "card" && state.view.cardId === cardId;
+      const asking = state.prompt?.kind === "archive" && state.prompt.cardId === cardId;
       return clamp({
         ...state,
         cards: state.cards.filter((each) => each.id !== cardId),
         requests: withRequest(state, cardId),
+        view: open ? { kind: "board" } : state.view,
+        prompt: asking ? null : state.prompt,
       });
+    }
     default:
       return state;
   }

@@ -117,7 +117,7 @@ function boardRow(
 }
 
 /** What the prompt is for, as the line says it before the text being typed. */
-function promptLabel(prompt: Prompt): string {
+function promptLabel(prompt: Exclude<Prompt, { kind: "archive" }>): string {
   switch (prompt.kind) {
     case "deny":
       return `deny ${formatId(prompt.cardId)}: `;
@@ -131,12 +131,27 @@ function promptLabel(prompt: Prompt): string {
 }
 
 /**
+ * The archive question: the card it is about, and both ways to answer it. The title is the
+ * prompt's own, taken when the question opened, so the line reads the same whatever became of
+ * the card under it. It is also what gets cut when the terminal is narrow, because Enter cannot
+ * be undone and what it does has to stay on the screen.
+ */
+function archiveQuestion(prompt: Extract<Prompt, { kind: "archive" }>, columns: number): string {
+  const asks = `archive ${formatId(prompt.cardId)} `;
+  const answers = "? Enter archives, Esc keeps it";
+  const room = columns - cells(asks) - cells(answers);
+  return cut(asks + cut(oneLine(prompt.title), Math.max(0, room)) + answers, columns);
+}
+
+/**
  * The screen's last line: the prompt while one is open — the terminal's own cursor is hidden,
  * so the caret is a reverse-video cell — and the one sentence otherwise.
  */
 function bottomLine(state: State, size: Size): string {
   const prompt = state.prompt;
   if (prompt !== null) {
+    // The archive question takes no text, so it has no caret: it is read and answered.
+    if (prompt.kind === "archive") return archiveQuestion(prompt, size.columns);
     // One cell is kept for the caret, so the line still fits when the text fills the terminal,
     // and the line is cut at its start so that the caret's end of it is the part that stays.
     return cutStart(oneLine(promptLabel(prompt) + prompt.text), size.columns - 1) + reverse(" ");
@@ -244,6 +259,7 @@ const KEYS = [
   "  m            take the move the request offers",
   "  b            send the card back a phase, with a message",
   "  c            comment on the card",
+  "  x            archive the card, after a question",
   "  o            a shell in the card's worktree",
   "  ?            these keys",
   "  q            quit",
