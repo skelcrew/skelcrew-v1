@@ -45,7 +45,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | landed, PR #31 — three review rounds, one Critical: a pasted tab ran as keys and answered a question |
 | 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
-| 32 | 035 A running card stays running on the screen | planned; found in real use 2026-09-17; the screen's copy of a lease expires while the daemon's is renewed |
+| 32 | 035 A running card stays running on the screen | specified; the screen trusts events, not its clock, about a lease |
 | 33 | 036 The crew may look at the board | planned; found in real use 2026-09-17; `skelcrew ls` asked for permission |
 | 34 | 037 A comment wakes the crew | planned; decided by the owner from use 2026-09-17; after 035 |
 | | 005 | dropped |
