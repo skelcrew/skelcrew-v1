@@ -59,8 +59,11 @@ activity event of the card in order, rendered as an exchange — a comment by th
 owner's line, a comment by `runner` or `crew` as the agent's (its text turns whole, multi-line,
 every line marked as `show` marks a body; its tool summaries and `allowed`/`denied` notes as
 they are), and every other event (created, moved, claimed, released, interrupted, a request
-raised or resolved, a review recorded) as one dim line, `activityLine`'s. Then a line that says
-who is listening, then the input.
+raised or resolved, a review recorded) as one dim entry, as `activityLine` renders it — one
+line for most, several for a request with a multi-line note or a review with findings. (The
+approved text said "one dim line"; a request's `why:` line is a second line, and cutting it
+would lose the reason. Corrected by the orchestrator after review round 1.) Then a line that
+says who is listening, then the input.
 
 **The listening line says the truth.** While the card's status is `running since <time>`, the
 line says `crew is listening · running since <time>`. Otherwise it says `no run is live; the
@@ -85,7 +88,10 @@ spec that lands second wires the other's keys.
 
 **The body is one `Tab` away.** The chat view does not draw the card's body: a spec does not
 fit above a conversation on a 24-row terminal, and the card view has it whole. The header's
-`now:` line and the listening line are what the owner needs while talking.
+`now:` line and the listening line are what the owner needs while talking. `Tab` keeps the
+typed line: flip to read the body, flip back, and the half-written reply is where it was.
+(Added after review round 1, which found the flip dropping the text; the spec was silent and
+nothing in it asked for the line to be discarded.)
 
 **The board is unchanged.** `c` on the board still opens the one-line comment prompt; the card
 view keeps every 027 key. The help view lists `Tab`, and that `Enter` opens the chat.
@@ -142,7 +148,10 @@ run (cards drive the runner).
 5. `conversationLines` for a fixture activity renders: the owner's comment as the owner's line;
    a `runner` comment with three lines as three marked lines attributed to the agent; a tool
    summary comment as it is; `card_moved`, `claimed`, `attention_requested` and
-   `attention_resolved` as dim single lines; and the order is the activity's order. No colour
+   `attention_resolved` as dim entries, each as `activityLine` renders it (a request with a
+   two-line note is two dim lines; the rest one); and the order is the activity's order.
+   (Amended with the Desired-behavior paragraph, after review round 2 found the criterion
+   still saying "single lines".) No colour
    escape anywhere in the frame (026's rule).
 6. The chat frame at 100×24 shows the header at the top, the newest conversation lines at the
    bottom of the middle, the listening line, and the input line with the reverse-video cursor;
@@ -154,9 +163,14 @@ run (cards drive the runner).
    with that line and the input is empty afterwards; `allow` with a question open calls
    `resolveAttention`; a refused `comment` puts the daemon's message on the listening line and
    the typed text back in the input.
-9. `keysOf` decodes `\t` as `tab` and nothing else new; 027's and 026's tests pass unchanged
-   except the two that pin `Enter` opening the card view, which now pin the chat view (say
-   which, in the run record).
+9. `keysOf` decodes `\t` as `tab` and nothing else new; no 026 or 027 test is weakened or
+   removed; the tests that pinned `Enter` opening the card view now open the chat and flip
+   with `Tab` (say which, in the run record). (The approved text said "except the two that
+   pin `Enter`"; thirteen tests pinned the card view through `Enter` — ten in `keys.test.ts`,
+   three in `board.test.ts` — and a fourteenth site in `board.test.ts` presses `Enter` only to
+   trigger a failing read and never pinned the view. A count guessed, not run — corrected by
+   the orchestrator during development, and corrected again after review round 3 counted the
+   sites.)
 10. The help view lists `Tab` and says `Enter` opens the chat.
 11. `docs/MILESTONES.md` marks 033 landed at landing.
 

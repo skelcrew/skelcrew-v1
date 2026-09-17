@@ -174,6 +174,9 @@ function textOf(chunk: unknown): string {
  * at the start of a read would make the second case three keys — the letter, `[` and `B` — and
  * `[B` would land in whatever the owner was typing (031, of the prompt: "neither becomes text").
  *
+ * Tab is the one control character below `" "` that is a key (033, where it flips between the
+ * card and the chat); every other one but Enter, Backspace and Ctrl-C is still dropped.
+ *
  * Exported for its test: what each chunk decodes to is a table, and an absence — Left moving
  * nothing — reads the same on the screen whether it was dropped or was never a key at all.
  */
@@ -199,6 +202,7 @@ export function keysOf(chunk: string): string[] {
       continue;
     }
     if (char === INTERRUPT_KEY) keys.push("ctrl-c");
+    else if (char === "\t") keys.push("tab");
     else if (char === "\r" || char === "\n") keys.push("enter");
     else if (BACKSPACE_KEYS.includes(char)) keys.push("backspace");
     else if (char >= " ") keys.push(char);
@@ -259,14 +263,21 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     }, redrawMs);
   }
 
+  /** The card a view is about, if it is about one: the card view's and the chat's. */
+  function shows(view: View): number | undefined {
+    return view.kind === "card" || view.kind === "chat" ? view.cardId : undefined;
+  }
+
   /**
-   * The card a press opened: a card view that was not already showing that card. Opening one
-   * is always a read, however recently it was open — the feed moved on while it was closed,
-   * and a card view that draws what the card said a minute ago is worse than none.
+   * The card a press opened: a view of a card that was not already showing that card. Opening
+   * one is always a read, however recently it was open — the feed moved on while it was closed,
+   * and a card view that draws what the card said a minute ago is worse than none. Tab between
+   * the two views of one card reads nothing: the card under them has not changed.
    */
   function opened(before: View, after: View): number | undefined {
-    if (after.kind !== "card") return undefined;
-    return before.kind === "card" && before.cardId === after.cardId ? undefined : after.cardId;
+    const card = shows(after);
+    if (card === undefined) return undefined;
+    return shows(before) === card ? undefined : card;
   }
 
   /**
@@ -310,6 +321,8 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       // reading it as board keys would answer questions and open shells they never asked for
       // (027 — of the prompt, "nothing else is interpreted").
       const prompting = state.prompt !== null;
+      // What the chat's input held before the key: the line a refused call gets put back.
+      const typed = before.kind === "chat" ? before.text : "";
       const pressed = press(state, key);
       // The reducer knows the card; the terminal's height is the loop's to hold.
       state = clampScroll(pressed.state, sizeOf(screen));
@@ -329,8 +342,13 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
           // what only its own answer carries — a filed card's id — is the sentence it returns.
           state = { ...state, message: said ?? "" };
         } catch (error) {
-          // Refused: the daemon's own sentence, and nothing else on the screen changes.
-          state = { ...state, message: error instanceof Error ? error.message : String(error) };
+          // Refused: the daemon's own sentence, and nothing else on the screen changes — except
+          // in the chat, where the line that was refused goes back into the input instead of
+          // being lost, and the sentence is read on the listening line just above it (033).
+          const message = error instanceof Error ? error.message : String(error);
+          const view = state.view;
+          const back = view.kind === "chat" && typed.length > 0 ? { ...view, text: typed } : view;
+          state = { ...state, message, view: back };
         }
       }
       const opening = opened(before, state.view);
@@ -340,6 +358,16 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       }
       redraw();
       if (prompting && state.prompt === null) return;
+      // The chat's line ends a chunk the same way: a paste with a newline in it sends the line
+      // and what follows it is dropped, rather than becoming the next line's text (033). Only
+      // an Enter that sent a line ends it, though — an empty one sends nothing, so a chunk that
+      // begins with a newline is the line the owner pasted and not a tail to drop.
+      if (before.kind === "chat" && key === "enter" && typed.length > 0) return;
+      // And so does leaving the chat mid-chunk. A tab in pasted text — two columns of a table
+      // — flips to the card view, where the letters after it would be keys: `a` answering the
+      // open question, `o` opening a shell. In the chat a paste is text, so what follows the
+      // flip is dropped rather than acted on, whichever exit the chunk took.
+      if (before.kind === "chat" && state.view.kind !== "chat") return;
     }
   }
 
@@ -349,9 +377,9 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     const cardId = event.cardId;
     if (cardId !== null) {
       // A card the screen has never seen — one filed while it was open — and the open card,
-      // whose feed the card view shows, are both read back whole.
+      // whose feed the card view and the chat both draw, are read back whole.
       const missing = !state.cards.some((each) => each.id === cardId);
-      const open = state.view.kind === "card" && state.view.cardId === cardId;
+      const open = shows(state.view) === cardId;
       if (missing || open) {
         const detail = await client.call("getCard", { id: cardId });
         // A `CardDetail` is a `Card` with its feed: the board reads the card's own fields.

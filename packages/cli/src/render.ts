@@ -51,9 +51,16 @@ function continued(text: string, indent = ""): string {
  * A stored multi-line field that stands on its own lines — a card's body, a note in the queue.
  * Every line is marked, the first included: it starts a line of its own, so it could otherwise
  * read as one the CLI composed.
+ *
+ * Exported by the line for the chat view, which draws a comment's text as the lines of a
+ * terminal rather than as one string (033).
  */
+export function markedLines(text: string): string[] {
+  return text.split("\n").map(markLine);
+}
+
 function marked(text: string): string {
-  return text.split("\n").map(markLine).join("\n");
+  return markedLines(text).join("\n");
 }
 
 export function formatId(id: number): string {
@@ -77,7 +84,8 @@ export function phaseTrack(phase: Phase): string {
   return PHASES.map((p) => (p.id === phase ? "●" : "○")).join("");
 }
 
-function memberName(id: number, members: Member[]): string {
+/** A member's name, as every line that attributes something writes it. */
+export function memberName(id: number, members: Member[]): string {
   const found = members.find((m) => m.id === id);
   return found === undefined ? `member ${id}` : oneLine(found.name);
 }
@@ -336,20 +344,16 @@ export function activityLine(event: Activity, members: Member[]): string {
 }
 
 /**
- * Header, blank line, the body by line, blank line, the activity oldest first.
+ * Everything `show` prints above the body: the card, what it is doing, and its refs. It leads
+ * with `now:` — the same status text a row carries — so a reader who reads only the top has
+ * what the card is doing and what it needs.
  *
- * The header leads with `now:` — the same status text a row carries — so a reader who reads
- * only the top has what the card is doing and what it needs. The activity's order is unchanged:
- * oldest first, with 015's line marking depending on that layout.
+ * Exported because the chat view draws these same lines over the conversation (033) — one
+ * derivation, so the two views and `show` cannot come to disagree about a card.
  */
-export function cardView(
-  card: CardDetail,
-  members: Member[],
-  me: number,
-  now = Date.now(),
-): string {
+export function cardHeader(card: Card, members: Member[], me: number, now = Date.now()): string[] {
   const state = status(card, me, members, now);
-  const header = [
+  return [
     `${formatId(card.id)} ${oneLine(card.title)}`,
     // Nothing to say is said by leaving the line out: a `now:` with nothing after it says less.
     ...(state.length === 0 ? [] : [`now:     ${state}`]),
@@ -360,6 +364,19 @@ export function cardView(
     `created: ${formatTime(card.createdAt)}`,
     `updated: ${formatTime(card.updatedAt)}`,
   ];
+}
+
+/**
+ * Header, blank line, the body by line, blank line, the activity oldest first. The activity's
+ * order is unchanged: oldest first, with 015's line marking depending on that layout.
+ */
+export function cardView(
+  card: CardDetail,
+  members: Member[],
+  me: number,
+  now = Date.now(),
+): string {
+  const header = cardHeader(card, members, me, now);
   const activity = card.activity.map((event) => activityLine(event, members));
   // Marked line by line: the body is the member's own text, and an unmarked line of it reading
   // `2026-09-11 20:30  simon  moved the card to Done` is an activity entry nobody made.

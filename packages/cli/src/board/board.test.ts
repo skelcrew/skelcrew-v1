@@ -439,6 +439,11 @@ test("the arrow keys are read, and every other escape sequence is still dropped"
     ["a\u001b[C", ["a"]],
     // And the escape character with nothing after it is Esc, wherever in the read it falls.
     ["a\u001b", ["a", "escape"]],
+    // 033's criterion 9: Tab is a key, and it is the only one the decoder gained. It falls
+    // below `" "`, so it was dropped with the other control characters until the chat view
+    // had a use for it; every row above this one reads as it always did.
+    ["\t", ["tab"]],
+    ["a\tb", ["a", "tab", "b"]],
   ] as const) {
     expect(keysOf(chunk)).toEqual([...keys]);
   }
@@ -518,7 +523,9 @@ test("reopening a card reads it again, rather than drawing the feed it had", asy
   const { running } = await started(fake, terminal);
   const card = () => (terminal.frames().at(-1) ?? "").includes("created:");
 
+  // Enter opens the chat and Tab flips to the card view (033), which is what this is about.
   terminal.type("\r");
+  terminal.type("\t");
   await until("the card view", card);
   terminal.type("q");
   await until("the board again", () => !card());
@@ -526,6 +533,7 @@ test("reopening a card reads it again, rather than drawing the feed it had", asy
   // The run posts while the card is closed: no event reaches a card view that is not open.
   fake.post(1, "ZZZ-after-close");
   terminal.type("\r");
+  terminal.type("\t");
   await until("the comment posted while it was closed", () =>
     (terminal.frames().at(-1) ?? "").includes("ZZZ-after-close"),
   );
@@ -980,6 +988,227 @@ test("the shell is $SHELL, and sh when the owner has none", async () => {
   await running;
 });
 
+// --- 033: talking to the crew on a card ---
+
+/** The frame's bottom two rows: the line that says who is listening, and the input. */
+function listening(terminal: FakeTerminal): string {
+  return (terminal.frames().at(-1) ?? "").split("\r\n").at(-2) ?? "";
+}
+
+function input(terminal: FakeTerminal): string {
+  return (terminal.frames().at(-1) ?? "").split("\r\n").at(-1) ?? "";
+}
+
+test("a line typed in the chat is a comment on that card, and allow answers its question", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  // Enter on the first row opens the chat on card 1, which is waiting on the owner: the card's
+  // header is at the top, the question is on the listening line, and the input is open.
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  expect(listening(terminal)).toContain("why: ready");
+  expect(listening(terminal)).toContain("allow · deny · or write");
+
+  terminal.type("any news");
+  await until("the line", () => input(terminal).includes("any news"));
+  terminal.type("\r");
+  await until("the comment", () => calls("comment").length > 0);
+  expect(calls("comment")).toEqual([["comment", { id: 1, text: "any news" }]]);
+  // The input is empty afterwards, and the chat is still open: the line is open as long as
+  // the view is. What was sent comes back as the comment's own event, like anything else.
+  await until("the empty line", () => !input(terminal).includes("any news"));
+  expect(terminal.frames().at(-1)).toContain("created:");
+
+  // And `allow` on a line, with the question open, is the call `resolve` makes.
+  terminal.type("allow\r");
+  await until("the answer", () => calls("resolveAttention").length > 0);
+  expect(calls("resolveAttention")).toEqual([["resolveAttention", { id: 1, text: "allow" }]]);
+
+  // Tab to the card view, and out: in the chat both letters would have been text.
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a sentence said on the board does not take the chat's listening line", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  // `a` on the board row of a card with no open question says so on the bottom line.
+  terminal.type("j");
+  terminal.type("j");
+  terminal.type("a");
+  await until("the sentence", () => (terminal.frames().at(-1) ?? "").includes("no open question"));
+
+  // Entering the chat leaves it behind: the listening line says who is listening, which is the
+  // one thing the view is there to tell the owner while she writes.
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  expect(listening(terminal)).toContain("crew is listening");
+  expect(listening(terminal)).not.toContain("no open question");
+
+  // And it does not come back while she types.
+  terminal.type("any news");
+  await until("the line", () => input(terminal).includes("any news"));
+  expect(listening(terminal)).toContain("crew is listening");
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a refused line goes back into the input, with the daemon's word above it", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  fake.refuse("a comment cannot be that long");
+  terminal.type("some news");
+  await until("the line", () => input(terminal).includes("some news"));
+  terminal.type("\r");
+  await until("the refusal", () => listening(terminal).includes("a comment cannot be that long"));
+
+  // The typed line is not lost with the call that was refused: it is back in the input, ready
+  // to be sent again or edited (027's carried finding, closed for this view).
+  expect(input(terminal)).toContain("some news");
+  // And the chat is still open above it.
+  expect(terminal.frames().at(-1)).toContain("created:");
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a pasted chunk with a newline in it sends the line and drops the tail", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  // Two lines in one chunk: the first is sent, and the chunk ends at the newline, as the
+  // prompt's does (027).
+  terminal.type("hi\nallow");
+  await until("the comment", () => calls("comment").length > 0);
+  // Long enough for the tail to have landed, if it were going to.
+  await Bun.sleep(20);
+
+  expect(calls("comment")).toEqual([["comment", { id: 1, text: "hi" }]]);
+  expect(input(terminal)).not.toContain("allow");
+  expect(calls("resolveAttention")).toEqual([]);
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a chunk that begins with a newline is the line after it, not nothing", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  // Only an Enter that sent a line ends the chunk. This one is on an empty line, so it sends
+  // nothing — and the paste it leads is what the owner meant to write, not a tail to drop.
+  terminal.type("\ndo the thing");
+  await until("the line", () => input(terminal).includes("do the thing"));
+  expect(calls("comment")).toEqual([]);
+
+  terminal.type("\r");
+  await until("the comment", () => calls("comment").length > 0);
+  expect(calls("comment")).toEqual([["comment", { id: 1, text: "do the thing" }]]);
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a pasted tab in the chat flips the view, and the rest of the read is not keys", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  // Text with a tab in it is ordinary paste material — two columns of a table, say. The tab
+  // flips to the card view, and what follows it in the same read is the owner's text, not the
+  // card view's keys: `a` there would answer card 1's open question.
+  terminal.type("name\tage");
+  await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("the spec"));
+  // Long enough for the rest of the read to have acted, if it were going to.
+  await Bun.sleep(20);
+
+  expect(calls("resolveAttention")).toEqual([]);
+  expect(calls("moveCard")).toEqual([]);
+
+  // Back to the chat, where the line is where it was, and a chunk whose tail would open a
+  // prompt instead of making a call.
+  terminal.type("\t");
+  await until("the chat again", () => input(terminal).includes("name"));
+  terminal.type("!\tdeny it");
+  await until("the card view again", () => (terminal.frames().at(-1) ?? "").includes("the spec"));
+  await Bun.sleep(20);
+
+  expect(terminal.frames().at(-1)).not.toContain("deny #1");
+  expect(calls("resolveAttention")).toEqual([]);
+
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a pasted Esc in the chat acts on nothing after it either", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  terminal.type("news");
+  await until("the line", () => input(terminal).includes("news"));
+
+  // Esc is the chat's other way out, and pasted mid-read it does not even get that far: an
+  // escape character with more after it is a sequence this screen uses for nothing, so the
+  // read is dropped where it starts (026). The line keeps what it held, and nothing acts.
+  terminal.type("\u001bage");
+  await Bun.sleep(20);
+
+  expect(calls("resolveAttention")).toEqual([]);
+  expect(calls("moveCard")).toEqual([]);
+  expect(input(terminal)).toContain("news");
+  expect(terminal.frames().at(-1)).toContain("created:");
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */
@@ -1057,8 +1286,10 @@ test("x archives the card, and the card view closes when it was the open card", 
   const { running } = await started(fake, terminal);
   const read = fake.calls.length;
 
-  // Card 1, open in the card view: the archive question, then Enter.
+  // Card 1, open in the card view — Enter opens the chat and Tab flips to it (033) — then the
+  // archive question, then Enter.
   terminal.type("\r");
+  terminal.type("\t");
   await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
   terminal.type("x");
   await until("the question", () =>
@@ -1105,6 +1336,7 @@ test("a card archived under the open question takes the question with it", async
 
   // And Enter is Enter again: it opens the card under the cursor, and archives nothing.
   terminal.type("\r");
+  terminal.type("\t");
   await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
   expect(fake.calls.slice(read).filter(([method]) => method === "archiveCard")).toEqual([]);
 

@@ -11,8 +11,17 @@ import type {
   Member,
   OpenAttention,
 } from "@skelcrew/shared";
-import { cardLines, clampScroll, frame, sizeOf } from "./frame";
-import type { State } from "./state";
+import { activityLine, cardHeader, firstLine, status } from "../render";
+import {
+  cardLines,
+  clampScroll,
+  conversationLines,
+  frame,
+  MIN_COLUMNS,
+  MIN_ROWS,
+  sizeOf,
+} from "./frame";
+import type { State, View } from "./state";
 
 const ME = 1;
 const RUNNER = 2;
@@ -269,7 +278,7 @@ test("the message is the bottom line, and the prompt takes it while one is open"
   // And it is the bottom line of the card view too.
   const card = frame(
     state({
-      view: { kind: "card", cardId: 1, scroll: 0 },
+      view: { kind: "card", cardId: 1, scroll: 0, text: "" },
       detail: detail(),
       prompt: { kind: "deny", cardId: 1, text: "no" },
     }),
@@ -290,6 +299,47 @@ test("the keys screen names every key, including the ones that answer", () => {
   }
 });
 
+test("the keys screen says Enter opens the chat, and names the key that flips", () => {
+  // 033's criterion 10.
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), SIZE).map(plain);
+  const enter = shown.find((line) => line.trimStart().startsWith("enter"));
+  expect(enter).toContain("chat");
+  const tab = shown.find((line) => line.trimStart().startsWith("tab"));
+  expect(tab).toBeDefined();
+  expect(tab).toContain("card");
+
+  // `q` is a letter in the chat, so the way back from every view is `esc` alone; `q` is named
+  // as what it is, the card view's way back and the board's way out.
+  const esc = shown.find((line) => line.trimStart().startsWith("esc"));
+  expect(esc).toContain("back to the board");
+  // `esc` alone in the key column — not `esc, q`, which is what it said before the chat had a
+  // letter for every key. The line's words are its own business; its key column is not.
+  expect(esc).not.toMatch(/^\s*esc,/);
+  const quits = shown.find((line) => line.trimStart().startsWith("q "));
+  expect(quits).toContain("quit");
+  expect(quits).toContain("card view");
+});
+
+test("the keys screen has a chat section, drawn on a 24-row screen", () => {
+  // Every key above is the board's or the card's; in the chat a letter is text, and the
+  // screen says what is left. It has to fit: these lines are the last of the list.
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), SIZE).map(plain);
+  expect(shown.some((line) => line.includes("in the chat"))).toBe(true);
+
+  const sending = shown.find((line) => line.trimStart().startsWith("enter, esc"));
+  expect(sending).toContain("send the line");
+  expect(sending).toContain("back to the board");
+  const scrolling = shown.find((line) => line.trimStart().startsWith("↑, ↓, tab"));
+  expect(scrolling).toContain("scroll");
+  expect(scrolling).toContain("card view");
+  const answering = shown.find((line) => line.trimStart().startsWith("allow, deny"));
+  expect(answering).toContain("the open question");
+
+  // And `j, k` says where it is true: in the chat they are letters, and the arrows scroll.
+  const moving = shown.find((line) => line.trimStart().startsWith("j, k"));
+  expect(moving).toContain("in the chat");
+});
+
 test("the keys screen names the arrows beside j and k", () => {
   const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), {
     columns: 100,
@@ -307,7 +357,9 @@ test("no frame writes a colour", () => {
     state({ view: { kind: "help", from: { kind: "board" } } }),
     state({ message: "lost the daemon" }),
     state({ prompt: { kind: "deny", cardId: 1, text: "not yet" } }),
-    state({ view: { kind: "card", cardId: 1, scroll: 0 }, detail: detail() }),
+    state({ view: { kind: "card", cardId: 1, scroll: 0, text: "" }, detail: detail() }),
+    // 033's criterion 5: the chat draws dim lines and one reverse-video caret, and no colour.
+    state({ view: chat(3, { text: "how is it going" }), detail: exchange() }),
   ];
   for (const each of views) {
     const drawn = frame(each, { columns: 100, rows: 24 }, NOW);
@@ -357,8 +409,249 @@ function detail(): CardDetail {
   };
 }
 
+// --- 033: the chat view ---
+
+const SIZE = { columns: 100, rows: 24 };
+/** Where the listening line and the input are: the two bottom rows, in that order. */
+const LISTENING = SIZE.rows - 2;
+const INPUT = SIZE.rows - 1;
+
+function event(seq: number, over: Partial<Activity> & Pick<Activity, "type" | "data">): Activity {
+  return { seq, cardId: 3, actorId: RUNNER, createdAt: NOW - MINUTE, ...over } as Activity;
+}
+
+/**
+ * A card's record as a run leaves it: the owner's line, the agent's text turns and its tool
+ * summary, and the events between them — the whole of what the conversation draws.
+ */
+function exchange(): CardDetail {
+  return {
+    ...(CARDS[2] as Card),
+    activity: [
+      event(1, { type: "card_moved", data: { from: "spec", to: "code" }, actorId: ME }),
+      event(2, { type: "claimed", data: { ttlSeconds: 120, expiresAt: NOW + MINUTE } }),
+      event(3, {
+        type: "comment",
+        data: { text: "reading the spec\nand the repository's CLAUDE.md\nthen the tests" },
+      }),
+      event(4, { type: "comment", data: { text: "ran 5 tools: Read ×2, Bash `bun test`" } }),
+      event(5, { type: "comment", data: { text: "check the frame test too" }, actorId: ME }),
+      event(6, {
+        type: "attention_requested",
+        // A note of two lines: 022's `why:` and what it is about. The second line is the reason,
+        // so the entry it renders is two lines of the conversation and not one.
+        data: {
+          to: ME,
+          note: "why: two frame cases are red\nand the third only passes alone",
+          moves: ["spec"],
+          raisedBy: RUNNER,
+          raisedAt: NOW,
+        },
+      }),
+      event(7, { type: "attention_resolved", data: { how: "answered" }, actorId: ME }),
+    ],
+  };
+}
+
+/** The running card, with more conversation than a 24-row terminal can show. */
+function talking(): CardDetail {
+  return {
+    ...(CARDS[2] as Card),
+    body: "## Goal\n\nOne screen that shows what is waiting on the owner.",
+    activity: Array.from({ length: 60 }, (_, i) => activity(i + 1, `step ${i + 1}`)),
+  };
+}
+
+function chat(cardId: number, over: Partial<Extract<View, { kind: "chat" }>> = {}): View {
+  return { kind: "chat", cardId, scroll: 0, text: "", ...over };
+}
+
+test("the conversation is the card's activity as an exchange, in the order it happened", () => {
+  const card = exchange();
+  const lines = conversationLines(card, MEMBERS);
+  const text = lines.map((line) => line.text);
+
+  // The order is the activity's: the move first, the resolved request last.
+  expect(text[0]).toContain("moved Spec → Code");
+  expect(text.at(-1)).toContain("resolved attention");
+
+  // Every event that is not somebody talking is the dim entry `activityLine` renders for it:
+  // one line for most, and both lines of a request whose note has two — the second is the
+  // reason, and cutting it would lose it.
+  const quiet = lines.filter((line) => line.quiet).map((line) => line.text);
+  expect(quiet).toEqual(
+    card.activity
+      .filter((e) => e.type !== "comment")
+      .flatMap((e) => activityLine(e, MEMBERS).split("\n")),
+  );
+  expect(quiet.length).toBe(5);
+  const asked = quiet.findIndex((line) => line.includes("why: two frame cases are red"));
+  expect(asked).toBeGreaterThanOrEqual(0);
+  expect(quiet[asked + 1]).toContain("> and the third only passes alone");
+
+  // The agent's three-line turn is three lines, attributed to it, every one of them marked
+  // the way `show` marks a body, and the three start in the same column.
+  const at = text.findIndex((line) => line.includes("reading the spec"));
+  const turn = text.slice(at, at + 3);
+  expect(turn[0]).toContain("runner");
+  expect(turn[0]).toEndWith("> reading the spec");
+  expect(turn[1]).toEndWith("> and the repository's CLAUDE.md");
+  expect(turn[2]).toEndWith("> then the tests");
+  expect(new Set(turn.map((line) => line.indexOf(">"))).size).toBe(1);
+  expect(lines.slice(at, at + 3).every((line) => !line.quiet)).toBe(true);
+  // The name is on the first line of the turn only: the rest are its text, under it.
+  expect(turn.filter((line) => line.includes("runner")).length).toBe(1);
+
+  // The tool summary is the comment it is, as it stands (012).
+  expect(text.some((line) => line.endsWith("> ran 5 tools: Read ×2, Bash `bun test`"))).toBe(true);
+
+  // The owner's line is one line of the exchange, attributed to her by the same name the
+  // record's own lines carry.
+  const mine = lines.filter((line) => !line.quiet && line.text.includes("simon"));
+  expect(mine.length).toBe(1);
+  expect(mine[0]?.text).toEndWith("> check the frame test too");
+
+  // A card that has not been read yet has no conversation to draw.
+  expect(conversationLines(null, MEMBERS)).toEqual([]);
+
+  // And the frame draws both lines of that request where the conversation goes, both dim.
+  const drawn = frame(state({ view: chat(3), detail: card }), SIZE, NOW);
+  const note = drawn.filter((line) =>
+    ["why: two frame cases are red", "and the third only passes alone"].some((part) =>
+      plain(line).includes(part),
+    ),
+  );
+  expect(note.length).toBe(2);
+  expect(note.every((line) => line.includes(`${ESC}[2m`))).toBe(true);
+});
+
+test("the chat frame is the header, the conversation, the listening line and the input", () => {
+  const open = state({ view: chat(3, { text: "how is it going" }), detail: talking() });
+  const lines = frame(open, SIZE, NOW);
+  const shown = lines.map(plain);
+
+  expect(lines.length).toBe(SIZE.rows);
+  // The header at the top, as `show` prints it — and not the body, which is one Tab away.
+  expect(shown[0]).toBe("#3 running now");
+  expect(shown[1]).toBe(`now:     ${status(CARDS[2] as Card, ME, MEMBERS, NOW)}`);
+  expect(shown.some((line) => line.includes("phase:   Code"))).toBe(true);
+  expect(shown.some((line) => line.includes("## Goal"))).toBe(false);
+
+  // The newest of the conversation is at the bottom of the middle; the oldest are the lines
+  // not shown.
+  expect(shown[LISTENING - 1]).toEndWith("> step 60");
+  expect(shown.some((line) => line.endsWith("> step 1"))).toBe(false);
+  expect(shown.some((line) => line.endsWith("> step 2"))).toBe(false);
+
+  // Then the line that says who is listening, then the input, with the caret the prompt draws.
+  expect(shown[LISTENING]).toBe(
+    `crew is listening · ${status(CARDS[2] as Card, ME, MEMBERS, NOW)}`,
+  );
+  expect(shown[INPUT]).toContain("how is it going");
+  expect(lines[INPUT]).toContain(`${ESC}[7m`);
+  expect(lines.every((line) => width(line) <= SIZE.columns)).toBe(true);
+
+  // The smallest terminal the screen draws on at all, with a header taller than the room left
+  // under it and a line longer than the width: still exactly as tall as the terminal, and
+  // still never wider — a row too many scrolls the screen on every redraw.
+  const small = { columns: MIN_COLUMNS, rows: MIN_ROWS };
+  const tight = frame(
+    state({
+      view: chat(1, { text: "x".repeat(200) }),
+      detail: { ...(CARDS[0] as Card), activity: [] },
+    }),
+    small,
+    NOW,
+  );
+  expect(tight.length).toBe(small.rows);
+  expect(tight.every((line) => width(line) <= small.columns)).toBe(true);
+  // The input keeps the bottom row whatever the header did above it.
+  expect(tight[small.rows - 1]).toContain(`${ESC}[7m`);
+});
+
+test("a note of two lines is two lines of the header, as show prints it", () => {
+  // `cardHeader` returns a `note:` element with a line break inside it, so drawing the array as
+  // lines drew the break as a literal `\n` — and cut the `why:` away when the first line and
+  // the second together ran past the terminal.
+  const open = state({
+    view: chat(1),
+    detail: { ...(CARDS[0] as Card), activity: talking().activity },
+  });
+  const lines = frame(open, SIZE, NOW);
+  const shown = lines.map(plain);
+
+  // The header occupies the lines `show` gives it, one for one, and no line carries a break.
+  const head = cardHeader(CARDS[0] as Card, MEMBERS, ME, NOW).flatMap((line) => line.split("\n"));
+  expect(head.length).toBe(9);
+  expect(shown.slice(0, head.length)).toEqual(head);
+  expect(shown.every((line) => !line.includes("\\n"))).toBe(true);
+
+  // And the row budget counts them: the conversation fills what is left, newest at the bottom.
+  expect(lines.length).toBe(SIZE.rows);
+  expect(shown[LISTENING - 1]).toEndWith("> step 60");
+
+  // On the narrowest terminal the screen draws on, the two lines are still two, each cut to
+  // the terminal — rather than the second being lost with the cut of the first.
+  const narrow = { columns: MIN_COLUMNS, rows: SIZE.rows };
+  const tight = frame(open, narrow, NOW).map(plain);
+  expect(tight.some((line) => line.startsWith("note:    why: the pull request"))).toBe(true);
+  expect(tight.some((line) => line.trimStart().startsWith("> and the branch is behind"))).toBe(
+    true,
+  );
+  expect(tight.every((line) => width(line) <= narrow.columns)).toBe(true);
+});
+
+test("the chat scrolls back to the first line of the conversation, and no further", () => {
+  const open = state({ view: chat(3, { scroll: 500 }), detail: talking() });
+  const clamped = clampScroll(open, SIZE);
+  const drawn = frame(clamped, SIZE, NOW).map(plain);
+
+  // As far back as the conversation goes: its first line, under the header.
+  expect(drawn[0]).toBe("#3 running now");
+  expect(drawn.some((line) => line.endsWith("> step 1"))).toBe(true);
+  expect(drawn.some((line) => line.endsWith("> step 60"))).toBe(false);
+  // A full window: no blank row left by a scroll that ran past the top.
+  expect(drawn[LISTENING - 1]).not.toBe("");
+  // Clamping what is already within the window changes nothing.
+  expect(clampScroll(clamped, SIZE)).toBe(clamped);
+
+  // And one line forward moves the window rather than being swallowed by slack.
+  const scroll = (clamped.view as Extract<View, { kind: "chat" }>).scroll - 1;
+  const stepped = frame({ ...open, view: chat(3, { scroll }) }, SIZE, NOW).map(plain);
+  expect(stepped.some((line) => line.endsWith("> step 1"))).toBe(false);
+});
+
+test("the listening line says who is listening, or the open question, or the daemon's word", () => {
+  const line = (over: Partial<State>) => plain(frame(state(over), SIZE, NOW)[LISTENING] as string);
+  const of = (card: Card, activity: Activity[] = []): CardDetail => ({ ...card, activity });
+
+  // A live claim: the crew hears what is typed, and since when it has been working.
+  expect(line({ view: chat(3), detail: of(CARDS[2] as Card) })).toBe(
+    `crew is listening · ${status(CARDS[2] as Card, ME, MEMBERS, NOW)}`,
+  );
+
+  // No run: nothing is listening now, and the next run reads the card.
+  const quiet = "no run is live; the next run reads what you write here";
+  expect(line({ view: chat(5), detail: of(CARDS[4] as Card) })).toBe(quiet);
+  // A claim that lapsed is no run either.
+  expect(line({ view: chat(4), detail: of(CARDS[3] as Card) })).toBe(quiet);
+
+  // An open question is the line instead: its first line, 022's `why:` and all, and the two
+  // words the input understands while it is open.
+  const asked = line({ view: chat(1), detail: of(CARDS[0] as Card) });
+  expect(asked).toBe(`${firstLine(CONFLICT.note)} · allow · deny · or write`);
+  expect(asked).toContain("why: the pull request conflicts with main");
+  expect(asked).not.toContain("and the branch is behind");
+
+  // And what the daemon said last takes the line: a refused call is read where the owner is
+  // looking, rather than under the board.
+  expect(line({ view: chat(3), detail: of(CARDS[2] as Card), message: "the daemon said no" })).toBe(
+    "the daemon said no",
+  );
+});
+
 test("the card view is what show prints, scrolled to the newest", () => {
-  const open = state({ view: { kind: "card", cardId: 1, scroll: 0 }, detail: detail() });
+  const open = state({ view: { kind: "card", cardId: 1, scroll: 0, text: "" }, detail: detail() });
   const lines = frame(open, { columns: 100, rows: 24 }, NOW).map(plain);
 
   // The newest of the feed is on screen; the oldest, thirty entries back, is not.
@@ -367,7 +660,7 @@ test("the card view is what show prints, scrolled to the newest", () => {
 
   // Scrolled back far enough, the header and the body, marked line by line, are on screen.
   const top = frame(
-    { ...open, view: { kind: "card", cardId: 1, scroll: 25 } },
+    { ...open, view: { kind: "card", cardId: 1, scroll: 25, text: "" } },
     { columns: 100, rows: 24 },
     NOW,
   ).map(plain);
@@ -379,7 +672,10 @@ test("the card view is what show prints, scrolled to the newest", () => {
 
 test("the card view stops with the card's first line at the top of the window", () => {
   const size = { columns: 100, rows: 24 };
-  const open = state({ view: { kind: "card", cardId: 1, scroll: 500 }, detail: detail() });
+  const open = state({
+    view: { kind: "card", cardId: 1, scroll: 500, text: "" },
+    detail: detail(),
+  });
   const lines = cardLines(open, NOW);
 
   // As far back as the card goes: one screenful of it, starting at its first line.
@@ -388,6 +684,7 @@ test("the card view stops with the card's first line at the top of the window", 
     kind: "card",
     cardId: 1,
     scroll: lines.length - (size.rows - 1),
+    text: "",
   });
 
   const drawn = frame(clamped, size, NOW).map(plain);
@@ -398,9 +695,11 @@ test("the card view stops with the card's first line at the top of the window", 
 
   // One line back down moves the window, rather than being swallowed by slack.
   const scroll = lines.length - (size.rows - 1) - 1;
-  const stepped = frame({ ...open, view: { kind: "card", cardId: 1, scroll } }, size, NOW).map(
-    plain,
-  );
+  const stepped = frame(
+    { ...open, view: { kind: "card", cardId: 1, scroll, text: "" } },
+    size,
+    NOW,
+  ).map(plain);
   expect(stepped[0]).not.toBe("#1 waiting on me");
   // Clamping what is already within the window changes nothing.
   expect(clampScroll(clamped, size)).toBe(clamped);
