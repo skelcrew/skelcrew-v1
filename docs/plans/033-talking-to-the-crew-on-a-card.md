@@ -191,3 +191,92 @@ The reviewer's seven findings, in four slices, each a commit that passes `bun ru
 Files expected: `packages/cli/src/board/keys.ts`, `frame.ts`, `board.ts`, `state.ts`, and their
 tests; `docs/specs/033-talking-to-the-crew-on-a-card.md` (the orchestrator's amendments, as they
 stand in the tree).
+
+### Red, then green, per finding
+
+**1. The board's sentence took the chat's listening line** — `7d778c0`. Red through the loop,
+`board.test.ts`, "a sentence said on the board does not take the chat's listening line": `a` on
+card 2's row, then Enter.
+
+```
+expect(listening(terminal)).toContain("crew is listening")
+Expected to contain: "crew is listening"
+Received: "<dim>#2 has no open question<reset><erase>"
+```
+
+and in `keys.test.ts`, "the screen's sentence stays behind on the board, and does not outlast a
+key": `expect(openChat(said).message).toBe("")` → `Received: "#7 has no open question"`.
+
+Green: `entersChat` clears `message` on both ways in — `Enter` from the board and `Tab` from the
+card view — and `pressChat` clears it on any key at all, so a refusal holds the line until the
+owner does something and then gives it back.
+
+**2. The header was not what `show` prints** — `96d655b`. Red in `frame.test.ts`, "a note of two
+lines is two lines of the header, as show prints it":
+
+```
+expect(shown.slice(0, head.length)).toEqual(head)
+-   "note:    why: the pull request conflicts with main",
+-   "         > and the branch is behind",
++   "note:    why: the pull request conflicts with main\n         > and the branch is behind",
+```
+
+Green: `chatShape` splits `cardHeader`'s entries on the break before slicing, as the reviewer
+asked, so the header occupies the lines `show` gives it and the row budget counts them. The test
+also pins the narrowest terminal the screen draws on, where the cut of the first line used to
+take the second's text with it.
+
+**3. `Tab` threw away the half-written line** — `81c7112`. Red in `keys.test.ts`, "Tab keeps the
+half-written line, on the card the chat is on":
+
+```
+expect(back.view).toEqual({ kind: "chat", cardId: 7, scroll: 0, text: "half a " })
+-   "text": "half a ",
++   "text": "",
+```
+
+Green: the card view carries the line. **Where the text is kept, and why**: the spec left it open
+("the card view carrying it, or the state holding a draft per card id"). The card view is exactly
+as long lived as the flip, so there is nothing to invalidate — a draft held in the state would
+need clearing when the chat leaves for the board, or criterion 2's "`Enter` … with empty text"
+would fail the next time that card was opened. The card view holds the line and never draws it;
+the body is what the flip is for. `pressCard` now takes the view rather than its `cardId` and
+`scroll`, which is what lets the flip read the line. The card view's literals in `frame.test.ts`,
+`keys.test.ts` and `state.test.ts` gained `text: ""`; no assertion was dropped or loosened.
+
+**4. `turnLines`'s comment** — `6a408b1`. A turn keeps all its lines, each cut to the terminal by
+the frame like every other line. Comment only.
+
+**5. The help line for `esc` and `q`** — `6a408b1`. Red in `frame.test.ts`, "the keys screen says
+Enter opens the chat, and names the key that flips", which gained two assertions:
+
+```
+expect(esc).not.toContain("q")
+Expected to not contain: "q"
+Received: "  esc, q       back to the board"
+```
+
+Green: `esc  back to the board`, and `q  quit; in the card view, back to the board`.
+
+**6. A paste beginning with a newline was swallowed** — `6a408b1`. Red through the loop,
+`board.test.ts`, "a chunk that begins with a newline is the line after it, not nothing":
+`timed out waiting for the line` — `do the thing` never reached the input. Green: the chunk ends
+only when the Enter sent a line (`typed.length > 0`), so the tail of a paste that did send one is
+still dropped, as 027's finding says.
+
+**7. Criterion 5's fixture had a single-line note** — `96d655b`. The conversation fixture's
+request now carries `why: two frame cases are red` and a second line, the test asserts the quiet
+lines against `activityLine`'s own split, and the frame draws both of them dim. **This one had no
+red**: `conversationLines` already split an entry on its breaks, which is why the reviewer called
+the behaviour unpinned rather than wrong. To establish that the new assertions pin it, the split
+was taken out of `conversationLines` by hand and the test failed (`Expected - 2 / Received + 4`,
+the two lines arriving as one string); the change was reverted and none of it is in any commit.
+
+### Checks run
+
+`bun run check` after each of the four commits: Biome (104 files), `tsc` for all three packages,
+`bun test`. Green every time — **901**, **902**, **903**, **904** pass, 0 fail, 35 files, five
+new tests over the 899 this round started from. `bun run fix` once, for Biome's formatting of a
+test literal. `bun run check:harness` was not run again: it spawns the pinned coding agent and
+covers the playbooks and the runner's allowlist, and this round changes neither. The daemon
+flake recorded above did not recur in this round's four full runs.
