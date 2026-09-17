@@ -23,6 +23,7 @@ import { type Activity, type Client, worktreesDir } from "@skelcrew/shared";
 import { type Command, START_A_DAEMON } from "../commands/command";
 import { formatId } from "../render";
 import {
+  ARROW_KEYS,
   BACKSPACE_KEYS,
   CURSOR_HOME,
   ENTER_ALTERNATE_SCREEN,
@@ -152,19 +153,46 @@ function textOf(chunk: unknown): string {
 }
 
 /**
- * The keys in what was typed. A chunk that opens with the escape character and carries more is
- * a sequence — an arrow key, a mouse report — and this screen uses none of them, by decision;
- * the escape character alone is Esc.
+ * The keys in what was typed. The escape character is read as a sequence wherever in the read
+ * it falls, not only at the start of one: Up and Down are keys (031), every other sequence —
+ * Left, Page Up, a mouse report — is one this screen uses for nothing and is dropped along with
+ * the rest of the read, and the escape character with nothing after it is Esc.
+ *
+ * Wherever it falls, because one read is not one key. The terminal sends each press as its own
+ * three bytes and a slow link joins them: holding Down is Down's sequence twice over, and a
+ * letter typed just before Down is that letter and then the sequence. Reading the sequence only
+ * at the start of a read would make the second case three keys — the letter, `[` and `B` — and
+ * `[B` would land in whatever the owner was typing (031, of the prompt: "neither becomes text").
+ *
+ * Exported for its test: what each chunk decodes to is a table, and an absence — Left moving
+ * nothing — reads the same on the screen whether it was dropped or was never a key at all.
  */
-function keysOf(chunk: string): string[] {
-  if (chunk.length === 0) return [];
-  if (chunk.startsWith(ESCAPE_KEY)) return chunk.length === 1 ? ["escape"] : [];
+export function keysOf(chunk: string): string[] {
   const keys: string[] = [];
-  for (const char of chunk) {
+  // By code point, as reading the characters always has: an emoji is one key, not two halves.
+  const chars = [...chunk];
+  let at = 0;
+  while (at < chars.length) {
+    const char = chars[at] as string;
+    if (char === ESCAPE_KEY) {
+      const rest = chars.slice(at).join("");
+      if (rest.length === 1) {
+        keys.push("escape");
+        return keys;
+      }
+      const arrow = ARROW_KEYS.find(([sequence]) => rest.startsWith(sequence));
+      // A sequence with no key drops itself and everything after it: the screen cannot know
+      // where an unknown one ends, and reading its tail as keys would act on bytes.
+      if (arrow === undefined) return keys;
+      keys.push(arrow[1]);
+      at += [...arrow[0]].length;
+      continue;
+    }
     if (char === INTERRUPT_KEY) keys.push("ctrl-c");
     else if (char === "\r" || char === "\n") keys.push("enter");
     else if (BACKSPACE_KEYS.includes(char)) keys.push("backspace");
     else if (char >= " ") keys.push(char);
+    at += 1;
   }
   return keys;
 }

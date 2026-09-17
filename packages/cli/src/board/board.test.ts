@@ -23,7 +23,7 @@ import { comment as commentCommand } from "../commands/comment";
 import { mv as mvCommand } from "../commands/mv";
 import { resolve as resolveCommand } from "../commands/resolve";
 import { CURSOR_HOME } from "./ansi";
-import { type BoardDeps, type KeyInput, runBoard, type Screen } from "./board";
+import { type BoardDeps, type KeyInput, keysOf, runBoard, type Screen } from "./board";
 import type { Action } from "./keys";
 
 const ME: Member = { id: 1, name: "simon", kind: "human", createdAt: 1 };
@@ -266,6 +266,23 @@ function fakeTerminal(opened = { columns: 100, rows: 24 }): FakeTerminal {
 const ALTERNATE_SCREEN_ON = "\u001b[?1049h";
 const ALTERNATE_SCREEN_OFF = "\u001b[?1049l";
 
+const REVERSE_ON = "\u001b[7m";
+const REVERSE_OFF = "\u001b[0m";
+
+/**
+ * Where the cursor is in a frame: the one line drawn in reverse video, as its place in the
+ * frame and as the text of it.
+ */
+function cursor(frame: string): { line: number; text: string } {
+  const lines = frame.split("\r\n");
+  const line = lines.findIndex((each) => each.includes(REVERSE_ON));
+  if (line < 0) return { line, text: "" };
+  const drawn = lines[line] as string;
+  const start = drawn.indexOf(REVERSE_ON) + REVERSE_ON.length;
+  const end = drawn.indexOf(REVERSE_OFF, start);
+  return { line, text: (end < 0 ? drawn.slice(start) : drawn.slice(start, end)).trimEnd() };
+}
+
 async function until(what: string, ready: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 500; attempt += 1) {
     if (ready()) return;
@@ -371,6 +388,57 @@ test("a key moves the cursor and an event redraws the row it happened on", async
   expect(terminal.written()).not.toContain("and the branch is pushed");
 
   terminal.type(new TextEncoder().encode("q"));
+  await running;
+});
+
+test("the arrow keys are read, and every other escape sequence is still dropped", () => {
+  // 031's criterion 2: the decoder, as the four sequences a terminal sends for Up and Down —
+  // `[` from a terminal in the usual mode, `O` from one in application cursor mode.
+  for (const [chunk, keys] of [
+    ["\u001b[B", ["down"]],
+    ["\u001b[A", ["up"]],
+    ["\u001bOB", ["down"]],
+    ["\u001bOA", ["up"]],
+    // The escape character alone is still Esc, and no other sequence is a key.
+    ["\u001b", ["escape"]],
+    ["\u001b[C", []],
+    ["\u001b[5~", []],
+    // A fast repeat arrives as one read: each press is its own sequence.
+    ["\u001b[B\u001b[B", ["down", "down"]],
+    // A key typed just before an arrow lands in the same read on a slow link. The sequence is
+    // read where it stands rather than after a character, so its bytes never become text.
+    ["a\u001b[B", ["a", "down"]],
+    ["\u001b[Ba\u001b[B", ["down", "a", "down"]],
+    // The rule for a sequence the screen does not use is the same wherever it starts: it drops
+    // itself and the rest of the read.
+    ["a\u001b[C", ["a"]],
+    // And the escape character with nothing after it is Esc, wherever in the read it falls.
+    ["a\u001b", ["a", "escape"]],
+  ] as const) {
+    expect(keysOf(chunk)).toEqual([...keys]);
+  }
+});
+
+test("Down moves the cursor one row down", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  const drawn = () => cursor(terminal.frames().at(-1) ?? "");
+  // The cursor opens on the first row, the queue's: the card waiting on the owner, with the
+  // first line of its note after the title.
+  const before = drawn();
+  expect(before.text).toEndWith("why: ready");
+
+  terminal.type("\u001b[B");
+  await until("the cursor to move", () => drawn().line !== before.line);
+  // One row down is the board half's first row, which is that same card's own row: the row
+  // `ls` prints, which ends in the title.
+  const after = drawn();
+  expect(after.line).toBeGreaterThan(before.line);
+  expect(after.text).toEndWith("the board on one screen");
+
+  terminal.type("q");
   await running;
 });
 
@@ -662,6 +730,31 @@ test("a pasted chunk stops at the prompt's Enter, rather than acting on the rest
 
   terminal.type("q");
   await running;
+});
+
+test("a letter and an arrow in one read leave the prompt's text as the letter", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const line = () => (terminal.frames().at(-1) ?? "").split("\r\n").at(-1) ?? "";
+
+  // The comment prompt on the card under the cursor, then one read carrying a letter and Down
+  // — what a slow link delivers when the owner types and presses Down in quick succession.
+  terminal.type("c");
+  await until("the prompt", () => line().includes("comment on"));
+  terminal.type("a\u001b[B");
+  await until("the letter", () => line().includes("comment on #1: a"));
+  // Long enough for the rest of the read to have landed in the text, if it were going to.
+  await Bun.sleep(20);
+
+  expect(line()).toContain("comment on #1: a");
+  expect(line()).not.toContain("[B");
+
+  terminal.type("\u001b");
+  terminal.type("q");
+  await running;
+  // Nothing was sent: the prompt was cancelled, not answered.
+  expect(fake.calls.filter(([method]) => method === "comment")).toEqual([]);
 });
 
 test("o opens a shell in the card's worktree and comes back to the screen", async () => {

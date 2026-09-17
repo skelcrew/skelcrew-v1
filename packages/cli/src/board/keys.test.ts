@@ -75,6 +75,30 @@ test("j and k move through the queue rows and then the board rows, and stop at t
   expect(walk(["j", "G"])).toEqual([1, 4]);
 });
 
+test("Down is j and Up is k, on the board and in the card view", () => {
+  // 031: the arrows move the cursor, and move it nowhere j and k cannot go. The card view is
+  // opened and then scrolled to its first line, so both ends of both lists are pressed.
+  const open = press(state({ cursor: 2, detail: detail() }), "enter").state;
+  let scrolled = open;
+  for (let i = 0; i < 200; i += 1) scrolled = press(scrolled, "k").state;
+
+  for (const each of [
+    state(),
+    state({ cursor: 4 }),
+    state({ cards: [], requests: [] }),
+    open,
+    scrolled,
+  ]) {
+    expect(press(each, "down")).toEqual(press(each, "j"));
+    expect(press(each, "up")).toEqual(press(each, "k"));
+  }
+
+  // And through the whole list, the arrows walk exactly where j and k walk.
+  expect(walk(["down", "down", "down", "down", "down", "down"])).toEqual([1, 2, 3, 4, 4, 4]);
+  expect(walk(["up"])).toEqual([0]);
+  expect(walk(["G", "up", "up", "up", "up", "up"])).toEqual([4, 3, 2, 1, 0, 0]);
+});
+
 test("Enter opens the card under the cursor, and q or Esc comes back", () => {
   // A queue row opens its request's card; a board row opens the card it is.
   for (const [cursor, cardId] of [
@@ -284,6 +308,16 @@ test("Enter sends what was typed, an empty deny sends deny, and Esc sends nothin
     expect(cancelled.action).toBeUndefined();
     expect(cancelled.state.prompt).toBeNull();
     expect(quiet(cancelled.state)).toEqual(open);
+  }
+});
+
+test("the prompt ignores Down and Up, and neither becomes text", () => {
+  const typed = typing(asking(), ["c", ..."a note"]);
+  expect(typed.state.prompt).toEqual({ kind: "comment", cardId: 7, text: "a note" });
+  for (const key of ["down", "up"]) {
+    const pressed = press(typed.state, key);
+    expect(pressed.action).toBeUndefined();
+    expect(pressed.state).toEqual(typed.state);
   }
 });
 
