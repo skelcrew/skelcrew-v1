@@ -42,7 +42,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 26 | 029 The daemon's wiring is tested | landed, PR #24 — two review rounds; the first found the test helper leaking the shell's settings |
 | 27 | 030 The screen starts the daemon | landed, PR #28 — four review rounds, the fourth by the owner's leave; a Critical in the idle rule |
 | 28 | 031 The arrow keys move the cursor | landed, PR #29 — two review rounds; the decoder read sequences only at the start of a read |
-| 29 | 032 A card is added, started and archived from the screen | specified; the milestone's first slice, editing and the feed view follow |
+| 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
 | | 005 | dropped |
 
@@ -1285,6 +1285,47 @@ Constraints carried from 026: every key is one CLI call; no colour, no mouse, no
 the frame and the reducer stay pure and tested without a terminal. The display-width finding
 (the status column pads in UTF-16 units) should be closed by 027 or here, whichever touches the
 row first.
+
+Landed as PR #30. `n` files a card by title, `s` starts the selected card (Idea to Spec, Spec
+to Code; on Code, PR and Done it says who moves the card instead), `x` archives it after a
+confirmation through the prompt, since there is no unarchive. Each is the call the CLI
+command makes. A card filed from a terminal while the screen is open appears on its event.
+
+**Workflow finding, the spec's, for the third time.** The spec said the screen never applied a
+created-card event, "so a card filed while the screen is open is not in the board until the
+screen is reopened". False: 026's loop reads back any card an event names that the board
+lacks. The implementer found the guard test green before writing anything. 026's landing
+recorded the rule — every "today" sentence names the command or test that shows it — and 032
+was written the same day without following it. The rule now lives in `/spec` itself
+(`.claude/skills/spec/SKILL.md`, step 1), not only in this file.
+
+Two review rounds. Round 1's Important was history, not code: one commit for three separable
+keys, against the slices rule added to `AGENTS.md` the day before; rebuilt as one commit per
+key, each green on its own, which round 2 and the verifier confirmed by running the check on
+every commit in a fresh clone. Three Minors taken with it: a table row for `s`, the headline
+key, which had no coverage above the reducer; the phase table for `s` made total, so a sixth
+phase is a compile error rather than a silent forward move; the archive question captures its
+card's title and closes if the card leaves the board. Round 2 approved after mutating every
+new assertion and driving the keys against a real daemon; its one real Minor, the card view
+surviving under the keys screen after its card was archived, was fixed post-approval and
+confirmed by the verifier.
+
+**Carried findings.**
+
+- **The keys screen does not fit below eighteen rows.** Fifteen key lines, no scroll; at
+  fourteen rows `x`, `o`, `?` and `q` are cut, and the screen accepts twelve. Pre-existing
+  shape made worse by three lines. Two columns, or a shorter line set, or a scroll; the next
+  screen spec owes it, and 033 adds `Tab` and `Enter` lines.
+- **The two wall-clock sweep tests flaked again**, once each, during 032's fix round on a
+  loaded machine (two other develop sessions were running). Third sighting after 028 and 029.
+  A small spec of its own: the tests wait `lease + 20 s` for a 5-second sweep and a 10-second
+  lease, and the daemon under test is one of several processes on the box.
+- **The `s` table row selects the Idea card positionally** with `G`; a fixture card with a
+  larger id would make the row test that card instead, loudly, since the argv would mismatch.
+- **Only the archive prompt closes when its card leaves the board**; 027's `deny`, `back` and
+  `comment` prompts still stand and Enter sends a call the daemon refuses. Pre-existing shape.
+- **The status column still pads in UTF-16 units.** Carried since 024. 032 did not touch the
+  row either. Next screen spec owes it.
 
 ## 033 — Talking to the crew on a card
 
