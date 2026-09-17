@@ -312,7 +312,9 @@ test("the keys screen says Enter opens the chat, and names the key that flips", 
   // as what it is, the card view's way back and the board's way out.
   const esc = shown.find((line) => line.trimStart().startsWith("esc"));
   expect(esc).toContain("back to the board");
-  expect(esc).not.toContain("q");
+  // `esc` alone in the key column — not `esc, q`, which is what it said before the chat had a
+  // letter for every key. The line's words are its own business; its key column is not.
+  expect(esc).not.toMatch(/^\s*esc,/);
   const quits = shown.find((line) => line.trimStart().startsWith("q "));
   expect(quits).toContain("quit");
   expect(quits).toContain("card view");

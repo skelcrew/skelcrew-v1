@@ -141,8 +141,14 @@ assertion.
 12. "x archives the card, and the card view closes when it was the open card"
 13. "a card archived under the open question takes the question with it"
 
-`frame.test.ts` builds its states by hand, so no test there changed; the colour test gained the
-chat as a fifth view.
+`frame.test.ts` builds its states by hand rather than reaching the card view through `Enter`, so
+none of its tests changed for that reason; the colour test gained the chat as a fifth view.
+(Corrected after review round 2, which found this sentence overstated: `81c7112`, the fix that
+made `Tab` keep the half-written line, added `text: ""` to six card-view literals in four of its
+tests — "the message is the bottom line…", "no frame writes a colour", "the card view is what
+show prints…" and "the card view stops with the card's first line at the top of the window" —
+and to one in `state.test.ts`'s "a view open on a card that is archived closes to the board".
+Every one of them is a state literal gaining a field; no assertion changed.)
 
 ## What the spec says about today's code that is no longer true
 
@@ -291,3 +297,87 @@ skelcrew daemon left behind by a stalled run was found and killed). Every one of
 its file was run alone, in seconds. The last full run, on the final tree, was **904 pass, 0 fail,
 exit 0, 100 s**. Nothing on this branch touches `packages/daemon` or `packages/shared`: both are
 byte-identical to `main`, and `packages/cli` alone is 159 pass in 7 s.
+
+## Fix round 2
+
+Plan, four slices, each green under `bun run check`:
+
+1. The critical finding — a pasted tab in the chat flips the view and the rest of the read runs
+   as card-view keys. Red through the loop with the reviewer's chunk, then end the chunk when
+   the chat flips away. The orchestrator's uncommitted amendment to criterion 5 goes in this
+   commit.
+2. The keys screen gains a chat section, and the `j, k` line is qualified.
+3. `frame.test.ts:315`'s brittle `not.toContain("q")`.
+4. The run record's criterion-9 list, and this section.
+
+3 and 4 landed as one commit in the end: neither changes behaviour or adds a test.
+
+Files: `packages/cli/src/board/board.ts`, `packages/cli/src/board/board.test.ts`,
+`packages/cli/src/board/frame.ts`, `packages/cli/src/board/frame.test.ts`,
+`docs/specs/033-talking-to-the-crew-on-a-card.md`, this record.
+
+### Red, then green, per finding
+
+**1. A pasted tab ran the rest of the read as card-view keys** — `4474030`. Red through the
+loop, `board.test.ts`, "a pasted tab in the chat flips the view, and the rest of the read is not
+keys", with the reviewer's own chunk `name<TAB>age` on card 1, which has an open question:
+
+```
+expect(calls("resolveAttention")).toEqual([])
+- []
++ [ [ "resolveAttention", { "id": 1, "text": "allow" } ] ]
+```
+
+Green: one line beside the two that already end a chunk —
+`if (before.kind === "chat" && state.view.kind !== "chat") return;` — so leaving the chat
+mid-read drops what follows, whichever exit it took, the way the prompt's close already does.
+The test's second half pastes `!<TAB>deny it` and asserts no prompt opened.
+
+**The card view flipping *into* the chat needs no guard**, which the orchestrator asked to be
+thought about and said. A chunk pressed on the card view with a tab in it flips to the chat and
+the letters after it become the line being written. That is text arriving where text belongs: no
+call is made, nothing is answered, and the owner sees every character on the input line and can
+erase it. The hazard the guard closes is the other direction — text becoming keys — and it does
+not exist here.
+
+**Esc inside a chunk was already closed, one layer lower.** The sibling test, "a pasted Esc in
+the chat acts on nothing after it either", was green before the guard and after it: `keysOf`
+drops an escape character together with everything following it whenever the sequence is not one
+the screen knows (026), so `<ESC>age` in the chat is not Esc-then-three-letters — it is nothing
+at all, and the line keeps what it held. Written as a pin rather than as red, and honest about
+which layer holds it: the guard covers Esc if that ever changes.
+
+**2. The keys screen described the board only** — `baa1757`. Red in `frame.test.ts`, "the keys
+screen has a chat section, drawn on a 24-row screen":
+
+```
+expect(shown.some((line) => line.includes("in the chat"))).toBe(true)
+Expected: true
+Received: false
+```
+
+Green: four lines at the end of `KEYS` — `enter, esc`, `↑, ↓, tab`, `allow, deny`, under a line
+saying every letter is text there — and the `j, k` line now reads `down and up; in a card,
+scroll; in the chat, the arrows scroll`. Four lines and not six because the list has to fit:
+with them the content is exactly 23 lines, which is what a 24-row terminal leaves above the
+bottom line, and the test asserts the last of them is on the screen at 100×24. `?` stays a
+printable character in the chat, as the orchestrator directed.
+
+**3. `expect(esc).not.toContain("q")` was brittle** — it fails for any sentence with a `q` in
+it, while what it means is that `esc` is alone in the key column. Now `not.toMatch(/^\s*esc,/)`.
+**No red**: the assertion pins what the line already says. To establish it still catches the
+regression it was written for, `KEYS`'s `esc` line was put back to `"  esc, q       back to the
+board"` by hand and the test failed (`Received: "  esc, q       back to the board"`); the change
+was reverted and is in no commit.
+
+**4. The criterion-9 section overstated `frame.test.ts`** — corrected above, with the four tests
+and the `state.test.ts` one named.
+
+### Checks run
+
+`bun run check` after each commit: Biome (104 files), `tsc` for all three packages, `bun test`.
+Green every time — **906** pass after the first, **907** after the second and again after the
+third, 0 fail, 35 files; three new tests over the 904 this round started from, the third commit
+adding none. No `bun run fix` was needed.
+`bun run check:harness` was not run: it spawns the pinned coding agent and covers the playbooks
+and the runner's fixed allowlist, and this round changes neither.

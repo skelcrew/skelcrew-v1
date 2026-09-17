@@ -1192,9 +1192,9 @@ test("a pasted Esc in the chat acts on nothing after it either", async () => {
   terminal.type("news");
   await until("the line", () => input(terminal).includes("news"));
 
-  // The chat's other exit. An escape character with more after it is a sequence this screen
-  // uses for nothing, so the read is dropped where it starts (026) — before it, the line is
-  // whole, and after it nothing acts.
+  // Esc is the chat's other way out, and pasted mid-read it does not even get that far: an
+  // escape character with more after it is a sequence this screen uses for nothing, so the
+  // read is dropped where it starts (026). The line keeps what it held, and nothing acts.
   terminal.type("\u001bage");
   await Bun.sleep(20);
 
