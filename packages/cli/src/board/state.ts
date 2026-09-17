@@ -31,7 +31,9 @@ export type Prompt =
   | { kind: "deny"; cardId: number; text: string }
   /** `phase` is fixed when the prompt opens: the move the owner was told about is the one sent. */
   | { kind: "back"; cardId: number; phase: Phase; text: string }
-  | { kind: "comment"; cardId: number; text: string };
+  | { kind: "comment"; cardId: number; text: string }
+  /** A new card's title. The one prompt about no card in particular (032). */
+  | { kind: "add"; text: string };
 
 export interface State {
   /** The member the screen is rendered for: whoever the CLI connected as. */

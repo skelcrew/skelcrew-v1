@@ -1,7 +1,8 @@
 /**
- * 026's criterion 8 and 027's criteria 5, 6 and 7: the terminal loop over injected streams —
- * no real terminal, no pty, no real shell — and the table of every action the keys yield
- * against the calls the CLI's own commands make, which replaces 026's tripwire.
+ * 026's criterion 8, 027's criteria 5, 6 and 7, and 032's criteria 5, 6 and 7: the terminal
+ * loop over injected streams — no real terminal, no pty, no real shell — and the table of every
+ * action the keys yield against the calls the CLI's own commands make, which replaces 026's
+ * tripwire.
  */
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -18,11 +19,12 @@ import {
   type MethodName,
   RpcError,
 } from "@skelcrew/shared";
+import { add as addCommand } from "../commands/add";
 import type { Args, Command, Context } from "../commands/command";
 import { comment as commentCommand } from "../commands/comment";
 import { mv as mvCommand } from "../commands/mv";
 import { resolve as resolveCommand } from "../commands/resolve";
-import { CURSOR_HOME } from "./ansi";
+import { CURSOR_HOME, dim } from "./ansi";
 import { type BoardDeps, type KeyInput, keysOf, runBoard, type Screen } from "./board";
 import type { Action } from "./keys";
 
@@ -113,9 +115,11 @@ interface Fake {
 }
 
 /** The methods the screen may call that change a card; the rest are the reads it loads from. */
-const CHANGES: MethodName[] = ["resolveAttention", "moveCard", "comment"];
+const CHANGES: MethodName[] = ["resolveAttention", "moveCard", "comment", "createCard"];
 
-function fakeClient(cards: Card[] = CARDS): Fake {
+function fakeClient(initial: Card[] = CARDS): Fake {
+  // Every card the daemon has, including the ones filed while the screen is open.
+  const cards = [...initial];
   let handler: ((event: Activity) => void) | undefined;
   let lost = () => {};
   const closed = new Promise<void>((resolve) => {
@@ -127,7 +131,7 @@ function fakeClient(cards: Card[] = CARDS): Fake {
   const feed = new Map<number, Activity[]>(
     cards.map((each) => [each.id, [comment(each.id, "reading the spec")]]),
   );
-  const call = (async (method: MethodName, params: { id?: number }) => {
+  const call = (async (method: MethodName, params: { id?: number; title?: string }) => {
     calls.push([method, params]);
     if (refused !== undefined && CHANGES.includes(method)) {
       throw new RpcError({
@@ -156,6 +160,12 @@ function fakeClient(cards: Card[] = CARDS): Fake {
       case "resolveAttention":
       case "moveCard":
         return cards.find((each) => each.id === params.id) as Card;
+      case "createCard": {
+        const next = Math.max(0, ...cards.map((each) => each.id)) + 1;
+        const filed = card(next, params.title as string, { phase: "idea" });
+        cards.push(filed);
+        return filed;
+      }
       default:
         return null;
     }
@@ -684,6 +694,8 @@ test("every key sends exactly what its CLI command sends", async () => {
     // 032: `s` starts a card. `G` is the last row, which is the Idea card: `s` does nothing on
     // the one in Code, where the run's artefact ends the phase.
     { keys: ["G", "s"], command: mvCommand, argv: ["4", "spec"] },
+    // And `n` files one by title.
+    { keys: ["n", ..."a new card", "\r"], command: addCommand, argv: ["a new card"] },
   ];
 
   const sent: Call[] = [];
@@ -694,16 +706,17 @@ test("every key sends exactly what its CLI command sends", async () => {
     sent.push(...screen);
   }
 
-  // Nothing else: the keys that answer make these three calls and no fourth.
+  // Nothing else: the keys that answer make these four calls and no fifth.
   const methods = new Set(sent.map(([method]) => method));
-  expect([...methods].sort()).toEqual(["comment", "moveCard", "resolveAttention"]);
+  expect([...methods].sort()).toEqual(["comment", "createCard", "moveCard", "resolveAttention"]);
 
-  // And the table is every action the reducer can yield: a seventh key with a call of its own
+  // And the table is every action the reducer can yield: another key with a call of its own
   // does not typecheck until it has a row here.
   const covered: Record<Exclude<Action["kind"], "quit" | "open-shell">, boolean> = {
     resolve: table.some((row) => row.command === resolveCommand),
     move: table.some((row) => row.command === mvCommand),
     comment: table.some((row) => row.command === commentCommand),
+    add: table.some((row) => row.command === addCommand),
   };
   expect(Object.values(covered).every(Boolean)).toBe(true);
 });
@@ -940,6 +953,77 @@ test("the shell is $SHELL, and sh when the owner has none", async () => {
 
   shell.exit();
   await until("the screen again", () => terminal.frames().length > drawn);
+  terminal.type("q");
+  await running;
+});
+
+// --- 032: filing a card through the loop ---
+
+/** The `card_created` event the daemon records when a card is filed (`core.ts`). */
+function created(card: Card): Activity {
+  return {
+    seq: 8,
+    cardId: card.id,
+    actorId: ME.id,
+    type: "card_created",
+    data: { title: card.title },
+    createdAt: NOW,
+  };
+}
+
+/** The ids of the board half's rows, in the order they are drawn. */
+function boardIds(frame: string): string[] {
+  const lines = frame.split("\r\n");
+  // The board half starts after its own dim header; a card's title may say "board" too.
+  const header = lines.findIndex((line) => line.startsWith(dim("board")));
+  return lines
+    .slice(header + 1)
+    .map((line) => line.match(/#(\d+)/)?.[1])
+    .filter((id): id is string => id !== undefined);
+}
+
+test("a card filed while the screen is open appears on the board, in id order", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  expect(boardIds(terminal.frames().at(-1) as string)).toEqual(["1", "2"]);
+
+  // Filed in a terminal, not from the screen: the screen only ever sees the event.
+  const filed = await fake.client.call("createCard", { title: "filed in a terminal" });
+  fake.emit(created(filed));
+  await until("the new row", () =>
+    (terminal.frames().at(-1) ?? "").includes("filed in a terminal"),
+  );
+  expect(boardIds(terminal.frames().at(-1) as string)).toEqual(["1", "2", "3"]);
+
+  terminal.type("q");
+  await running;
+});
+
+test("n files a card and the status line names it; a refusal says why", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+
+  terminal.type("n");
+  terminal.type("a card from the screen");
+  terminal.type("\r");
+  await until("the status line", () => (terminal.frames().at(-1) ?? "").includes("added"));
+
+  expect(fake.calls.slice(read)).toEqual([["createCard", { title: "a card from the screen" }]]);
+  expect(terminal.frames().at(-1)).toContain("#3 a card from the screen added");
+
+  // Refused: the daemon's own sentence, and nothing filed.
+  fake.refuse("a title cannot be that long");
+  const before = fake.calls.length;
+  terminal.type("n");
+  terminal.type("another\r");
+  await until("the refusal", () =>
+    (terminal.frames().at(-1) ?? "").includes("a title cannot be that long"),
+  );
+  expect(fake.calls.slice(before)).toEqual([["createCard", { title: "another" }]]);
+
   terminal.type("q");
   await running;
 });

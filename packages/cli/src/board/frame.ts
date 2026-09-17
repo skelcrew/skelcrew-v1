@@ -125,6 +125,8 @@ function promptLabel(prompt: Prompt): string {
       return `${formatId(prompt.cardId)} back to ${phaseName(prompt.phase)}: `;
     case "comment":
       return `comment on ${formatId(prompt.cardId)}: `;
+    case "add":
+      return "new card: ";
   }
 }
 
@@ -235,6 +237,7 @@ const KEYS = [
   "  g, G         the first row and the last",
   "  enter        open the card under the cursor",
   "  esc, q       back to the board",
+  "  n            file a card, by title",
   "  s            start the card: Idea into Spec, Spec into Code",
   "  a            allow the open question",
   "  d            deny it, with a message",

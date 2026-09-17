@@ -20,6 +20,8 @@ export type Action =
   | { kind: "move"; id: number; phase: Phase; message?: string }
   /** `comment <id> <text>`. */
   | { kind: "comment"; id: number; text: string }
+  /** `add <title>`. */
+  | { kind: "add"; title: string }
   /** The owner's shell, in the card's worktree. No call. */
   | { kind: "open-shell"; id: number };
 
@@ -134,6 +136,8 @@ function sent(prompt: Prompt): Action {
         : { kind: "move", id: prompt.cardId, phase: prompt.phase, message: prompt.text };
     case "comment":
       return { kind: "comment", id: prompt.cardId, text: prompt.text };
+    case "add":
+      return { kind: "add", title: prompt.text };
   }
 }
 
@@ -149,6 +153,11 @@ function printable(key: string): boolean {
 function pressPrompt(state: State, prompt: Prompt, key: string): Pressed {
   switch (key) {
     case "enter":
+      // A card needs a title, and the prompt closes so that the sentence can be read: the
+      // prompt has the bottom line while it is open.
+      if (prompt.kind === "add" && prompt.text.length === 0) {
+        return says({ ...state, prompt: null }, "a card needs a title");
+      }
       return { state: { ...state, prompt: null }, action: sent(prompt) };
     case "escape":
       return { state: { ...state, prompt: null } };
@@ -183,6 +192,10 @@ function pressBoard(state: State, key: string): Pressed {
       return moveTo(state, 0);
     case "G":
       return moveTo(state, rowCount(state) - 1);
+    case "n":
+      // The board only: the card view is one card, and a card filed there has no row to land
+      // on. The cursor stays where it is; the new card arrives as an event, like anything else.
+      return opens(state, { kind: "add", text: "" });
     case "enter": {
       const cardId = cardIdAt(state, state.cursor);
       if (cardId === undefined) return { state };

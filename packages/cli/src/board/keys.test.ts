@@ -345,7 +345,36 @@ test("the same keys act on the card the card view shows", () => {
   expect(press(typed.state, "escape").state.view).toEqual(open.view);
 });
 
-// --- 032: starting a card ---
+// --- 032: filing a card, and starting one ---
+
+test("n opens the prompt for a title; Enter files it, an empty title says a card needs one", () => {
+  const board = asking();
+  const opened = press(board, "n");
+  expect(opened.action).toBeUndefined();
+  expect(opened.state.prompt).toEqual({ kind: "add", text: "" });
+
+  const filed = typing(board, ["n", ..."a new card", "enter"]);
+  expect(filed.action).toEqual({ kind: "add", title: "a new card" });
+  expect(filed.state.prompt).toBeNull();
+  // The cursor stays where it was: the new card arrives as a row, it does not take one.
+  expect(filed.state.cursor).toBe(board.cursor);
+
+  const empty = typing(board, ["n", "enter"]);
+  expect(empty.action).toBeUndefined();
+  expect(empty.state.prompt).toBeNull();
+  expect(empty.state.message).toContain("title");
+
+  const cancelled = typing(board, ["n", ..."never mind", "escape"]);
+  expect(cancelled.action).toBeUndefined();
+  expect(cancelled.state.prompt).toBeNull();
+  expect(quiet(cancelled.state)).toEqual(board);
+
+  // The card view is one card: there is no row for another to land on, so `n` is not a key.
+  const open = press(board, "enter").state;
+  const inCard = press(open, "n");
+  expect(inCard.action).toBeUndefined();
+  expect(inCard.state).toBe(open);
+});
 
 test("s starts the card, and says why it does not on the phases a run or the merge ends", () => {
   for (const [phase, to] of [

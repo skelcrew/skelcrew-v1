@@ -224,6 +224,12 @@ test("the message is the bottom line, and the prompt takes it while one is open"
     "comment on #6: ok",
   );
 
+  // 032: the title being typed for a new card. It is the one prompt about no card in
+  // particular, so its label names none.
+  expect(plain(bottom({ prompt: { kind: "add", text: "a new card" } }))).toContain(
+    "new card: a new card",
+  );
+
   // The prompt covers the message, and the board is still drawn above it.
   const both = frame(
     state({ message: "the daemon said no", prompt: { kind: "comment", cardId: 1, text: "" } }),
@@ -258,8 +264,8 @@ test("the keys screen names every key, including the ones that answer", () => {
     columns: 100,
     rows: 24,
   }).map(plain);
-  // 032's criterion 8, in part: `s` beside the six 027 added.
-  for (const key of ["a", "d", "m", "b", "c", "o", "s"]) {
+  // 032's criterion 8, in part: `n` and `s` beside the six 027 added.
+  for (const key of ["a", "d", "m", "b", "c", "o", "n", "s"]) {
     expect(shown.some((line) => line.trimStart().startsWith(key))).toBe(true);
   }
 });
