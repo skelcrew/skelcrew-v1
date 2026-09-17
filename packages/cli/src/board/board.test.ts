@@ -523,7 +523,9 @@ test("reopening a card reads it again, rather than drawing the feed it had", asy
   const { running } = await started(fake, terminal);
   const card = () => (terminal.frames().at(-1) ?? "").includes("created:");
 
+  // Enter opens the chat and Tab flips to the card view (033), which is what this is about.
   terminal.type("\r");
+  terminal.type("\t");
   await until("the card view", card);
   terminal.type("q");
   await until("the board again", () => !card());
@@ -531,6 +533,7 @@ test("reopening a card reads it again, rather than drawing the feed it had", asy
   // The run posts while the card is closed: no event reaches a card view that is not open.
   fake.post(1, "ZZZ-after-close");
   terminal.type("\r");
+  terminal.type("\t");
   await until("the comment posted while it was closed", () =>
     (terminal.frames().at(-1) ?? "").includes("ZZZ-after-close"),
   );
@@ -985,6 +988,53 @@ test("the shell is $SHELL, and sh when the owner has none", async () => {
   await running;
 });
 
+// --- 033: talking to the crew on a card ---
+
+/** The frame's bottom two rows: the line that says who is listening, and the input. */
+function listening(terminal: FakeTerminal): string {
+  return (terminal.frames().at(-1) ?? "").split("\r\n").at(-2) ?? "";
+}
+
+function input(terminal: FakeTerminal): string {
+  return (terminal.frames().at(-1) ?? "").split("\r\n").at(-1) ?? "";
+}
+
+test("a line typed in the chat is a comment on that card, and allow answers its question", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  // Enter on the first row opens the chat on card 1, which is waiting on the owner: the card's
+  // header is at the top, the question is on the listening line, and the input is open.
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  expect(listening(terminal)).toContain("why: ready");
+  expect(listening(terminal)).toContain("allow · deny · or write");
+
+  terminal.type("any news");
+  await until("the line", () => input(terminal).includes("any news"));
+  terminal.type("\r");
+  await until("the comment", () => calls("comment").length > 0);
+  expect(calls("comment")).toEqual([["comment", { id: 1, text: "any news" }]]);
+  // The input is empty afterwards, and the chat is still open: the line is open as long as
+  // the view is. What was sent comes back as the comment's own event, like anything else.
+  await until("the empty line", () => !input(terminal).includes("any news"));
+  expect(terminal.frames().at(-1)).toContain("created:");
+
+  // And `allow` on a line, with the question open, is the call `resolve` makes.
+  terminal.type("allow\r");
+  await until("the answer", () => calls("resolveAttention").length > 0);
+  expect(calls("resolveAttention")).toEqual([["resolveAttention", { id: 1, text: "allow" }]]);
+
+  // Tab to the card view, and out: in the chat both letters would have been text.
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */
@@ -1062,8 +1112,10 @@ test("x archives the card, and the card view closes when it was the open card", 
   const { running } = await started(fake, terminal);
   const read = fake.calls.length;
 
-  // Card 1, open in the card view: the archive question, then Enter.
+  // Card 1, open in the card view — Enter opens the chat and Tab flips to it (033) — then the
+  // archive question, then Enter.
   terminal.type("\r");
+  terminal.type("\t");
   await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
   terminal.type("x");
   await until("the question", () =>
@@ -1110,6 +1162,7 @@ test("a card archived under the open question takes the question with it", async
 
   // And Enter is Enter again: it opens the card under the cursor, and archives nothing.
   terminal.type("\r");
+  terminal.type("\t");
   await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("created:"));
   expect(fake.calls.slice(read).filter(([method]) => method === "archiveCard")).toEqual([]);
 

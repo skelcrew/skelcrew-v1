@@ -5,8 +5,16 @@
  */
 import { PHASES, type Phase } from "@skelcrew/shared";
 import { formatId, phaseName } from "../render";
-import { cardLines } from "./frame";
-import { cardIdAt, type Prompt, questionOf, rowCount, type State } from "./state";
+import { cardLines, chatLines } from "./frame";
+import { cardIdAt, type Prompt, questionOf, rowCount, type State, type View } from "./state";
+
+/** The chat view, which carries the line being typed as well as the card and the scroll. */
+type ChatView = Extract<View, { kind: "chat" }>;
+
+/** The chat on a card, open with an empty line at the newest of the conversation. */
+function chatOn(cardId: number): ChatView {
+  return { kind: "chat", cardId, scroll: 0, text: "" };
+}
 
 /**
  * What the loop is asked to do. Every action but `quit` and `open-shell` is one of the CLI's
@@ -188,6 +196,62 @@ function pressPrompt(state: State, prompt: Prompt, key: string): Pressed {
   }
 }
 
+/**
+ * What a line typed in the chat sends. While a question is open on the card, `allow` and a
+ * line that is or begins `deny` answer it — the two words the listening line offers, read from
+ * the line because in this view letters are text and a keypress would be one. Every other
+ * line, and every line with no question open, is a comment on the card, which is how feedback
+ * and mid-run answers travel (012, 015).
+ */
+function said(state: State, cardId: number, text: string): Action {
+  const answers = text === "allow" || text === "deny" || text.startsWith("deny ");
+  return answers && questionOf(state, cardId) !== undefined
+    ? { kind: "resolve", id: cardId, text }
+    : { kind: "comment", id: cardId, text };
+}
+
+/** The chat scrolled to `scroll` lines back from the newest, and no further than its first. */
+function chatScrollTo(state: State, view: ChatView, scroll: number): Pressed {
+  // The reducer knows the conversation but not the terminal, which is why the loop tightens
+  // this to the window with `clampScroll`, as it does for the card view.
+  const top = Math.max(0, chatLines(state).length - 1);
+  return { state: { ...state, view: { ...view, scroll: Math.min(Math.max(0, scroll), top) } } };
+}
+
+/**
+ * The chat has one key that is not text: Tab, which flips to the card view. Esc clears the
+ * line and leaves for the board when there is nothing to clear, the arrows scroll the
+ * conversation, Enter sends, and everything printable is text — an `a` here is a letter, not
+ * an answer. Anything typed brings the conversation back to the newest, which is where the
+ * line being written belongs.
+ */
+function pressChat(state: State, view: ChatView, key: string): Pressed {
+  const typed = (text: string): Pressed => ({
+    state: { ...state, view: { ...view, text, scroll: 0 } },
+  });
+  switch (key) {
+    case "tab":
+      return { state: { ...state, view: { kind: "card", cardId: view.cardId, scroll: 0 } } };
+    case "escape":
+      if (view.text.length === 0) return { state: { ...state, view: { kind: "board" } } };
+      return { state: { ...state, view: { ...view, text: "" } } };
+    case "enter":
+      // An empty line sends nothing: the view is open, so Enter on it is a key pressed in
+      // passing rather than something said.
+      if (view.text.length === 0) return { state };
+      return { state: typed("").state, action: said(state, view.cardId, view.text) };
+    case "backspace":
+      return typed([...view.text].slice(0, -1).join(""));
+    case "up":
+      return chatScrollTo(state, view, view.scroll + 1);
+    case "down":
+      return chatScrollTo(state, view, view.scroll - 1);
+    default:
+      if (!printable(key)) return { state };
+      return typed(view.text + key);
+  }
+}
+
 function moveTo(state: State, cursor: number): Pressed {
   const last = rowCount(state) - 1;
   if (last < 0) return { state };
@@ -214,9 +278,10 @@ function pressBoard(state: State, key: string): Pressed {
       // on. The cursor stays where it is; the new card arrives as an event, like anything else.
       return opens(state, { kind: "add", text: "" });
     case "enter": {
+      // Entering a card is entering the chat on it (033): the card itself is one Tab away.
       const cardId = cardIdAt(state, state.cursor);
       if (cardId === undefined) return { state };
-      return { state: { ...state, view: { kind: "card", cardId, scroll: 0 } } };
+      return { state: { ...state, view: chatOn(cardId) } };
     }
     case "?":
       return { state: { ...state, view: { kind: "help", from: state.view } } };
@@ -231,6 +296,8 @@ function pressCard(state: State, cardId: number, scroll: number, key: string): P
   const acted = act(state, cardId, key);
   if (acted !== undefined) return acted;
   switch (key) {
+    case "tab":
+      return { state: { ...state, view: chatOn(cardId) } };
     // The scroll counts lines up from the newest, so `k` goes back and `j` returns.
     case "j":
       return scrollTo(state, scroll - 1);
@@ -278,6 +345,9 @@ export function press(state: State, key: string): Pressed {
       return pressBoard(state, moving(key));
     case "card":
       return pressCard(state, state.view.cardId, state.view.scroll, moving(key));
+    case "chat":
+      // The arrows are not `j` and `k` here: both letters are text.
+      return pressChat(state, state.view, key);
     case "help":
       // Any key closes the keys, back to wherever they were opened from.
       return { state: { ...state, view: state.view.from } };

@@ -263,14 +263,21 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     }, redrawMs);
   }
 
+  /** The card a view is about, if it is about one: the card view's and the chat's. */
+  function shows(view: View): number | undefined {
+    return view.kind === "card" || view.kind === "chat" ? view.cardId : undefined;
+  }
+
   /**
-   * The card a press opened: a card view that was not already showing that card. Opening one
-   * is always a read, however recently it was open — the feed moved on while it was closed,
-   * and a card view that draws what the card said a minute ago is worse than none.
+   * The card a press opened: a view of a card that was not already showing that card. Opening
+   * one is always a read, however recently it was open — the feed moved on while it was closed,
+   * and a card view that draws what the card said a minute ago is worse than none. Tab between
+   * the two views of one card reads nothing: the card under them has not changed.
    */
   function opened(before: View, after: View): number | undefined {
-    if (after.kind !== "card") return undefined;
-    return before.kind === "card" && before.cardId === after.cardId ? undefined : after.cardId;
+    const card = shows(after);
+    if (card === undefined) return undefined;
+    return shows(before) === card ? undefined : card;
   }
 
   /**
@@ -353,9 +360,9 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     const cardId = event.cardId;
     if (cardId !== null) {
       // A card the screen has never seen — one filed while it was open — and the open card,
-      // whose feed the card view shows, are both read back whole.
+      // whose feed the card view and the chat both draw, are read back whole.
       const missing = !state.cards.some((each) => each.id === cardId);
-      const open = state.view.kind === "card" && state.view.cardId === cardId;
+      const open = shows(state.view) === cardId;
       if (missing || open) {
         const detail = await client.call("getCard", { id: cardId });
         // A `CardDetail` is a `Card` with its feed: the board reads the card's own fields.

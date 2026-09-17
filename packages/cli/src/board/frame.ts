@@ -7,10 +7,23 @@
  * title or a note carrying an escape sequence is made visible by `oneLine` before the frame
  * adds the only control characters the screen writes on purpose (015).
  */
-import type { Card, OpenAttention } from "@skelcrew/shared";
-import { cardView, firstLine, formatId, oneLine, phaseName, row, status } from "../render";
+import type { Activity, Card, CardDetail, Member, OpenAttention } from "@skelcrew/shared";
+import {
+  activityLine,
+  cardHeader,
+  cardView,
+  firstLine,
+  formatId,
+  formatTime,
+  markedLines,
+  memberName,
+  oneLine,
+  phaseName,
+  row,
+  status,
+} from "../render";
 import { bold, dim, reverse } from "./ansi";
-import type { Prompt, State, View } from "./state";
+import { type Prompt, questionOf, type State, type View } from "./state";
 
 export interface Size {
   columns: number;
@@ -144,6 +157,16 @@ function archiveQuestion(prompt: Extract<Prompt, { kind: "archive" }>, columns: 
 }
 
 /**
+ * A line being typed — the prompt's, and the chat's input. The terminal's own cursor is hidden,
+ * so the caret is a reverse-video cell; one cell is kept for it, so the line still fits when the
+ * text fills the terminal, and the line is cut at its start so that the caret's end of it is the
+ * part that stays.
+ */
+function typedLine(text: string, size: Size): string {
+  return cutStart(oneLine(text), size.columns - 1) + reverse(" ");
+}
+
+/**
  * The screen's last line: the prompt while one is open — the terminal's own cursor is hidden,
  * so the caret is a reverse-video cell — and the one sentence otherwise.
  */
@@ -152,9 +175,7 @@ function bottomLine(state: State, size: Size): string {
   if (prompt !== null) {
     // The archive question takes no text, so it has no caret: it is read and answered.
     if (prompt.kind === "archive") return archiveQuestion(prompt, size.columns);
-    // One cell is kept for the caret, so the line still fits when the text fills the terminal,
-    // and the line is cut at its start so that the caret's end of it is the part that stays.
-    return cutStart(oneLine(promptLabel(prompt) + prompt.text), size.columns - 1) + reverse(" ");
+    return typedLine(promptLabel(prompt) + prompt.text, size);
   }
   return state.message.length === 0 ? "" : dim(fit(state.message, size.columns));
 }
@@ -208,11 +229,14 @@ function boardFrame(state: State, size: Size, now: number): string[] {
   return screenful(lines, cursorLine, size, bottomLine(state, size));
 }
 
+/** What a view drawn from a card says while the loop is still reading that card. */
+const READING = "reading the card …";
+
 /** The open card exactly as `show` prints it, or a word while it is being read. */
 export function cardLines(state: State, now = Date.now()): string[] {
   const open = state.view.kind === "card" ? state.view.cardId : undefined;
   const detail = state.detail;
-  if (detail === null || detail.id !== open) return ["reading the card …"];
+  if (detail === null || detail.id !== open) return [READING];
   return cardView(detail, state.members, state.me, now).split("\n");
 }
 
@@ -225,12 +249,18 @@ function scrollWithin(lineCount: number, size: Size, scroll: number): number {
   return Math.min(Math.max(0, scroll), Math.max(0, lineCount - (size.rows - 1)));
 }
 
-/** The state with the card view's scroll brought inside what this terminal can show. */
-export function clampScroll(state: State, size: Size): State {
+/** The state with the open view's scroll brought inside what this terminal can show. */
+export function clampScroll(state: State, size: Size, now = Date.now()): State {
   const view = state.view;
-  if (view.kind !== "card") return state;
-  const scroll = scrollWithin(cardLines(state).length, size, view.scroll);
-  return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
+  if (view.kind === "card") {
+    const scroll = scrollWithin(cardLines(state).length, size, view.scroll);
+    return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
+  }
+  if (view.kind === "chat") {
+    const scroll = chatScrollWithin(state, view, size, now);
+    return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
+  }
+  return state;
 }
 
 function cardFrame(state: State, view: View & { kind: "card" }, size: Size, now: number): string[] {
@@ -247,10 +277,141 @@ function cardFrame(state: State, view: View & { kind: "card" }, size: Size, now:
   return screenful(shown, -1, size, bottomLine(state, size));
 }
 
+/** One line of the conversation, and whether it is drawn dim. */
+export interface ConversationLine {
+  text: string;
+  /** An event that is nobody talking: the card's record, between the turns. */
+  quiet: boolean;
+}
+
+/**
+ * A comment, as the turn it is: who said it and when, then its text with every line marked the
+ * way `show` marks a body (015), the lines after the first under the name. A turn is as many
+ * lines as it has; nothing of it is cut away, because it is what the owner came to read.
+ */
+function turnLines(
+  event: Extract<Activity, { type: "comment" }>,
+  members: Member[],
+): ConversationLine[] {
+  const who = `${formatTime(event.createdAt)}  ${memberName(event.actorId, members)}  `;
+  const under = " ".repeat(cells(who));
+  return markedLines(event.data.text).map((line, index) => ({
+    text: (index === 0 ? who : under) + line,
+    quiet: false,
+  }));
+}
+
+/**
+ * The card's activity as a conversation, oldest first: a comment is somebody talking — the
+ * owner's lines, the agent's text turns, its tool summaries and its `allowed`/`denied` notes,
+ * which are all comments on the card (012) — and every other event is the record between them,
+ * as the line `show` prints for it. Who said what is the member's name, the same name those
+ * lines carry.
+ *
+ * Pure, and the card's own record: there is no conversation anywhere but on the card.
+ */
+export function conversationLines(
+  detail: CardDetail | null,
+  members: Member[],
+): ConversationLine[] {
+  if (detail === null) return [];
+  return detail.activity.flatMap((event) =>
+    event.type === "comment"
+      ? turnLines(event, members)
+      : activityLine(event, members)
+          .split("\n")
+          .map((text) => ({ text, quiet: true })),
+  );
+}
+
+/** The open chat's card, once the loop has read it; null while there is none to show. */
+function chatCard(state: State, cardId: number): CardDetail | null {
+  const detail = state.detail;
+  return detail !== null && detail.id === cardId ? detail : null;
+}
+
+/** The open chat's conversation: what `Up` and `Down` scroll through. */
+export function chatLines(state: State): ConversationLine[] {
+  const view = state.view;
+  if (view.kind !== "chat") return [];
+  return conversationLines(chatCard(state, view.cardId), state.members);
+}
+
+/**
+ * The header the chat draws and the rows left under it. The header is fixed at the top and the
+ * two bottom lines — who is listening, and the input — are always drawn, so what a terminal
+ * this size has room for is whatever is left.
+ */
+function chatShape(state: State, cardId: number, size: Size, now: number) {
+  const detail = chatCard(state, cardId);
+  const header = detail === null ? [READING] : cardHeader(detail, state.members, state.me, now);
+  const available = Math.max(0, size.rows - 2);
+  // A header taller than the terminal cannot push the input off the bottom of it.
+  const head = header.slice(0, available);
+  return { head, room: available - head.length };
+}
+
+/** The scroll the chat draws at: back as far as the conversation's first line, and no further. */
+function chatScrollWithin(state: State, view: View & { kind: "chat" }, size: Size, now: number) {
+  const { room } = chatShape(state, view.cardId, size, now);
+  const lines = conversationLines(chatCard(state, view.cardId), state.members).length;
+  return Math.min(Math.max(0, view.scroll), Math.max(0, lines - room));
+}
+
+/** The prefix 024's `status` gives a card whose run holds a live claim. */
+const RUNNING = "running since ";
+
+/**
+ * Who hears what is typed. The daemon's last word takes the line when it said something, so a
+ * refused call is read where the owner is looking; the card's open question takes it while
+ * there is one, with the two words the input understands; otherwise it is whether a run is
+ * live, which is 024's `status` — one derivation, so this line and the card's row cannot come
+ * to disagree about it.
+ */
+function listeningLine(state: State, cardId: number, size: Size, now: number): string {
+  const said = state.message;
+  if (said.length > 0) return dim(fit(said, size.columns));
+  const question = questionOf(state, cardId);
+  if (question !== undefined) {
+    return dim(fit(`${firstLine(question.note)} · allow · deny · or write`, size.columns));
+  }
+  const card = state.cards.find((each) => each.id === cardId);
+  const doing = card === undefined ? "" : status(card, state.me, state.members, now);
+  const line = doing.startsWith(RUNNING)
+    ? `crew is listening · ${doing}`
+    : "no run is live; the next run reads what you write here";
+  return dim(fit(line, size.columns));
+}
+
+/**
+ * The card's header, the conversation under it with the newest at the bottom, the line that
+ * says who is listening, and the input — which is open as long as the view is. The body is not
+ * drawn: a spec does not fit over a conversation, and the card view has it whole, one Tab away.
+ */
+function chatFrame(state: State, view: View & { kind: "chat" }, size: Size, now: number): string[] {
+  const { columns } = size;
+  const { head, room } = chatShape(state, view.cardId, size, now);
+  const lines = conversationLines(chatCard(state, view.cardId), state.members);
+  const end = lines.length - chatScrollWithin(state, view, size, now);
+  const start = Math.max(0, end - room);
+  const shown = [
+    // The card's first line is its id and title: the one place the screen uses bold.
+    ...head.map((line, index) => (index === 0 ? bold(fit(line, columns)) : fit(line, columns))),
+    ...lines
+      .slice(start, end)
+      .map((line) => (line.quiet ? dim(fit(line.text, columns)) : fit(line.text, columns))),
+  ];
+  while (shown.length < size.rows - 2) shown.push("");
+  shown.push(listeningLine(state, view.cardId, size, now));
+  shown.push(typedLine(view.text, size));
+  return shown;
+}
+
 const KEYS = [
   "  j, k, ↓, ↑   down and up; in a card, scroll",
   "  g, G         the first row and the last",
-  "  enter        open the card under the cursor",
+  "  enter        open the chat on the card under the cursor",
+  "  tab          flip between the chat and the card",
   "  esc, q       back to the board",
   "  n            file a card, by title",
   "  s            start the card: Idea into Spec, Spec into Code",
@@ -281,6 +442,8 @@ export function frame(state: State, size: Size, now = Date.now()): string[] {
       return boardFrame(state, size, now);
     case "card":
       return cardFrame(state, state.view, size, now);
+    case "chat":
+      return chatFrame(state, state.view, size, now);
     case "help":
       return helpFrame(state, size);
   }

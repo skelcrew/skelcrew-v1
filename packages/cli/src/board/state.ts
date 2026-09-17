@@ -16,10 +16,17 @@ import type {
 } from "@skelcrew/shared";
 import { firstLine } from "../render";
 
-/** Which of the three screens is open. `help` remembers where it was opened from. */
+/**
+ * Which of the four screens is open. `help` remembers where it was opened from.
+ *
+ * The chat's input text lives in the view rather than in a `Prompt`, because a prompt is a
+ * one-line input opened for a purpose and closed on send, and the chat's line is never closed:
+ * two shapes for two lifetimes (033).
+ */
 export type View =
   | { kind: "board" }
   | { kind: "card"; cardId: number; scroll: number }
+  | { kind: "chat"; cardId: number; scroll: number; text: string }
   | { kind: "help"; from: View };
 
 /**
@@ -224,13 +231,14 @@ export function apply(state: State, event: Activity): State {
       return clamp({ ...held, requests: withRequest(held, cardId) });
     }
     case "card_archived": {
-      // The board is the unarchived cards, and an archived card's request went with it. A card
-      // view open on it closes to the board: there is no row behind it to come back to. The keys
-      // screen stays open — no key has closed it — but the card it was opened from becomes the
-      // board, so the key that closes it does not land on a card that has left. So does the
-      // question about archiving it: the card is gone, so there is nothing left to ask.
+      // The board is the unarchived cards, and an archived card's request went with it. A view
+      // open on it — the card's, or the chat on it — closes to the board: there is no row behind
+      // it to come back to, and nothing left to talk to. The keys screen stays open — no key has
+      // closed it — but the card it was opened from becomes the board, so the key that closes it
+      // does not land on a card that has left. So does the question about archiving it: the card
+      // is gone, so there is nothing left to ask.
       const behind = state.view.kind === "help" ? state.view.from : state.view;
-      const open = behind.kind === "card" && behind.cardId === cardId;
+      const open = (behind.kind === "card" || behind.kind === "chat") && behind.cardId === cardId;
       const asking = state.prompt?.kind === "archive" && state.prompt.cardId === cardId;
       return clamp({
         ...state,
