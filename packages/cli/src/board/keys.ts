@@ -190,6 +190,17 @@ function scrollTo(state: State, scroll: number): Pressed {
 }
 
 /**
+ * The arrows, as the letters they move like: Down is `j` and Up is `k` (031), so the views
+ * below gain no second path and nothing is reachable by the arrows alone. The prompt is above
+ * this: neither is text, and neither moves anything while one is open.
+ */
+function moving(key: string): string {
+  if (key === "down") return "j";
+  if (key === "up") return "k";
+  return key;
+}
+
+/**
  * The key, on the state. Ctrl-C is the one key every view answers the same way — the prompt
  * included, where Esc is the cancel and Ctrl-C is still the way out of the screen; every other
  * key the view does not use leaves the state exactly as it was, so a stray byte draws nothing.
@@ -199,9 +210,9 @@ export function press(state: State, key: string): Pressed {
   if (state.prompt !== null) return pressPrompt(state, state.prompt, key);
   switch (state.view.kind) {
     case "board":
-      return pressBoard(state, key);
+      return pressBoard(state, moving(key));
     case "card":
-      return pressCard(state, state.view.cardId, state.view.scroll, key);
+      return pressCard(state, state.view.cardId, state.view.scroll, moving(key));
     case "help":
       // Any key closes the keys, back to wherever they were opened from.
       return { state: { ...state, view: state.view.from } };

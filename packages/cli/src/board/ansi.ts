@@ -37,6 +37,20 @@ export function reverse(text: string): string {
 /** The escape key, as raw stdin delivers it — alone, and heading every sequence key. */
 export const ESCAPE_KEY = ESC;
 
+/**
+ * Up and Down, as raw stdin delivers them, and the key each sequence is (031). Terminals
+ * disagree here too: the usual form opens `[`, and a terminal in application cursor mode sends
+ * `O` — this screen never turns that mode on, but a multiplexer may. These four are the only
+ * sequences the screen has a key for, wherever in a read they arrive; a sequence it has no key
+ * for is dropped, and the rest of that read with it.
+ */
+export const ARROW_KEYS: [sequence: string, key: string][] = [
+  [`${ESC}[A`, "up"],
+  [`${ESC}[B`, "down"],
+  [`${ESC}OA`, "up"],
+  [`${ESC}OB`, "down"],
+];
+
 /** Ctrl-C, as raw stdin delivers it: in raw mode the terminal sends this byte, not a signal. */
 export const INTERRUPT_KEY = "\x03";
 
