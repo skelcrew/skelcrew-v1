@@ -43,6 +43,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 27 | 030 The screen starts the daemon | specified |
 | 28 | 031 The arrow keys move the cursor | specified |
 | 29 | 032 A card is added, started and archived from the screen | specified; the milestone's first slice, editing and the feed view follow |
+| 30 | 033 Talking to the crew on a card | planned; after 032 |
 | | 005 | dropped |
 
 ## Background
@@ -1233,6 +1234,42 @@ Constraints carried from 026: every key is one CLI call; no colour, no mouse, no
 the frame and the reducer stay pure and tested without a terminal. The display-width finding
 (the status column pads in UTF-16 units) should be closed by 027 or here, whichever touches the
 row first.
+
+## 033 — Talking to the crew on a card
+
+Asked for by the owner on 2026-09-17: inside a card, a prompt at the bottom of the screen, the
+way a coding agent's own terminal has one, where the owner types to the agent working that card
+and reads what it says back. Today that is `c` on the card view: press a key, type one line,
+Enter, and the line reaches a live run as a message (012, 015) and lands on the card as a
+comment; the agent's replies are its text turns, posted as comments by `runner` and drawn in
+the feed as they arrive (026). Everything the owner wants is there in parts; what is missing is
+the shape of a conversation — a line that is always open while the card is, and the feed above
+it reading as an exchange.
+
+What it is, so the constraints hold. It is comments on the card, rendered as a conversation,
+and nothing else: no chat channel beside the card, no chat state in the daemon, no model call
+by skelcrew, and no phase that needs it — CLAUDE.md's "conversation is never load-bearing"
+stands, and this is the allowed kind, feedback and mid-run answers travelling as comments.
+The agent hears the owner only while a run of that card is live, because the message is
+forwarded into the session; with no run live the comment waits on the card and the next run
+reads it as it reads every comment. The card view must say which of the two is true — a run
+is listening, or nothing is and the next run will read this — so the owner is never typing
+into silence without knowing it. Nothing the owner types starts a run: cards drive the runner,
+and a question typed on an Idea card is a note on it until the owner moves the card.
+
+Shape, to settle in the spec: the card view's bottom line is the prompt, open whenever the
+view is, so the keys that act (`a`, `d`, `m`, `b`, `s`, `x`, `o`) need a way to be keys and not
+letters — a modifier, or `Esc` to leave the line for the keys and any printable to return, the
+way an editor has two modes; `c` on the board stays. The feed shows the owner's lines and the
+agent's replies distinguished by who wrote them, which the activity already carries. Whether
+the agent's tool summaries interleave (they are comments too) or only its text turns show in
+the conversation is the one product decision worth the owner's word. A found benefit: 027's
+open finding that a paste onto the screen runs as keys is mostly closed inside a card, because
+the line is where a paste lands.
+
+Out of it: a chat with the crew outside any card (no card, no conversation); a model on the
+owner's side answering free text (a member, later, per the Slack notes); waking an agent to
+answer when no run is live (a run kind of its own, if ever, and cards drive the runner).
 
 ## Later, deliberately unplanned
 
