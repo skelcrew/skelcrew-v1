@@ -1261,15 +1261,24 @@ is listening, or nothing is and the next run will read this — so the owner is 
 into silence without knowing it. Nothing the owner types starts a run: cards drive the runner,
 and a question typed on an Idea card is a note on it until the owner moves the card.
 
-Shape, to settle in the spec: the card view's bottom line is the prompt, open whenever the
-view is, so the keys that act (`a`, `d`, `m`, `b`, `s`, `x`, `o`) need a way to be keys and not
-letters — a modifier, or `Esc` to leave the line for the keys and any printable to return, the
-way an editor has two modes; `c` on the board stays. The feed shows the owner's lines and the
-agent's replies distinguished by who wrote them, which the activity already carries. Whether
-the agent's tool summaries interleave (they are comments too) or only its text turns show in
-the conversation is the one product decision worth the owner's word. A found benefit: 027's
-open finding that a paste onto the screen runs as keys is mostly closed inside a card, because
-the line is where a paste lands.
+The shape, in the owner's words the same day: entering a card should feel like entering a
+harness. Three parts, top to bottom — the card's data (header and body, what `show` prints
+first); the agent's output, drawn the way a coding agent's own terminal draws its session,
+text turns and tool activity alike, scrolling as the run works; and an input line for
+prompting. So the card view becomes: the card, then something that looks like Claude Code
+running on it. That settles the question of what shows: the agent's tool summaries interleave
+with its text, as they do in the harness the owner already knows, because they are the work
+happening and hiding them would make the exchange read as talk about nothing. The owner's own
+lines sit in the same stream, distinguished by who wrote them, which the activity carries.
+
+To settle in the spec: the input line is open whenever the card is, so the keys that act
+(`a`, `d`, `m`, `b`, `s`, `x`, `o`) need a way to be keys and not letters — `Esc` to leave the
+line for the keys and any printable to return, the way an editor has two modes, is the
+likely answer; `c` on the board stays. A permission question, which the agent's own terminal
+shows inline and answers with a keypress, is an attention request here and should show in the
+same place, above the input, answered from it. A found benefit: 027's open finding that a
+paste onto the screen runs as keys is mostly closed inside a card, because the line is where
+a paste lands.
 
 Out of it: a chat with the crew outside any card (no card, no conversation); a model on the
 owner's side answering free text (a member, later, per the Slack notes); waking an agent to
