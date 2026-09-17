@@ -580,26 +580,32 @@ test("the screen's sentence stays behind on the board, and does not outlast a ke
 
 // --- 034: a sentence shows once ---
 
-test("a sentence does not outlast the key after it, wherever it was said", () => {
-  // The line is the screen's one sentence and then goes back to teaching: a message set by `s`
-  // on a card in Done would otherwise sit there through `j`, `k` and Enter (034).
+test("the reducer leaves the sentence where it is; a key with one of its own replaces it", () => {
+  // A sentence is shown on the frame after the key that set it and on no later one — and it is
+  // the loop that ends it, after that frame has been drawn, because only the loop knows whether
+  // it has been (034, after review round 1: two keys read together were one frame, and the
+  // sentence was on neither). `board.test.ts` holds that half; here the reducer is pure about
+  // the message, so a key cannot take a sentence off the screen before it was on it.
   const done = asking({ phase: "done" }, null);
   const said = press(done, "s").state;
   expect(said.message).toContain("is done");
 
-  for (const key of ["j", "k", "g", "G", "z", "enter", "?", "escape"]) {
-    expect(press(said, key).state.message).toBe("");
+  for (const key of ["j", "k", "g", "G", "z", "?", "escape"]) {
+    expect(press(said, key).state.message).toBe(said.message);
   }
 
-  // A key with a sentence of its own still says it in the same press: the clearing is what
-  // came before, not what this key does.
+  // A key with a sentence of its own says it in the same press, over whatever was there.
   expect(press(said, "a").state.message).toContain("no open question");
   // And in the card view, which has the same keys on the same card.
   const open = openCard(done);
-  expect(press({ ...open, message: "#7 is done" }, "j").state.message).toBe("");
+  expect(press({ ...open, message: "#7 is done" }, "j").state.message).toBe("#7 is done");
   expect(press({ ...open, message: "#7 is done" }, "a").state.message).toContain(
     "no open question",
   );
+
+  // The chat is the exception, and 033's: its sentence is read on the listening line, where a
+  // sentence carried in from the board would sit over the card's open question.
+  expect(press(said, "enter").state.message).toBe("");
 });
 
 test("in the chat every printable key is text, and Enter sends the line as a comment", () => {

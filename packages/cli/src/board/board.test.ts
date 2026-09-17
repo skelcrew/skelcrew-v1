@@ -1240,6 +1240,58 @@ test("the bottom line teaches, says the sentence once, and then teaches again", 
   await running;
 });
 
+test("a sentence is on a frame even when the next key is in the same read", async () => {
+  // The loop draws one frame per burst, so two keys arriving together are one redraw: a
+  // sentence set by the first and ended by the second was on no frame at all, and `#1 is
+  // done`, `a card needs a title` and a refusal all went the same way (review round 1).
+  const fake = fakeClient([card(1, "done and dusted", { phase: "done" })]);
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  const drawn = terminal.frames().length;
+  terminal.type("sj");
+  await until(
+    "the hint again",
+    () => terminal.frames().length > drawn && bottom(terminal).includes("? keys"),
+  );
+  // The sentence had a frame of its own, and the line teaches again on the one after it.
+  expect(
+    terminal
+      .frames()
+      .slice(drawn)
+      .some((each) => each.includes("is done")),
+  ).toBe(true);
+  expect(bottom(terminal)).not.toContain("is done");
+
+  terminal.type("q");
+  await running;
+});
+
+test("a sentence is on a frame even when the next key lands inside the redraw burst", async () => {
+  // The same again with the keys in two reads a moment apart, which is what the owner typing
+  // quickly sends: the burst is long here, so both keys are read before the frame is drawn.
+  const fake = fakeClient([card(1, "done and dusted", { phase: "done" })]);
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal, { redrawMs: 20 });
+
+  const drawn = terminal.frames().length;
+  terminal.type("s");
+  terminal.type("j");
+  await until(
+    "the hint again",
+    () => terminal.frames().length > drawn && bottom(terminal).includes("? keys"),
+  );
+  expect(
+    terminal
+      .frames()
+      .slice(drawn)
+      .some((each) => each.includes("is done")),
+  ).toBe(true);
+
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */

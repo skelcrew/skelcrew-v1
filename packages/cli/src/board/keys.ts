@@ -246,11 +246,11 @@ function chatScrollTo(state: State, view: ChatView, scroll: number): Pressed {
  * an answer. Anything typed brings the conversation back to the newest, which is where the
  * line being written belongs.
  *
- * Any key at all clears what the daemon said last — `press` does it for every view — so the
- * listening line holds a refusal until the owner does something and then goes back to saying
- * who is listening.
+ * Any key at all clears what the daemon said last, so the listening line holds a refusal until
+ * the owner does something and then goes back to saying who is listening (033).
  */
 function pressChat(state: State, view: ChatView, key: string): Pressed {
+  if (state.message.length > 0) return pressChat({ ...state, message: "" }, view, key);
   const typed = (text: string): Pressed => ({
     state: { ...state, view: { ...view, text, scroll: 0 } },
   });
@@ -384,13 +384,13 @@ function moving(key: string): string {
  * included, where Esc is the cancel and Ctrl-C is still the way out of the screen; every other
  * key the view does not use leaves the state exactly as it was, so a stray byte draws nothing.
  *
- * What was said last goes first, whatever the key turns out to do: a sentence is shown on the
- * frame that follows the key or the call that set it and on no later one, so the bottom line
- * goes back to teaching as soon as the owner presses anything (034). A key with a sentence of
- * its own sets it in this same press, through `says`.
+ * What was said last is left where it is: a sentence is shown on the frame that follows the key
+ * or the call that set it and on no later one, and the loop is what ends it, because only the
+ * loop knows whether that frame has been drawn yet (034, after review round 1). A key with a
+ * sentence of its own sets it here, through `says`; the chat clears what it was handed, because
+ * its sentence is read on the listening line rather than the bottom one (033).
  */
 export function press(state: State, key: string): Pressed {
-  if (state.message.length > 0) return press({ ...state, message: "" }, key);
   if (key === "ctrl-c") return { state, action: QUIT };
   if (state.prompt !== null) return pressPrompt(state, state.prompt, key);
   switch (state.view.kind) {
