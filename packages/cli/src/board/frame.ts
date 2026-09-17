@@ -7,7 +7,14 @@
  * title or a note carrying an escape sequence is made visible by `oneLine` before the frame
  * adds the only control characters the screen writes on purpose (015).
  */
-import type { Activity, Card, CardDetail, Member, OpenAttention } from "@skelcrew/shared";
+import type {
+  Activity,
+  Attention,
+  Card,
+  CardDetail,
+  Member,
+  OpenAttention,
+} from "@skelcrew/shared";
 import {
   activityLine,
   cardHeader,
@@ -23,7 +30,7 @@ import {
   status,
 } from "../render";
 import { bold, dim, reverse } from "./ansi";
-import { type Prompt, questionOf, type State, type View } from "./state";
+import { cardIdAt, type Prompt, questionOf, type State, type View } from "./state";
 
 export interface Size {
   columns: number;
@@ -166,9 +173,99 @@ function typedLine(text: string, size: Size): string {
   return cutStart(oneLine(text), size.columns - 1) + reverse(" ");
 }
 
+/** Between the items of the hint. */
+const SEPARATOR = " · ";
+
+/** The keys that answer an open request, whichever kind of row it is read on. */
+function answering(question: Attention): string[] {
+  const move = question.moves.length > 0 ? ["m move"] : [];
+  return ["a allow", "d deny", ...move, "enter open", "? keys"];
+}
+
+/**
+ * The keys a row of the board offers for the card it is about: a queue row and the board row of
+ * the same card are the same card, so a row with an open question names the keys that answer it
+ * whichever half it is in.
+ */
+function rowItems(state: State, cardId: number): string[] {
+  const question = questionOf(state, cardId);
+  if (question !== undefined) return answering(question);
+  const phase = state.cards.find((each) => each.id === cardId)?.phase;
+  return [
+    ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
+    "enter open",
+    "c comment",
+    ...(phase === "idea" ? [] : ["b back"]),
+    "x archive",
+    "o shell",
+    "n new",
+    "? keys",
+  ];
+}
+
+/** The keys the card view offers, which are the row's without the ones that need a board. */
+function cardItems(state: State, cardId: number): string[] {
+  const phase = state.cards.find((each) => each.id === cardId)?.phase;
+  return [
+    "tab chat",
+    ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
+    "c comment",
+    ...(phase === "idea" ? [] : ["b back"]),
+    "x archive",
+    "o shell",
+    "j k scroll",
+    "q back",
+    "? keys",
+  ];
+}
+
+/**
+ * The keys that do something where the cursor is, each as `<key> <verb>`. They are read from
+ * the same facts `act` reads — the card's open question, its phase, which view is open — so the
+ * line and the reducer cannot come to disagree about what applies: a key added to `act` adds
+ * its item here.
+ *
+ * The chat has none: its bottom line is the input, and the line above it says who is listening.
+ */
+function hintItems(state: State): string[] {
+  const view = state.view;
+  switch (view.kind) {
+    case "chat":
+      return [];
+    case "help":
+      return ["j k scroll", "q close"];
+    case "card":
+      return cardItems(state, view.cardId);
+    case "board": {
+      const cardId = cardIdAt(state, state.cursor);
+      // No rows at all: the only key with anything to do is the one that files a card.
+      return cardId === undefined ? ["n new", "? keys"] : rowItems(state, cardId);
+    }
+  }
+}
+
+/** The keys that apply where the cursor is, whole: what the bottom line teaches. */
+export function hint(state: State): string {
+  return hintItems(state).join(SEPARATOR);
+}
+
+/**
+ * The hint within `columns` cells: items go from the end, and never the last one — `? keys`
+ * opens the list where whatever was dropped is still named. What survives is the head of the
+ * order, which is what the owner presses most.
+ */
+function fitHint(items: string[], columns: number): string {
+  let kept = items;
+  while (kept.length > 1 && cells(kept.join(SEPARATOR)) > columns) {
+    kept = [...kept.slice(0, -2), kept[kept.length - 1] as string];
+  }
+  return fit(kept.join(SEPARATOR), columns);
+}
+
 /**
  * The screen's last line: the prompt while one is open — the terminal's own cursor is hidden,
- * so the caret is a reverse-video cell — and the one sentence otherwise.
+ * so the caret is a reverse-video cell — the one sentence when there is one, and the keys that
+ * apply here otherwise. One thing at a time: a hint under a prompt would be two.
  */
 function bottomLine(state: State, size: Size): string {
   const prompt = state.prompt;
@@ -177,7 +274,9 @@ function bottomLine(state: State, size: Size): string {
     if (prompt.kind === "archive") return archiveQuestion(prompt, size.columns);
     return typedLine(promptLabel(prompt) + prompt.text, size);
   }
-  return state.message.length === 0 ? "" : dim(fit(state.message, size.columns));
+  if (state.message.length > 0) return dim(fit(state.message, size.columns));
+  const items = hintItems(state);
+  return items.length === 0 ? "" : dim(fitHint(items, size.columns));
 }
 
 /**
