@@ -44,7 +44,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 28 | 031 The arrow keys move the cursor | landed, PR #29 — two review rounds; the decoder read sequences only at the start of a read |
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | landed, PR #31 — three review rounds, one Critical: a pasted tab ran as keys and answered a question |
-| 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
+| 31 | 034 The keys that apply are on the screen | landed, PR #32 — two review rounds; a sentence could be drawn on no frame, and the hint's keys were untied from the reducer's |
 | 32 | 035 A running card stays running on the screen | specified; the screen trusts events, not its clock, about a lease |
 | 33 | 036 The crew may look at the board | planned; found in real use 2026-09-17; `skelcrew ls` asked for permission |
 | 34 | 037 A comment wakes the crew | planned; decided by the owner from use 2026-09-17; after 035 |
@@ -1482,6 +1482,61 @@ To settle in the spec: the hint is a pure function of the state, in `frame.ts` b
 `bottomLine`, tested the way `KEYS` is; the order of keys is by how often the owner presses
 them, which is a guess until 033 has been used; whether the `?` list itself should be cut to
 fit or grow two columns, which closes 032's finding at the same time.
+
+Landed as PR #32. The bottom line names, dim, the keys that do something where the cursor is,
+ending in `? keys` — `a allow · d deny · m move · enter chat · ? keys` on a request row,
+`s start · enter chat · …` on an Idea card — cut from the end to fit the width. A message from
+a key or a call shows on its own frame and gives the line back on the next key. The keys list
+scrolls with `j`/`k` and the arrows, so on a twelve-row terminal every key is reachable, which
+closes 032's carried finding; `q`, `Esc`, `?` and any other key still close it.
+
+Spec amendments, disclosed inline: `enter chat`, since 033 landed while the spec said `enter
+open`; the card view of a card with an open question names `a allow · d deny · m move` first;
+`q back` moved second in the card view, having been the first item cut on a wide terminal;
+`j k scroll` only when the card has more lines than fit; criterion 2's "every hint" scoped to
+its own table; "on no later one" became "until the next key"; and the claim that the hint and
+the reducer "cannot disagree" replaced by what is true, that a test keeps two hand-written
+lists in step. The implementer flagged the first two rather than guessing.
+
+Two review rounds. Round 1, two Importants: a sentence set by a key could be shown on no
+frame at all, because the reducer cleared it before the next key and the loop coalesces
+redraws — `s` then `j` inside one window drew one frame with the hint and "is done" was never
+on the screen, a regression from the message that used to persist; fixed by moving the clear
+into the loop, which draws the pending frame before the next key while a sentence is set. And
+nothing tied the hint's keys to the reducer's: a key added to `act` worked and was never named
+with the suite green; now a test presses every printable key per state and compares the keys
+that act with the keys the hint names, minus an explicit list of omissions. Round 2 approved
+after writing `sj` in one write against the real binary and seeing the sentence on its own
+frame, and confirming it never appeared at the pre-fix commit. Six Minors taken
+post-approval, the one of substance being that the card view named `j k scroll` on a card
+with nothing to scroll. The verifier reproduced the swallowed sentence at the round-0 commit
+and its absence at the head, read every hint live at real widths, and scrolled the keys list
+at a real 60×12.
+
+**Carried findings.**
+
+- **The full-run stall reproduced at base and is not limited to process-spawning tests.**
+  Round 2 hit it once per commit run in a fresh clone (a daemon test at 306 seconds against a
+  5-second budget) and reproduced it at `b310d5c` with no branch changes; it also hit a
+  fake-only CLI test once, at 304 seconds. Something in a full `bun test` on this machine
+  parks a test for about five minutes; 033's carried finding blamed process spawning, and
+  that is now doubtful. A spec of its own, and it should start by finding what the stalled
+  test is waiting on.
+- **The queue row's hint names three keys and hides six that work there** (`s`, `b`, `c`,
+  `x`, `o`, `n`), by the spec's table: a request row is for answering, so it teaches the
+  answers. The agreement test carries the omission as an explicit list, so it is a decision,
+  visible, and reversible by editing the table.
+- **At the 60-column floor, `n new` is off every card row's hint.** The Goal names `n` as one
+  of the three keys a first-time owner learns from the screen; at the minimum width they
+  cannot, at 80 and above they can. The order is deliberate, answers and starts first; if that
+  is wrong, the order moves, not the cut.
+- **The `j, k` help line is 77 characters against a 60-column floor.** 033's finding; this
+  spec scrolled the list and did not shorten the lines. Still open.
+- **A key whose only effect is a sentence is out of the agreement test's reach**, by design:
+  such a key does nothing and is not named. Disclosed in the spec and the comment.
+- **The status column still pads in UTF-16 units.** Carried since 024; the third screen spec
+  in a row that did not touch the row. 035 rewrites what the row says about a running card
+  and is the natural place.
 
 ## 035 — A running card stays running on the screen
 

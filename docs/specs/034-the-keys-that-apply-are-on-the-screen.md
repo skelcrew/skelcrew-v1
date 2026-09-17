@@ -87,7 +87,7 @@ states and checks that the keys which act are the keys the hint names, minus an 
 list of deliberate omissions; a key whose only effect is a sentence is out of that test's
 reach, because such a key does nothing and is not named. (The approved text claimed the two
 "cannot disagree"; they are two hand-written lists kept in step by that test — corrected
-after review round 2.) the loop clears
+after review round 2.) The loop clears
 `state.message` after the frame carrying it has been drawn and the next key arrives, so a
 sentence lives at least one frame; `says` still sets it in its press. (The approved text put
 the clear in `press`; review round 1 found that lets a sentence be drawn on no frame when two
