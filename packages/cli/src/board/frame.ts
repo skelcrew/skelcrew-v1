@@ -341,6 +341,11 @@ export function chatLines(state: State): ConversationLine[] {
  * The header the chat draws and the rows left under it. The header is fixed at the top and the
  * two bottom lines — who is listening, and the input — are always drawn, so what a terminal
  * this size has room for is whatever is left.
+ *
+ * `cardHeader` returns entries, not lines: a note of two lines is one entry with a break in it,
+ * which the card view splits because it draws the whole of `show` as text. Split here too, so
+ * the chat draws what `show` prints — a break left in would be escaped into a literal `\n` and
+ * take the second line's text past the right edge with the first's.
  */
 function chatShape(
   state: State,
@@ -349,7 +354,10 @@ function chatShape(
   now: number,
 ): { head: string[]; room: number } {
   const detail = chatCard(state, cardId);
-  const header = detail === null ? [READING] : cardHeader(detail, state.members, state.me, now);
+  const header =
+    detail === null
+      ? [READING]
+      : cardHeader(detail, state.members, state.me, now).flatMap((line) => line.split("\n"));
   const available = Math.max(0, size.rows - 2);
   // A header taller than the terminal cannot push the input off the bottom of it.
   const head = header.slice(0, available);

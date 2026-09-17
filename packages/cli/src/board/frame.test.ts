@@ -11,7 +11,7 @@ import type {
   Member,
   OpenAttention,
 } from "@skelcrew/shared";
-import { activityLine, firstLine, status } from "../render";
+import { activityLine, cardHeader, firstLine, status } from "../render";
 import {
   cardLines,
   clampScroll,
@@ -407,9 +407,11 @@ function exchange(): CardDetail {
       event(5, { type: "comment", data: { text: "check the frame test too" }, actorId: ME }),
       event(6, {
         type: "attention_requested",
+        // A note of two lines: 022's `why:` and what it is about. The second line is the reason,
+        // so the entry it renders is two lines of the conversation and not one.
         data: {
           to: ME,
-          note: "why: the tests are red",
+          note: "why: two frame cases are red\nand the third only passes alone",
           moves: ["spec"],
           raisedBy: RUNNER,
           raisedAt: NOW,
@@ -442,12 +444,19 @@ test("the conversation is the card's activity as an exchange, in the order it ha
   expect(text[0]).toContain("moved Spec → Code");
   expect(text.at(-1)).toContain("resolved attention");
 
-  // Every event that is not somebody talking is one dim line, and it is `activityLine`'s.
+  // Every event that is not somebody talking is the dim entry `activityLine` renders for it:
+  // one line for most, and both lines of a request whose note has two — the second is the
+  // reason, and cutting it would lose it.
   const quiet = lines.filter((line) => line.quiet).map((line) => line.text);
   expect(quiet).toEqual(
-    card.activity.filter((e) => e.type !== "comment").map((e) => activityLine(e, MEMBERS)),
+    card.activity
+      .filter((e) => e.type !== "comment")
+      .flatMap((e) => activityLine(e, MEMBERS).split("\n")),
   );
-  expect(quiet.length).toBe(4);
+  expect(quiet.length).toBe(5);
+  const asked = quiet.findIndex((line) => line.includes("why: two frame cases are red"));
+  expect(asked).toBeGreaterThanOrEqual(0);
+  expect(quiet[asked + 1]).toContain("> and the third only passes alone");
 
   // The agent's three-line turn is three lines, attributed to it, every one of them marked
   // the way `show` marks a body, and the three start in the same column.
@@ -473,6 +482,16 @@ test("the conversation is the card's activity as an exchange, in the order it ha
 
   // A card that has not been read yet has no conversation to draw.
   expect(conversationLines(null, MEMBERS)).toEqual([]);
+
+  // And the frame draws both lines of that request where the conversation goes, both dim.
+  const drawn = frame(state({ view: chat(3), detail: card }), SIZE, NOW);
+  const note = drawn.filter((line) =>
+    ["why: two frame cases are red", "and the third only passes alone"].some((part) =>
+      plain(line).includes(part),
+    ),
+  );
+  expect(note.length).toBe(2);
+  expect(note.every((line) => line.includes(`${ESC}[2m`))).toBe(true);
 });
 
 test("the chat frame is the header, the conversation, the listening line and the input", () => {
@@ -517,6 +536,38 @@ test("the chat frame is the header, the conversation, the listening line and the
   expect(tight.every((line) => width(line) <= small.columns)).toBe(true);
   // The input keeps the bottom row whatever the header did above it.
   expect(tight[small.rows - 1]).toContain(`${ESC}[7m`);
+});
+
+test("a note of two lines is two lines of the header, as show prints it", () => {
+  // `cardHeader` returns a `note:` element with a line break inside it, so drawing the array as
+  // lines drew the break as a literal `\n` — and cut the `why:` away when the first line and
+  // the second together ran past the terminal.
+  const open = state({
+    view: chat(1),
+    detail: { ...(CARDS[0] as Card), activity: talking().activity },
+  });
+  const lines = frame(open, SIZE, NOW);
+  const shown = lines.map(plain);
+
+  // The header occupies the lines `show` gives it, one for one, and no line carries a break.
+  const head = cardHeader(CARDS[0] as Card, MEMBERS, ME, NOW).flatMap((line) => line.split("\n"));
+  expect(head.length).toBe(9);
+  expect(shown.slice(0, head.length)).toEqual(head);
+  expect(shown.every((line) => !line.includes("\\n"))).toBe(true);
+
+  // And the row budget counts them: the conversation fills what is left, newest at the bottom.
+  expect(lines.length).toBe(SIZE.rows);
+  expect(shown[LISTENING - 1]).toEndWith("> step 60");
+
+  // On the narrowest terminal the screen draws on, the two lines are still two, each cut to
+  // the terminal — rather than the second being lost with the cut of the first.
+  const narrow = { columns: MIN_COLUMNS, rows: SIZE.rows };
+  const tight = frame(open, narrow, NOW).map(plain);
+  expect(tight.some((line) => line.startsWith("note:    why: the pull request"))).toBe(true);
+  expect(tight.some((line) => line.trimStart().startsWith("> and the branch is behind"))).toBe(
+    true,
+  );
+  expect(tight.every((line) => width(line) <= narrow.columns)).toBe(true);
 });
 
 test("the chat scrolls back to the first line of the conversation, and no further", () => {
