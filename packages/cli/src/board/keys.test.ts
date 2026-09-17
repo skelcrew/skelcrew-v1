@@ -243,6 +243,16 @@ test("archiving the card the keys were opened from leaves the keys open over the
   const archived = apply(help, event);
   expect(archived.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 0 });
   expect(press(archived, "q").state.view).toEqual({ kind: "board" });
+
+  // And where the owner had scrolled to stays where it was: the list is the screen's own, so a
+  // card leaving the board underneath it is no reason to take the reader back to the top.
+  const scrolled = typing(help, ["j", "j"]).state;
+  expect(scrolled.view).toMatchObject({ scroll: 2 });
+  expect(apply(scrolled, event).view).toEqual({
+    kind: "help",
+    from: { kind: "board" },
+    scroll: 2,
+  });
 });
 
 test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () => {

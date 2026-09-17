@@ -187,3 +187,120 @@ Received: "tab chat · c comment · b back · x archive · o shell · j k scroll
 the card-view cases are two more assertions inside the existing hint test rather than a new
 test. The second of them is the no-move card view, which pins the `m`-only condition the
 amended sentence states.
+
+## Fix round 1
+
+The plan, before starting. Four slices, each a commit that passes `bun run check`.
+
+1. **The card view's hint puts `q back` after `tab chat`** (finding 4), and the commit carries
+   the orchestrator's two spec amendments: the card view's row of the desired-behaviour table,
+   and criterion 2's "every hint ends in `? keys`" scoped to the board and the card view.
+2. **The loop clears the sentence, not the reducer** (finding 1). `press` stops clearing
+   `state.message`; the loop draws any pending frame before the next key is processed and
+   clears the sentence then, so a sentence set and replaced inside one 16 ms redraw burst is
+   still on a frame.
+3. **A test that pins `act`'s keys against the hint's** (finding 2), so the two cannot drift.
+4. **The keys list's scroll survives an archive** (finding 7), and this record.
+
+### What landed, per finding
+
+**Finding 4 — the card view's order** (`9b5410d`). `cardItems` puts `q back` after `tab chat`,
+ahead of the keys that act, so the one key the line names for leaving the view is not the first
+thing the cut takes. The commit carries the orchestrator's two spec amendments with it. Red:
+
+```
+expect(hint(reading("idea"))).toBe(
+Expected: "tab chat · q back · s start · c comment · x archive · o shell · j k scroll · ? keys"
+Received: "tab chat · s start · c comment · x archive · o shell · j k scroll · q back · ? keys"
+```
+
+**Finding 1 — a sentence can be shown on no frame at all** (`9e76fba`). The clearing moved out
+of `press` and into the loop: `onKey` flushes the pending redraw before it processes the next
+key while `state.message` is set, and clears the sentence after that frame is on the screen.
+Two new `board.test.ts` tests, one for two keys in one read of stdin and one for two reads
+inside the same redraw burst, both red the same way before the change:
+
+```
+expect(terminal.frames().slice(drawn).some((each) => each.includes("is done"))).toBe(true)
+Expected: true
+Received: false
+```
+
+**033's clear inside `pressChat` comes back.** The orchestrator left the choice open: it is
+back, because 033's own test presses six keys in the chat on a state carrying a refusal and
+asserts the reducer clears it — the listening line is where the chat reads a sentence, and that
+rule is the reducer's rather than the loop's. Restored exactly as `b310d5c` had it.
+
+**The one test that changed.** `keys.test.ts`, "a sentence does not outlast the key after it,
+wherever it was said" — the reducer no longer clears, so the claim moved to the loop, where
+`board.test.ts` now holds it three times over (the existing `s` then `j` test and the two new
+ones). What is left in `keys.test.ts` is the other half of the same rule, renamed "the reducer
+leaves the sentence where it is; a key with one of its own replaces it": the message survives
+`j`, `k`, `g`, `G`, `z`, `?` and Esc in the reducer, a key with a sentence of its own replaces
+it, and Enter into the chat clears it (033). No assertion was dropped.
+
+**Finding 2 — nothing checked that the hint and the reducer agree** (`71bc037`). A test in
+`keys.test.ts` presses all 95 printable keys on each of: a queue row (with and without an
+offered move), a card row in each of the five phases with and without an open question, the
+card view of each of those, and an empty board. It collects the keys that do something and
+asserts that set is exactly the set the hint names, then presses every key the hint names —
+Enter and Tab included — and asserts each does something.
+
+- **"Does something" is an action, or a change to the state other than the sentence.** A key
+  whose whole effect is a sentence has done nothing: `says` is what the reducer answers when a
+  key does not apply to the row it was pressed on, and the spec's calm rule says the screen
+  does not name keys that do nothing here. So `a` on a card with no open question, and `s` on a
+  card in Code, are not expected on the line. The reviewer's example was a fake `case "u":
+  return says(state, …)`, and that shape is **not** caught, by this reasoning; a fake `u` that
+  yields an action is.
+- **The deliberate omissions, as two named lists.** `NOT_ABOUT_THE_ROW` is `j`, `k`, `g`, `G`
+  and `q` — the cursor and the way out, which belong to the screen rather than to the row, and
+  which the spec's table names on no board row. `NOT_ABOUT_THE_REQUEST` is `s`, `b`, `c`, `x`,
+  `o` and `n`, which work on a queue row (a queue row and the board row of the same card are
+  the same card) and which the spec's table deliberately leaves off it. A key on either list
+  that the hint names anyway — `q` and `j`/`k` in the card view — still has to do something.
+- **The chat and the keys list are left out**, because in both every printable key does the
+  same thing: text in the chat, closing the list in the keys view. Their hints are fixed
+  strings and `frame.test.ts` asserts them.
+- **The hint is read whole**, not as the bottom line, so `n new` falling off a card row at 60
+  columns is a cut and not an omission.
+
+Red, in both directions, by making the fake the reviewer's finding describes and reverting it:
+
+```
+// with `case "u": return { state, action: { kind: "open-shell", id: cardId } };` in `act`
+expect({ where, keys: acting.sort() }).toEqual({ where, keys: keys.filter(oneCharacter).sort() })
+@@ -6,3 +6,3 @@       "m",
++     "u",
+
+// with `"u undo"` added to `rowItems`
+@@ -7,3 +7,3 @@       "s",
+-     "u",
+```
+
+`frame.ts`'s comment on `hintItems` no longer says the line and the reducer cannot come to
+disagree. It says what is true: this is a second list written by hand, and that test is what
+holds the two together. The spec's sentence at `:83-84` is the orchestrator's to reword or
+leave; the test is what makes it hold.
+
+**Finding 7 — the keys list's scroll across an archive** (this commit). The existing
+`keys.test.ts` test "archiving the card the keys were opened from leaves the keys open over the
+board" now scrolls the list two lines first and asserts the scroll survives `card_archived`.
+This one **could not be red**: `closed()` already carried the scroll, and the finding is that
+nothing checked it. What it does catch, shown by making `closed()` return `scroll: 0` and then
+reverting it:
+
+```
+expect(apply(scrolled, event).view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 2 })
+-   "scroll": 2,
++   "scroll": 0,
+```
+
+**Findings 3, 5 and 6** are the orchestrator's to carry: criterion 2's wording is amended and
+committed with slice 1; `n new` off every card row at 60 columns is the spec's order and stands;
+`hint` stays exported with no production caller, because the spec's implementation approach asks
+for it as a pure function tested on its own.
+
+`bun run check` green at each of the four commits. **917 pass, 0 fail, 35 files** at the end
+(+3 on the 914 this branch had before the round: the two loop tests and the agreement test.
+Finding 7's and finding 4's assertions went into tests that already existed.)
