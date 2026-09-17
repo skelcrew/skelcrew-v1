@@ -206,6 +206,8 @@ function rowItems(state: State, cardId: number): string[] {
 /**
  * The keys the card view offers, which are the row's without the ones that need a board. A card
  * with an open question is answered from here as well as from its row, so those keys come first.
+ * The way back is second, ahead of the keys that act: the cut takes items from the end, and a
+ * view with no way out of it on the line is worse than one that names one fewer key.
  */
 function cardItems(state: State, cardId: number): string[] {
   const phase = state.cards.find((each) => each.id === cardId)?.phase;
@@ -213,13 +215,13 @@ function cardItems(state: State, cardId: number): string[] {
   return [
     ...(question === undefined ? [] : answering(question)),
     "tab chat",
+    "q back",
     ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
     "c comment",
     ...(phase === "idea" ? [] : ["b back"]),
     "x archive",
     "o shell",
     "j k scroll",
-    "q back",
     "? keys",
   ];
 }

@@ -764,21 +764,22 @@ test("the hint is the keys that do something where the cursor is, in that order"
   // A board with no rows at all: the one key with anything to do is the one that files a card.
   expect(hint(state({ cards: [], requests: [] }))).toBe("n new · ? keys");
 
-  // The card view: the flip to the chat, the keys that act on the card, and the way back.
+  // The card view: the flip to the chat, the way back, and the keys that act on the card. The
+  // way back is second, where a narrow terminal cannot cut it (the spec's amended table).
   expect(hint(reading("idea"))).toBe(
-    "tab chat · s start · c comment · x archive · o shell · j k scroll · q back · ? keys",
+    "tab chat · q back · s start · c comment · x archive · o shell · j k scroll · ? keys",
   );
   expect(hint(reading("code"))).toBe(
-    "tab chat · c comment · b back · x archive · o shell · j k scroll · q back · ? keys",
+    "tab chat · q back · c comment · b back · x archive · o shell · j k scroll · ? keys",
   );
 
   // The card view of a card with an open question answers it too: the three keys come first,
   // and `m` only while the request offers a move.
   expect(hint(reading("code", { attention: CONFLICT }))).toBe(
-    "a allow · d deny · m move · tab chat · c comment · b back · x archive · o shell · j k scroll · q back · ? keys",
+    "a allow · d deny · m move · tab chat · q back · c comment · b back · x archive · o shell · j k scroll · ? keys",
   );
   expect(hint(reading("idea", { attention: { ...CONFLICT, moves: [] } }))).toBe(
-    "a allow · d deny · tab chat · s start · c comment · x archive · o shell · j k scroll · q back · ? keys",
+    "a allow · d deny · tab chat · q back · s start · c comment · x archive · o shell · j k scroll · ? keys",
   );
 
   // The keys list says how to move through it and how to close it; the chat has no hint at all,

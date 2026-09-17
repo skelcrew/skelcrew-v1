@@ -52,7 +52,7 @@ the end, except `? keys`, which is always present. What the hint says, by where 
 | board, a card row in Idea or Spec | `s start · enter chat · c comment · b back` (not in Idea) `· x archive · o shell · n new · ? keys` |
 | board, a card row in Code, PR or Done | `enter chat · c comment · b back · x archive · o shell · n new · ? keys` |
 | board, no rows | `n new · ? keys` |
-| card view | `tab chat · s start` (Idea, Spec only) `· c comment · b back` (not Idea) `· x archive · o shell · j k scroll · q back · ? keys` |
+| card view | `tab chat · q back · s start` (Idea, Spec only) `· c comment · b back` (not Idea) `· x archive · o shell · j k scroll · ? keys` (order amended after review round 1: `q back` was last-but-one and the first to be cut on a wide terminal) |
 | chat view (033) | no hint; the bottom line is the input |
 | keys list | `j k scroll · q close` |
 
@@ -105,7 +105,9 @@ columns, and scrolling is the card view's mechanism already.
 2. `hint(state)` for each row of the table renders the listed items in the listed order, and
    only those: asserted for a queue row with and without an offered move, a card row in each
    of the five phases, a card row whose card has an open question, an empty board, and the
-   card view in Idea and in Code. Every hint ends in `? keys`.
+   card view in Idea and in Code. Every hint the table lists for the board and the card view
+   ends in `? keys`; the keys list's hint ends in `q close`, and the chat has none (the approved
+   text said "every hint", against its own table — corrected after review round 1).
 3. At 60 columns a card row's hint is cut by dropping items from the end and still ends in
    `? keys`; at 100 columns it is whole.
 4. The bottom line is the prompt while one is open, the message on the frame after the key or
