@@ -1117,6 +1117,32 @@ test("a pasted chunk with a newline in it sends the line and drops the tail", as
   await running;
 });
 
+test("a chunk that begins with a newline is the line after it, not nothing", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  // Only an Enter that sent a line ends the chunk. This one is on an empty line, so it sends
+  // nothing — and the paste it leads is what the owner meant to write, not a tail to drop.
+  terminal.type("\ndo the thing");
+  await until("the line", () => input(terminal).includes("do the thing"));
+  expect(calls("comment")).toEqual([]);
+
+  terminal.type("\r");
+  await until("the comment", () => calls("comment").length > 0);
+  expect(calls("comment")).toEqual([["comment", { id: 1, text: "do the thing" }]]);
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */

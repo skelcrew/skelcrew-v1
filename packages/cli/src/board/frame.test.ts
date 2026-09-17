@@ -307,6 +307,15 @@ test("the keys screen says Enter opens the chat, and names the key that flips", 
   const tab = shown.find((line) => line.trimStart().startsWith("tab"));
   expect(tab).toBeDefined();
   expect(tab).toContain("card");
+
+  // `q` is a letter in the chat, so the way back from every view is `esc` alone; `q` is named
+  // as what it is, the card view's way back and the board's way out.
+  const esc = shown.find((line) => line.trimStart().startsWith("esc"));
+  expect(esc).toContain("back to the board");
+  expect(esc).not.toContain("q");
+  const quits = shown.find((line) => line.trimStart().startsWith("q "));
+  expect(quits).toContain("quit");
+  expect(quits).toContain("card view");
 });
 
 test("the keys screen names the arrows beside j and k", () => {

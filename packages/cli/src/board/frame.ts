@@ -286,8 +286,9 @@ export interface ConversationLine {
 
 /**
  * A comment, as the turn it is: who said it and when, then its text with every line marked the
- * way `show` marks a body (015), the lines after the first under the name. A turn is as many
- * lines as it has; nothing of it is cut away, because it is what the owner came to read.
+ * way `show` marks a body (015), the lines after the first under the name. A turn keeps all its
+ * lines — none is dropped, because the turn is what the owner came to read — and each of them is
+ * cut to the terminal's width by the frame, like every other line on the screen.
  */
 function turnLines(
   event: Extract<Activity, { type: "comment" }>,
@@ -430,7 +431,7 @@ const KEYS = [
   "  g, G         the first row and the last",
   "  enter        open the chat on the card under the cursor",
   "  tab          flip between the chat and the card",
-  "  esc, q       back to the board",
+  "  esc          back to the board",
   "  n            file a card, by title",
   "  s            start the card: Idea into Spec, Spec into Code",
   "  a            allow the open question",
@@ -441,7 +442,8 @@ const KEYS = [
   "  x            archive the card, after a question",
   "  o            a shell in the card's worktree",
   "  ?            these keys",
-  "  q            quit",
+  // `q` is two keys and neither of them is the chat's, where it is a letter like any other.
+  "  q            quit; in the card view, back to the board",
 ];
 
 function helpFrame(state: State, size: Size): string[] {

@@ -359,8 +359,10 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       redraw();
       if (prompting && state.prompt === null) return;
       // The chat's line ends a chunk the same way: a paste with a newline in it sends the line
-      // and what follows it is dropped, rather than becoming the next line's text (033).
-      if (before.kind === "chat" && key === "enter") return;
+      // and what follows it is dropped, rather than becoming the next line's text (033). Only
+      // an Enter that sent a line ends it, though — an empty one sends nothing, so a chunk that
+      // begins with a newline is the line the owner pasted and not a tail to drop.
+      if (before.kind === "chat" && key === "enter" && typed.length > 0) return;
     }
   }
 
