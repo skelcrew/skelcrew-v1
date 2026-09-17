@@ -20,7 +20,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, sep } from "node:path";
 import { type Activity, type Client, worktreesDir } from "@skelcrew/shared";
-import type { Command } from "../commands/command";
+import { type Command, START_A_DAEMON } from "../commands/command";
 import { formatId } from "../render";
 import {
   ARROW_KEYS,
@@ -404,7 +404,7 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     ]);
     if (outcome === "lost") {
       throw new Error(
-        `lost the daemon on ${deps.socketPath}; run \`bun run daemon\` from the repository and open the board again`,
+        `lost the daemon on ${deps.socketPath}; ${START_A_DAEMON}, and open the board again`,
       );
     }
   } finally {

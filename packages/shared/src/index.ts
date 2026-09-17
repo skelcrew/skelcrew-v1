@@ -7,6 +7,7 @@ export {
   DB_FILE,
   dataPaths,
   findRepoRoot,
+  prepareDataDir,
   resolveDataDir,
   SOCKET_FILE,
   WORKTREES_DIR_NAME,

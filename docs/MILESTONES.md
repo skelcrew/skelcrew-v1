@@ -1287,6 +1287,18 @@ Out of it: a chat with the crew outside any card (no card, no conversation); a m
 owner's side answering free text (a member, later, per the Slack notes); waking an agent to
 answer when no run is live (a run kind of its own, if ever, and cards drive the runner).
 
+**An open question, deliberately left open on 2026-09-17.** How far past this spec "becoming
+a harness" should go. One side: CLAUDE.md's positioning says the terminal and Claude Code stay
+the tool for attended, exploratory work and skelcrew owns the asynchronous tier; the field scan
+says the surface is commodity; so the things a harness has that 033 lacks — an answer when no
+run is live, streaming text, expandable tool calls — would be building a worse Claude Code, and
+the right move when no run is live is `o` into the worktree and the owner's own harness there.
+The other side, the owner's: going into a card and prompting the agent to make changes from
+inside it may be exactly what the product is. Neither is decided. The owner uses 033 for a
+while first, and the next spec on this screen is written from that use, not from either
+argument. What passes either test now: stopping a run from the screen, an operator control
+over unattended work.
+
 ## Later, deliberately unplanned
 
 GUI, maybe (the TUI is 026). Remote clients watching a daemon on an always-on machine. Second

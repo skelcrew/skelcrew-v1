@@ -460,7 +460,15 @@ test("losing the daemon says so, exits, and leaves the terminal as it found it",
 
   fake.lose();
   await expect(running).rejects.toThrow(/lost the daemon on \/tmp\/skelcrew\.sock/);
-  await running.catch(() => {});
+  // And how to get one back, in the sentence every message about a daemon that is not there
+  // uses (030's criterion 11): the screen's is one of them, and it named `bun run daemon`,
+  // which no longer exists.
+  const lost = await running.then(
+    () => "",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  expect(lost).toContain("run `skelcrew` in a terminal, or `skelcrew --headless`");
+  expect(lost).not.toContain("bun run daemon");
   expect(terminal.written()).toEndWith(ALTERNATE_SCREEN_OFF);
   expect(terminal.raw).toEqual([true, false]);
 });

@@ -148,6 +148,12 @@ export interface RunnerOptions {
   summaryMs?: number;
   /** How often a live run renews its lease. Defaults to 30 s. */
   heartbeatMs?: number;
+  /**
+   * Called after a run has settled and its slot is free, so `liveRuns()` already reads without
+   * it. The moment the daemon's idle rule is asked (030); the runner itself has no opinion
+   * about the daemon's life.
+   */
+  onRunSettled?: () => void;
 }
 
 export interface Runner {
@@ -156,6 +162,12 @@ export interface Runner {
    * its own card); resolves once the job in flight and the last of those runs have finished.
    */
   stop(): Promise<void>;
+  /**
+   * How many runs are in flight right now. A run is a live claim held by the runner (024), and
+   * the map below is the only place that knows it: a claim made by hand is not one. The second
+   * of the two counts the daemon's idle rule reads (030).
+   */
+  liveRuns(): number;
 }
 
 type Job = { kind: "reconcile" } | { kind: "scan" } | { kind: "teardown"; cardId: number };
@@ -375,6 +387,12 @@ export function startRunner(options: RunnerOptions): Runner {
         // run, which the sweep reports as `run_interrupted`, and scanning over it here would
         // start a second run of the same card a moment after the first gave up on it.
         if (find(id)?.claim?.by !== member.id) enqueue({ kind: "scan" });
+        // Last, after that scan is queued: with the pump free the scan runs before this line —
+        // it claims synchronously — so a run it started is already live when the daemon's idle
+        // rule reads the count (030). Behind a busy pump it has not run yet, and the rule may
+        // then find no run and end a daemon nobody is connected to; the card that scan would
+        // have taken is still queued in its phase, and the next daemon takes it.
+        options.onRunSettled?.();
       });
     live.set(id, running);
   }
@@ -883,6 +901,7 @@ export function startRunner(options: RunnerOptions): Runner {
   enqueue({ kind: "scan" });
 
   return {
+    liveRuns: () => live.size,
     async stop() {
       stopped = true;
       unsubscribe();

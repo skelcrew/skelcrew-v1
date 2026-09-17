@@ -6,7 +6,7 @@
  * subprocess. The daemon and every client resolve the socket from this one walk, so they
  * cannot drift.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 export const DATA_DIR_NAME = ".skelcrew";
@@ -60,6 +60,24 @@ export function resolveDataDir(
 
 export function dataPaths(dir: string): { dbPath: string; socketPath: string } {
   return { dbPath: join(dir, DB_FILE), socketPath: join(dir, SOCKET_FILE) };
+}
+
+/**
+ * Creates the directory if missing and makes it private either way: it holds the socket.
+ * The directory also ignores itself (`*`, which covers the ignore file too), so a target
+ * repository with no `.skelcrew/` entry of its own never sees the socket, the database, or
+ * a runner worktree in `git status` or in tooling that honours ignore files.
+ *
+ * Shared rather than the daemon's own, because since 030 the daemon is not the first to write
+ * there: the screen opens `<data dir>/daemon.log` before the daemon it starts exists, and a
+ * daemon that then fails to start would otherwise leave a directory the repository shows.
+ * Whoever writes into the directory first calls this.
+ */
+export function prepareDataDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const ignore = join(dir, ".gitignore");
+  if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
 }
 
 /**
