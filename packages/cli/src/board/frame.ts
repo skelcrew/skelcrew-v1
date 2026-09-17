@@ -235,6 +235,7 @@ const KEYS = [
   "  g, G         the first row and the last",
   "  enter        open the card under the cursor",
   "  esc, q       back to the board",
+  "  s            start the card: Idea into Spec, Spec into Code",
   "  a            allow the open question",
   "  d            deny it, with a message",
   "  m            take the move the request offers",

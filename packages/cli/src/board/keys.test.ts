@@ -344,3 +344,45 @@ test("the same keys act on the card the card view shows", () => {
   expect(typed.state.prompt).toEqual({ kind: "deny", cardId: 7, text: "q" });
   expect(press(typed.state, "escape").state.view).toEqual(open.view);
 });
+
+// --- 032: starting a card ---
+
+test("s starts the card, and says why it does not on the phases a run or the merge ends", () => {
+  for (const [phase, to] of [
+    ["idea", "spec"],
+    ["spec", "code"],
+  ] as const) {
+    const start = asking({ phase });
+    const started = press(start, "s");
+    // The owner's approval carries no message: the card's body is what is being approved.
+    expect(started.action).toEqual({ kind: "move", id: 7, phase: to });
+    expect(started.state).toEqual(start);
+  }
+
+  const said: string[] = [];
+  for (const [phase, sentence] of [
+    ["code", "pull request exists"],
+    ["pr", "merge the pull request"],
+    ["done", "is done"],
+  ] as const) {
+    const stays = asking({ phase });
+    const pressed = press(stays, "s");
+    expect(pressed.action).toBeUndefined();
+    expect(pressed.state.message).toContain(sentence);
+    expect(quiet(pressed.state)).toEqual(stays);
+    said.push(pressed.state.message);
+  }
+  // One sentence each, and no two the same.
+  expect(new Set(said).size).toBe(3);
+
+  // And the same key on the card the card view shows: the same answer in every phase.
+  for (const phase of ["idea", "spec", "code", "pr", "done"] as const) {
+    const board = asking({ phase });
+    const open = press(board, "enter").state;
+    const fromCard = press(open, "s");
+    expect(fromCard.action).toEqual(press(board, "s").action);
+    expect(fromCard.state.message).toBe(press(board, "s").state.message);
+  }
+  const idea = press(asking({ phase: "idea" }), "enter").state;
+  expect(press(idea, "s").action).toEqual({ kind: "move", id: 7, phase: "spec" });
+});

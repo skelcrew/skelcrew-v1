@@ -258,7 +258,8 @@ test("the keys screen names every key, including the ones that answer", () => {
     columns: 100,
     rows: 24,
   }).map(plain);
-  for (const key of ["a", "d", "m", "b", "c", "o"]) {
+  // 032's criterion 8, in part: `s` beside the six 027 added.
+  for (const key of ["a", "d", "m", "b", "c", "o", "s"]) {
     expect(shown.some((line) => line.trimStart().startsWith(key))).toBe(true);
   }
 });

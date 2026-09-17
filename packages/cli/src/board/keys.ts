@@ -45,8 +45,33 @@ function previousPhase(phase: Phase): Phase | undefined {
   return index > 0 ? (PHASES[index - 1] as (typeof PHASES)[number]).id : undefined;
 }
 
+/** The phase after this one on the track; Done has none. */
+function nextPhase(phase: Phase): Phase | undefined {
+  const index = PHASES.findIndex((each) => each.id === phase);
+  const next = index < 0 ? undefined : PHASES[index + 1];
+  return next?.id;
+}
+
 /**
- * The keys that answer, on one card: the same six wherever the cursor is, because the card
+ * Why `s` leaves a card where it is, by the phase it is in — one sentence each, and `null`
+ * where `s` starts the card instead. The phases whose exit belongs to a run's artefact or to
+ * the merge are not the owner's to force from a key: a run moves a card out of Code when the
+ * pull request exists (014), and the daemon moves it out of PR when that pull request is
+ * merged (018). Every phase is named, so a sixth one is a compile error here rather than a
+ * silent move.
+ */
+const STAYS: Record<Phase, ((id: string) => string) | null> = {
+  idea: null,
+  spec: null,
+  code: (id) =>
+    `${id} is in ${phaseName("code")}; the run moves it to ${phaseName("pr")} when the pull request exists`,
+  pr: (id) =>
+    `${id} is in ${phaseName("pr")}; merge the pull request and the daemon moves it to ${phaseName("done")}`,
+  done: (id) => `${id} is done`,
+};
+
+/**
+ * The keys that answer, on one card: the same seven wherever the cursor is, because the card
  * view shows one card and the board's selected row is one card. `undefined` when the key is
  * not one of them.
  */
@@ -77,6 +102,16 @@ function act(state: State, cardId: number, key: string): Pressed | undefined {
         return says(state, `${formatId(cardId)} is in ${phaseName("idea")}; there is nowhere back`);
       }
       return opens(state, { kind: "back", cardId, phase, text: "" });
+    }
+    case "s": {
+      // The owner's approval, and it carries no message: the card's body is the artefact being
+      // approved, and feedback with a move is `b`.
+      const card = state.cards.find((each) => each.id === cardId);
+      const stays = card === undefined ? null : STAYS[card.phase];
+      if (stays !== null) return says(state, stays(formatId(cardId)));
+      const phase = card === undefined ? undefined : nextPhase(card.phase);
+      if (phase === undefined) return says(state, `${formatId(cardId)} is not on the board`);
+      return { state, action: { kind: "move", id: cardId, phase } };
     }
     case "c":
       return opens(state, { kind: "comment", cardId, text: "" });

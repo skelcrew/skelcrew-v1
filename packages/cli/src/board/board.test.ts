@@ -599,7 +599,10 @@ test("a refused call puts the daemon's message on the screen and changes nothing
   await running;
 });
 
-/** The cards the table presses its keys on: one in Code with a request offering PR. */
+/**
+ * The cards the table presses its keys on: one in Code with a request offering PR, and one in
+ * Idea for the key that starts a card, which does nothing in Code.
+ */
 function asking(): Card[] {
   return [
     card(3, "acting from the screen", {
@@ -612,6 +615,7 @@ function asking(): Card[] {
         raisedAt: 1,
       },
     }),
+    card(4, "starting from the screen", { phase: "idea" }),
   ];
 }
 
@@ -677,6 +681,9 @@ test("every key sends exactly what its CLI command sends", async () => {
       argv: ["3", "spec", "-m", "needs a test"],
     },
     { keys: ["c", ..."looks good", "\r"], command: commentCommand, argv: ["3", "looks good"] },
+    // 032: `s` starts a card. `G` is the last row, which is the Idea card: `s` does nothing on
+    // the one in Code, where the run's artefact ends the phase.
+    { keys: ["G", "s"], command: mvCommand, argv: ["4", "spec"] },
   ];
 
   const sent: Call[] = [];
