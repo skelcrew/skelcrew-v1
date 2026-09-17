@@ -263,6 +263,17 @@ test("the keys screen names every key, including the ones that answer", () => {
   }
 });
 
+test("the keys screen names the arrows beside j and k", () => {
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), {
+    columns: 100,
+    rows: 24,
+  }).map(plain);
+  const moving = shown.find((line) => line.trimStart().startsWith("j, k"));
+  expect(moving).toBeDefined();
+  expect(moving).toContain("↑");
+  expect(moving).toContain("↓");
+});
+
 test("no frame writes a colour", () => {
   const views: State[] = [
     state(),

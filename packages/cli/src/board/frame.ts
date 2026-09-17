@@ -231,18 +231,18 @@ function cardFrame(state: State, view: View & { kind: "card" }, size: Size, now:
 }
 
 const KEYS = [
-  "  j, k     down and up; in a card, scroll",
-  "  g, G     the first row and the last",
-  "  enter    open the card under the cursor",
-  "  esc, q   back to the board",
-  "  a        allow the open question",
-  "  d        deny it, with a message",
-  "  m        take the move the request offers",
-  "  b        send the card back a phase, with a message",
-  "  c        comment on the card",
-  "  o        a shell in the card's worktree",
-  "  ?        these keys",
-  "  q        quit",
+  "  j, k, ↓, ↑   down and up; in a card, scroll",
+  "  g, G         the first row and the last",
+  "  enter        open the card under the cursor",
+  "  esc, q       back to the board",
+  "  a            allow the open question",
+  "  d            deny it, with a message",
+  "  m            take the move the request offers",
+  "  b            send the card back a phase, with a message",
+  "  c            comment on the card",
+  "  o            a shell in the card's worktree",
+  "  ?            these keys",
+  "  q            quit",
 ];
 
 function helpFrame(state: State, size: Size): string[] {
