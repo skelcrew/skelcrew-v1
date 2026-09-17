@@ -342,7 +342,12 @@ export function chatLines(state: State): ConversationLine[] {
  * two bottom lines — who is listening, and the input — are always drawn, so what a terminal
  * this size has room for is whatever is left.
  */
-function chatShape(state: State, cardId: number, size: Size, now: number) {
+function chatShape(
+  state: State,
+  cardId: number,
+  size: Size,
+  now: number,
+): { head: string[]; room: number } {
   const detail = chatCard(state, cardId);
   const header = detail === null ? [READING] : cardHeader(detail, state.members, state.me, now);
   const available = Math.max(0, size.rows - 2);
@@ -352,7 +357,12 @@ function chatShape(state: State, cardId: number, size: Size, now: number) {
 }
 
 /** The scroll the chat draws at: back as far as the conversation's first line, and no further. */
-function chatScrollWithin(state: State, view: View & { kind: "chat" }, size: Size, now: number) {
+function chatScrollWithin(
+  state: State,
+  view: View & { kind: "chat" },
+  size: Size,
+  now: number,
+): number {
   const { room } = chatShape(state, view.cardId, size, now);
   const lines = conversationLines(chatCard(state, view.cardId), state.members).length;
   return Math.min(Math.max(0, view.scroll), Math.max(0, lines - room));

@@ -202,8 +202,11 @@ test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () 
   expect(press(board, "q")).toEqual({ state: board, action: { kind: "quit" } });
 
   const open = openCard(board);
+  const chat = press(board, "enter").state;
   const help = press(board, "?").state;
-  for (const view of [board, open, help]) {
+  // Ctrl-C is the one key every view answers the same way, the chat — where `q` is a letter —
+  // included.
+  for (const view of [board, open, chat, help]) {
     expect(press(view, "ctrl-c").action).toEqual({ kind: "quit" });
   }
 

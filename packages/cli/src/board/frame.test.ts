@@ -12,7 +12,15 @@ import type {
   OpenAttention,
 } from "@skelcrew/shared";
 import { activityLine, firstLine, status } from "../render";
-import { cardLines, clampScroll, conversationLines, frame, sizeOf } from "./frame";
+import {
+  cardLines,
+  clampScroll,
+  conversationLines,
+  frame,
+  MIN_COLUMNS,
+  MIN_ROWS,
+  sizeOf,
+} from "./frame";
 import type { State, View } from "./state";
 
 const ME = 1;
@@ -492,6 +500,23 @@ test("the chat frame is the header, the conversation, the listening line and the
   expect(shown[INPUT]).toContain("how is it going");
   expect(lines[INPUT]).toContain(`${ESC}[7m`);
   expect(lines.every((line) => width(line) <= SIZE.columns)).toBe(true);
+
+  // The smallest terminal the screen draws on at all, with a header taller than the room left
+  // under it and a line longer than the width: still exactly as tall as the terminal, and
+  // still never wider — a row too many scrolls the screen on every redraw.
+  const small = { columns: MIN_COLUMNS, rows: MIN_ROWS };
+  const tight = frame(
+    state({
+      view: chat(1, { text: "x".repeat(200) }),
+      detail: { ...(CARDS[0] as Card), activity: [] },
+    }),
+    small,
+    NOW,
+  );
+  expect(tight.length).toBe(small.rows);
+  expect(tight.every((line) => width(line) <= small.columns)).toBe(true);
+  // The input keeps the bottom row whatever the header did above it.
+  expect(tight[small.rows - 1]).toContain(`${ESC}[7m`);
 });
 
 test("the chat scrolls back to the first line of the conversation, and no further", () => {

@@ -344,16 +344,12 @@ export function activityLine(event: Activity, members: Member[]): string {
 }
 
 /**
- * Header, blank line, the body by line, blank line, the activity oldest first.
+ * Everything `show` prints above the body: the card, what it is doing, and its refs. It leads
+ * with `now:` — the same status text a row carries — so a reader who reads only the top has
+ * what the card is doing and what it needs.
  *
- * The header leads with `now:` — the same status text a row carries — so a reader who reads
- * only the top has what the card is doing and what it needs. The activity's order is unchanged:
- * oldest first, with 015's line marking depending on that layout.
- */
-/**
- * Everything `show` prints above the body: the card, what it is doing, and its refs. Exported
- * because the chat view draws the same lines over the conversation (033) — one derivation, so
- * the two views and `show` cannot come to disagree about a card.
+ * Exported because the chat view draws these same lines over the conversation (033) — one
+ * derivation, so the two views and `show` cannot come to disagree about a card.
  */
 export function cardHeader(card: Card, members: Member[], me: number, now = Date.now()): string[] {
   const state = status(card, me, members, now);
@@ -370,6 +366,10 @@ export function cardHeader(card: Card, members: Member[], me: number, now = Date
   ];
 }
 
+/**
+ * Header, blank line, the body by line, blank line, the activity oldest first. The activity's
+ * order is unchanged: oldest first, with 015's line marking depending on that layout.
+ */
 export function cardView(
   card: CardDetail,
   members: Member[],
