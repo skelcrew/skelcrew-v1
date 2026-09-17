@@ -44,7 +44,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 28 | 031 The arrow keys move the cursor | landed, PR #29 — two review rounds; the decoder read sequences only at the start of a read |
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
-| 31 | 034 The keys that apply are on the screen | planned; after 033 |
+| 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
 | | 005 | dropped |
 
 ## Background
