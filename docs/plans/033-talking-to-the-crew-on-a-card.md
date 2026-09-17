@@ -278,5 +278,16 @@ the two lines arriving as one string); the change was reverted and none of it is
 `bun test`. Green every time — **901**, **902**, **903**, **904** pass, 0 fail, 35 files, five
 new tests over the 899 this round started from. `bun run fix` once, for Biome's formatting of a
 test literal. `bun run check:harness` was not run again: it spawns the pinned coding agent and
-covers the playbooks and the runner's allowlist, and this round changes neither. The daemon
-flake recorded above did not recur in this round's four full runs.
+covers the playbooks and the runner's allowlist, and this round changes neither.
+
+**The flake recorded above got worse, and then went away.** After the fourth commit's green run
+(85 s), four full runs in a row stalled: one or two tests each, never the same ones, every one of
+them a test that spawns a real process and waits on a 5-second deadline — `cli.test.ts`'s
+`--headless` and `ls marks a card waiting on me`, `process.test.ts`'s `--stop-when-idle` and
+sweep cases, `runner.test.ts`'s teardown case. Each stalled test reported ~300 s elapsed against
+its 5 s deadline, and the suite took 388–697 s instead of 85 s, while the machine sat at a load
+of 1.6 with nothing burning CPU (an Apple software-update daemon had been at 30 % earlier, and a
+skelcrew daemon left behind by a stalled run was found and killed). Every one of them passed when
+its file was run alone, in seconds. The last full run, on the final tree, was **904 pass, 0 fail,
+exit 0, 100 s**. Nothing on this branch touches `packages/daemon` or `packages/shared`: both are
+byte-identical to `main`, and `packages/cli` alone is 159 pass in 7 s.
