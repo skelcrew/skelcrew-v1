@@ -148,7 +148,10 @@ run (cards drive the runner).
 5. `conversationLines` for a fixture activity renders: the owner's comment as the owner's line;
    a `runner` comment with three lines as three marked lines attributed to the agent; a tool
    summary comment as it is; `card_moved`, `claimed`, `attention_requested` and
-   `attention_resolved` as dim single lines; and the order is the activity's order. No colour
+   `attention_resolved` as dim entries, each as `activityLine` renders it (a request with a
+   two-line note is two dim lines; the rest one); and the order is the activity's order.
+   (Amended with the Desired-behavior paragraph, after review round 2 found the criterion
+   still saying "single lines".) No colour
    escape anywhere in the frame (026's rule).
 6. The chat frame at 100×24 shows the header at the top, the newest conversation lines at the
    bottom of the middle, the listening line, and the input line with the reverse-video cursor;

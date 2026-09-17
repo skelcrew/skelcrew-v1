@@ -363,6 +363,11 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       // an Enter that sent a line ends it, though — an empty one sends nothing, so a chunk that
       // begins with a newline is the line the owner pasted and not a tail to drop.
       if (before.kind === "chat" && key === "enter" && typed.length > 0) return;
+      // And so does leaving the chat mid-chunk. A tab in pasted text — two columns of a table
+      // — flips to the card view, where the letters after it would be keys: `a` answering the
+      // open question, `o` opening a shell. In the chat a paste is text, so what follows the
+      // flip is dropped rather than acted on, whichever exit the chunk took.
+      if (before.kind === "chat" && state.view.kind !== "chat") return;
     }
   }
 

@@ -1143,6 +1143,72 @@ test("a chunk that begins with a newline is the line after it, not nothing", asy
   await running;
 });
 
+test("a pasted tab in the chat flips the view, and the rest of the read is not keys", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  // Text with a tab in it is ordinary paste material — two columns of a table, say. The tab
+  // flips to the card view, and what follows it in the same read is the owner's text, not the
+  // card view's keys: `a` there would answer card 1's open question.
+  terminal.type("name\tage");
+  await until("the card view", () => (terminal.frames().at(-1) ?? "").includes("the spec"));
+  // Long enough for the rest of the read to have acted, if it were going to.
+  await Bun.sleep(20);
+
+  expect(calls("resolveAttention")).toEqual([]);
+  expect(calls("moveCard")).toEqual([]);
+
+  // Back to the chat, where the line is where it was, and a chunk whose tail would open a
+  // prompt instead of making a call.
+  terminal.type("\t");
+  await until("the chat again", () => input(terminal).includes("name"));
+  terminal.type("!\tdeny it");
+  await until("the card view again", () => (terminal.frames().at(-1) ?? "").includes("the spec"));
+  await Bun.sleep(20);
+
+  expect(terminal.frames().at(-1)).not.toContain("deny #1");
+  expect(calls("resolveAttention")).toEqual([]);
+
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a pasted Esc in the chat acts on nothing after it either", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+  terminal.type("news");
+  await until("the line", () => input(terminal).includes("news"));
+
+  // The chat's other exit. An escape character with more after it is a sequence this screen
+  // uses for nothing, so the read is dropped where it starts (026) — before it, the line is
+  // whole, and after it nothing acts.
+  terminal.type("\u001bage");
+  await Bun.sleep(20);
+
+  expect(calls("resolveAttention")).toEqual([]);
+  expect(calls("moveCard")).toEqual([]);
+  expect(input(terminal)).toContain("news");
+  expect(terminal.frames().at(-1)).toContain("created:");
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */
