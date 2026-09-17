@@ -70,8 +70,10 @@ the board alone), and runs the runner unless told not to. Its stdout and stderr 
 It survives the terminal it was started from closing: a window closed over a live run is not a
 `run_interrupted`.
 
-**It stops when nothing needs it.** A daemon the screen started exits on its own when no client
-is connected and no run is live. So `q` with nothing running takes the daemon with the screen;
+**It stops when nothing needs it.** A daemon the screen started exits on its own once a client
+has connected and gone, when no client is connected and no run is live. A daemon no client has
+reached yet is still needed, whatever it did in the meantime: the screen that started it is on
+its way. So `q` with nothing running takes the daemon with the screen;
 `q` with runs in flight leaves them to finish, and the daemon exits when the last one ends with
 nobody connected. A later `skelcrew` attaches to a daemon that is still running, and a command
 run meanwhile (`skelcrew add …` from another terminal) is a client like any other. After the
@@ -119,8 +121,10 @@ alternate screen is never entered before there is a daemon to draw from.
 
 **The daemon's life is the daemon's.** The entry file takes one argument, `--stop-when-idle`,
 set only by the screen. Under it the daemon ignores SIGHUP, and exits through the existing
-`shutdown()` when it has no connection and no live run — checked when a connection closes and
-when a run settles. `startServer` exposes its connection count (the set at `server.ts:55`) and
+`shutdown()` when it has no connection and no live run and at least one client has connected
+since it started — checked when a connection closes and when a run settles. A connection counts
+as a client only once it has said `hello`, so a probe that opens and closes the socket, as a
+second daemon's startup check does, neither counts nor asks the rule. `startServer` exposes its connection count (the set at `server.ts:55`) and
 `Runner` its live count (the map at `runner.ts:259`); both are one accessor each. The rule is
 in the daemon rather than the client because the daemon is the one that knows who is connected
 and what is running; a client deciding the daemon's life would be a client holding state, and a
