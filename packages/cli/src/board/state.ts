@@ -25,7 +25,13 @@ import { firstLine } from "../render";
  */
 export type View =
   | { kind: "board" }
-  | { kind: "card"; cardId: number; scroll: number }
+  /**
+   * The card as `show` prints it. `text` is the line the chat on this card was writing, which
+   * the card view carries but never draws: the body is one Tab away, so the flip there and back
+   * cannot cost the owner the half-written reply (033). It is empty for a card view opened any
+   * other way, and leaving for the board drops it.
+   */
+  | { kind: "card"; cardId: number; scroll: number; text: string }
   | { kind: "chat"; cardId: number; scroll: number; text: string }
   | { kind: "help"; from: View };
 

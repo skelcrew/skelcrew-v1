@@ -184,7 +184,7 @@ test("a view open on a card that is archived closes to the board", () => {
   // There is no row behind it to come back to, and no card left to talk to: the same rule for
   // the card view (032) and for the chat, which is the same card by another view (033).
   for (const view of [
-    { kind: "card", cardId: 3, scroll: 0 },
+    { kind: "card", cardId: 3, scroll: 0, text: "" },
     { kind: "chat", cardId: 3, scroll: 0, text: "half a line" },
   ] as const) {
     const open = state({ view, cursor: 2 });

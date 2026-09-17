@@ -122,7 +122,7 @@ test("Enter opens the chat on the card under the cursor, and Tab flips to the ca
     // Tab flips to 027's card view, and Tab there flips back.
     const card = press(opened.state, "tab");
     expect(card.action).toBeUndefined();
-    expect(card.state.view).toEqual({ kind: "card", cardId, scroll: 0 });
+    expect(card.state.view).toEqual({ kind: "card", cardId, scroll: 0, text: "" });
     expect(press(card.state, "tab").state.view).toEqual({
       kind: "chat",
       cardId,
@@ -182,7 +182,10 @@ test("archiving the card the keys were opened from leaves the keys open over the
   // was opened from has left the board, so there is nothing to go back to but the board.
   const open = openCard(state({ cursor: 2 }));
   const help = press(open, "?").state;
-  expect(help.view).toEqual({ kind: "help", from: { kind: "card", cardId: 3, scroll: 0 } });
+  expect(help.view).toEqual({
+    kind: "help",
+    from: { kind: "card", cardId: 3, scroll: 0, text: "" },
+  });
 
   const event: Activity = {
     seq: 1,
@@ -234,7 +237,7 @@ function detail(): CardDetail {
 
 test("j and k scroll the card view, newest first, and stop at both ends", () => {
   const open = openCard(state({ cursor: 2, detail: detail() }));
-  expect(open.view).toEqual({ kind: "card", cardId: 3, scroll: 0 });
+  expect(open.view).toEqual({ kind: "card", cardId: 3, scroll: 0, text: "" });
 
   // It opens at the newest: `j` cannot go further down.
   expect(press(open, "j").state.view).toEqual(open.view);
@@ -247,6 +250,7 @@ test("j and k scroll the card view, newest first, and stop at both ends", () => 
     kind: "card",
     cardId: 3,
     scroll: cardLines(open, NOW).length - 1,
+    text: "",
   });
   expect(press(current, "j").state.view).toMatchObject({
     scroll: cardLines(open, NOW).length - 2,
@@ -386,7 +390,7 @@ test("o asks for a shell on the card under the cursor", () => {
 
 test("the same keys act on the card the card view shows", () => {
   const open = openCard(asking());
-  expect(open.view).toEqual({ kind: "card", cardId: 7, scroll: 0 });
+  expect(open.view).toEqual({ kind: "card", cardId: 7, scroll: 0, text: "" });
 
   expect(press(open, "a").action).toEqual({ kind: "resolve", id: 7, text: "allow" });
   expect(press(open, "m").action).toEqual({ kind: "move", id: 7, phase: "pr" });
@@ -550,6 +554,28 @@ test("in the chat every printable key is text, and Enter sends the line as a com
   const empty = press(sent.state, "enter");
   expect(empty.action).toBeUndefined();
   expect(empty.state).toEqual(sent.state);
+});
+
+test("Tab keeps the half-written line, on the card the chat is on", () => {
+  // The body is one Tab away, so the flip cannot cost the owner the reply she was writing:
+  // flip to read it, flip back, and the line is where it was.
+  const typed = typing(openChat(asking()), [..."half a "]).state;
+  const card = press(typed, "tab").state;
+  expect(card.view).toMatchObject({ kind: "card", cardId: 7, scroll: 0 });
+  const back = press(card, "tab").state;
+  expect(back.view).toEqual({ kind: "chat", cardId: 7, scroll: 0, text: "half a " });
+  // And typing goes on where it left off.
+  expect(typing(back, [..."line"]).state.view).toMatchObject({ text: "half a line" });
+
+  // Leaving for the board drops it, as Esc always did: Enter on a row opens an empty line.
+  const board = press(press(back, "escape").state, "escape").state;
+  expect(board.view).toEqual({ kind: "board" });
+  expect(press(board, "enter").state.view).toEqual({
+    kind: "chat",
+    cardId: 7,
+    scroll: 0,
+    text: "",
+  });
 });
 
 test("with a question open, allow and deny answer it, and every other line is a comment", () => {

@@ -11,9 +11,17 @@ import { cardIdAt, type Prompt, questionOf, rowCount, type State, type View } fr
 /** The chat view, which carries the line being typed as well as the card and the scroll. */
 type ChatView = Extract<View, { kind: "chat" }>;
 
-/** The chat on a card, open with an empty line at the newest of the conversation. */
-function chatOn(cardId: number): ChatView {
-  return { kind: "chat", cardId, scroll: 0, text: "" };
+/** The card view, which carries the chat's line for the flip back but draws none of it. */
+type CardView = Extract<View, { kind: "card" }>;
+
+/** The chat on a card, at the newest of the conversation, with the line it was left writing. */
+function chatOn(cardId: number, text = ""): ChatView {
+  return { kind: "chat", cardId, scroll: 0, text };
+}
+
+/** The card view of a card, holding the chat's line while the owner reads the body. */
+function cardOn(cardId: number, text = ""): CardView {
+  return { kind: "card", cardId, scroll: 0, text };
 }
 
 /**
@@ -22,8 +30,8 @@ function chatOn(cardId: number): ChatView {
  * the board would sit there over the card's open question, which is the one thing the view is
  * there to show (033, after review round 1).
  */
-function entersChat(state: State, cardId: number): Pressed {
-  return { state: { ...state, view: chatOn(cardId), message: "" } };
+function entersChat(state: State, cardId: number, text = ""): Pressed {
+  return { state: { ...state, view: chatOn(cardId, text), message: "" } };
 }
 
 /**
@@ -245,7 +253,8 @@ function pressChat(state: State, view: ChatView, key: string): Pressed {
   });
   switch (key) {
     case "tab":
-      return { state: { ...state, view: { kind: "card", cardId: view.cardId, scroll: 0 } } };
+      // The line goes with the flip: the card view holds it, undrawn, until Tab comes back.
+      return { state: { ...state, view: cardOn(view.cardId, view.text) } };
     case "escape":
       if (view.text.length === 0) return { state: { ...state, view: { kind: "board" } } };
       return { state: { ...state, view: { ...view, text: "" } } };
@@ -306,17 +315,19 @@ function pressBoard(state: State, key: string): Pressed {
   }
 }
 
-function pressCard(state: State, cardId: number, scroll: number, key: string): Pressed {
+function pressCard(state: State, view: CardView, key: string): Pressed {
+  const cardId = view.cardId;
   const acted = act(state, cardId, key);
   if (acted !== undefined) return acted;
   switch (key) {
     case "tab":
-      return entersChat(state, cardId);
+      // Back to the line this view was flipped from, which it has been holding since.
+      return entersChat(state, cardId, view.text);
     // The scroll counts lines up from the newest, so `k` goes back and `j` returns.
     case "j":
-      return scrollTo(state, scroll - 1);
+      return scrollTo(state, view.scroll - 1);
     case "k":
-      return scrollTo(state, scroll + 1);
+      return scrollTo(state, view.scroll + 1);
     case "q":
     case "escape":
       return { state: { ...state, view: { kind: "board" } } };
@@ -358,7 +369,7 @@ export function press(state: State, key: string): Pressed {
     case "board":
       return pressBoard(state, moving(key));
     case "card":
-      return pressCard(state, state.view.cardId, state.view.scroll, moving(key));
+      return pressCard(state, state.view, moving(key));
     case "chat":
       // The arrows are not `j` and `k` here: both letters are text.
       return pressChat(state, state.view, key);

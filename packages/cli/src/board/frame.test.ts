@@ -278,7 +278,7 @@ test("the message is the bottom line, and the prompt takes it while one is open"
   // And it is the bottom line of the card view too.
   const card = frame(
     state({
-      view: { kind: "card", cardId: 1, scroll: 0 },
+      view: { kind: "card", cardId: 1, scroll: 0, text: "" },
       detail: detail(),
       prompt: { kind: "deny", cardId: 1, text: "no" },
     }),
@@ -326,7 +326,7 @@ test("no frame writes a colour", () => {
     state({ view: { kind: "help", from: { kind: "board" } } }),
     state({ message: "lost the daemon" }),
     state({ prompt: { kind: "deny", cardId: 1, text: "not yet" } }),
-    state({ view: { kind: "card", cardId: 1, scroll: 0 }, detail: detail() }),
+    state({ view: { kind: "card", cardId: 1, scroll: 0, text: "" }, detail: detail() }),
     // 033's criterion 5: the chat draws dim lines and one reverse-video caret, and no colour.
     state({ view: chat(3, { text: "how is it going" }), detail: exchange() }),
   ];
@@ -620,7 +620,7 @@ test("the listening line says who is listening, or the open question, or the dae
 });
 
 test("the card view is what show prints, scrolled to the newest", () => {
-  const open = state({ view: { kind: "card", cardId: 1, scroll: 0 }, detail: detail() });
+  const open = state({ view: { kind: "card", cardId: 1, scroll: 0, text: "" }, detail: detail() });
   const lines = frame(open, { columns: 100, rows: 24 }, NOW).map(plain);
 
   // The newest of the feed is on screen; the oldest, thirty entries back, is not.
@@ -629,7 +629,7 @@ test("the card view is what show prints, scrolled to the newest", () => {
 
   // Scrolled back far enough, the header and the body, marked line by line, are on screen.
   const top = frame(
-    { ...open, view: { kind: "card", cardId: 1, scroll: 25 } },
+    { ...open, view: { kind: "card", cardId: 1, scroll: 25, text: "" } },
     { columns: 100, rows: 24 },
     NOW,
   ).map(plain);
@@ -641,7 +641,10 @@ test("the card view is what show prints, scrolled to the newest", () => {
 
 test("the card view stops with the card's first line at the top of the window", () => {
   const size = { columns: 100, rows: 24 };
-  const open = state({ view: { kind: "card", cardId: 1, scroll: 500 }, detail: detail() });
+  const open = state({
+    view: { kind: "card", cardId: 1, scroll: 500, text: "" },
+    detail: detail(),
+  });
   const lines = cardLines(open, NOW);
 
   // As far back as the card goes: one screenful of it, starting at its first line.
@@ -650,6 +653,7 @@ test("the card view stops with the card's first line at the top of the window", 
     kind: "card",
     cardId: 1,
     scroll: lines.length - (size.rows - 1),
+    text: "",
   });
 
   const drawn = frame(clamped, size, NOW).map(plain);
@@ -660,9 +664,11 @@ test("the card view stops with the card's first line at the top of the window", 
 
   // One line back down moves the window, rather than being swallowed by slack.
   const scroll = lines.length - (size.rows - 1) - 1;
-  const stepped = frame({ ...open, view: { kind: "card", cardId: 1, scroll } }, size, NOW).map(
-    plain,
-  );
+  const stepped = frame(
+    { ...open, view: { kind: "card", cardId: 1, scroll, text: "" } },
+    size,
+    NOW,
+  ).map(plain);
   expect(stepped[0]).not.toBe("#1 waiting on me");
   // Clamping what is already within the window changes nothing.
   expect(clampScroll(clamped, size)).toBe(clamped);
