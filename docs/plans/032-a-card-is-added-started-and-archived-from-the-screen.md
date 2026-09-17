@@ -115,3 +115,22 @@ The three minor findings, all landed in the slice they belong to:
 Test count: 879 before the branch, 886 after. Two daemon tests — `process.test.ts`'s sweep
 tests — timed out once each under a full `check` mid-round and passed on every other run,
 including in isolation; nothing on this branch touches `packages/daemon`.
+
+## Fix round 2 (post-approval)
+
+Review round 2 approved the branch with two minor findings; one is taken here.
+
+- **The keys screen kept a card that had left the board** (`state.ts:225`). `card_archived`
+  returned to the board only when the open view was that card. With the keys screen up over
+  it, `view.from` still named the card, so `enter`, `?`, then the archive event left
+  `{"kind":"help","from":{"kind":"card","cardId":7}}`, and the next key came back to a card
+  that was no longer on the board, still drawn from the stale `detail`. Now the check reads
+  the view behind the keys, and the keys stay open with `from` become the board — the owner
+  opened them and no key has closed them, so closing them is still the next key's job. Red
+  first, in `keys.test.ts`: "archiving the card the keys were opened from leaves the keys open
+  over the board" received `{"kind":"help","from":{"kind":"card","cardId":3,"scroll":0}}`
+  where `{"kind":"help","from":{"kind":"board"}}` was expected.
+- **The keys screen does not fit below 18 rows** — recorded by the orchestrator, not fixed
+  here; `frame.ts` is untouched in this round.
+
+Test count: 886 after round 1, 887 after this one (`bun run check`: 887 pass, 0 fail).

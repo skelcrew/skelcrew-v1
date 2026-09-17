@@ -14,7 +14,7 @@ import type {
 } from "@skelcrew/shared";
 import { cardLines } from "./frame";
 import { type Pressed, press } from "./keys";
-import type { State } from "./state";
+import { apply, type State } from "./state";
 
 const ME = 1;
 const MEMBERS: Member[] = [{ id: ME, name: "simon", kind: "human", createdAt: 1 }];
@@ -141,6 +141,26 @@ test("? opens the keys and any key closes them again", () => {
   const fromCard = press(open, "?").state;
   expect(fromCard.view).toEqual({ kind: "help", from: open.view });
   expect(press(fromCard, "j").state.view).toEqual(open.view);
+});
+
+test("archiving the card the keys were opened from leaves the keys open over the board", () => {
+  // The keys screen stays up — the owner opened it and no key has closed it — but the card it
+  // was opened from has left the board, so there is nothing to go back to but the board.
+  const open = press(state({ cursor: 2 }), "enter").state;
+  const help = press(open, "?").state;
+  expect(help.view).toEqual({ kind: "help", from: { kind: "card", cardId: 3, scroll: 0 } });
+
+  const event: Activity = {
+    seq: 1,
+    cardId: 3,
+    actorId: ME,
+    type: "card_archived",
+    data: {},
+    createdAt: NOW,
+  };
+  const archived = apply(help, event);
+  expect(archived.view).toEqual({ kind: "help", from: { kind: "board" } });
+  expect(press(archived, "j").state.view).toEqual({ kind: "board" });
 });
 
 test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () => {
