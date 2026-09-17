@@ -87,9 +87,11 @@ states and checks that the keys which act are the keys the hint names, minus an 
 list of deliberate omissions; a key whose only effect is a sentence is out of that test's
 reach, because such a key does nothing and is not named. (The approved text claimed the two
 "cannot disagree"; they are two hand-written lists kept in step by that test — corrected
-after review round 2.) `keys.ts`: `press`
-clears `state.message` before dispatching, so a sentence lives one frame; `says` still sets it
-in the same press. The help view gains `scroll`, kept in `View`'s `help` case, and `helpFrame`
+after review round 2.) the loop clears
+`state.message` after the frame carrying it has been drawn and the next key arrives, so a
+sentence lives at least one frame; `says` still sets it in its press. (The approved text put
+the clear in `press`; review round 1 found that lets a sentence be drawn on no frame when two
+keys land in one redraw window — corrected with the fix.) The help view gains `scroll`, kept in `View`'s `help` case, and `helpFrame`
 windows the lines the way `cardFrame` does; `press`'s `help` case handles `j`/`k`/`down`/`up`
 and closes on anything else. `KEYS` gains 033's two lines when 033 has landed (the implementer
 checks; this spec does not add them if they are there).
