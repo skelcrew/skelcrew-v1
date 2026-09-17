@@ -48,19 +48,25 @@ the end, except `? keys`, which is always present. What the hint says, by where 
 
 | Where | The hint, in order |
 | --- | --- |
-| board, a queue row (a request to the owner) | `a allow · d deny · m move` (m only when the request offers one) `· enter open · ? keys` |
-| board, a card row in Idea or Spec | `s start · enter open · c comment · b back` (not in Idea) `· x archive · o shell · n new · ? keys` |
-| board, a card row in Code, PR or Done | `enter open · c comment · b back · x archive · o shell · n new · ? keys` |
+| board, a queue row (a request to the owner) | `a allow · d deny · m move` (m only when the request offers one) `· enter chat · ? keys` |
+| board, a card row in Idea or Spec | `s start · enter chat · c comment · b back` (not in Idea) `· x archive · o shell · n new · ? keys` |
+| board, a card row in Code, PR or Done | `enter chat · c comment · b back · x archive · o shell · n new · ? keys` |
 | board, no rows | `n new · ? keys` |
-| card view | `tab chat · s start` (Idea, Spec only) `· c comment · b back` (not Idea) `· x archive · o shell · j k scroll · q back · ? keys` |
+| card view | `tab chat · q back · s start` (Idea, Spec only) `· c comment · b back` (not Idea) `· x archive · o shell · j k scroll` (only when the card has more lines than fit) `· ? keys` (order amended after review round 1: `q back` was last-but-one and the first to be cut on a wide terminal; `j k scroll` made conditional after round 2, which found it named on a card with nothing to scroll) |
 | chat view (033) | no hint; the bottom line is the input |
 | keys list | `j k scroll · q close` |
 
 A card row with an open question shows the queue row's hint, since `a`, `d` and `m` apply
-there too.
+there too. The card view of a card with an open question puts `a allow · d deny · m move`
+(m only when the request offers one) before its own items, for the same reason. (Both
+"enter chat" and this sentence were amended by the orchestrator after implementation: the
+spec said "enter open" from before 033 landed, and was silent on the card view with a
+question open.)
 
 **A message shows once.** A sentence set by a key or a call is shown on the frame that follows
-it and on no later one: the next key returns the hint (or sets its own sentence). So `s` on a
+it and until the next key, which returns the hint (or sets its own sentence); a redraw caused
+by an event, not a key, keeps the sentence, since the owner has not seen it answered yet.
+(The approved text said "on no later one"; corrected after review round 2.) So `s` on a
 Done card says "is done" until the owner presses anything, and then the line teaches again.
 
 **The keys list scrolls.** In the keys view, `j`, `k`, `Down` and `Up` scroll the list a line at
@@ -76,10 +82,16 @@ open or a message is showing, so the line never has two things on it.
 `frame.ts`: a pure `hint(state): string` beside `bottomLine`, tested on its own; `bottomLine`
 returns the prompt, else the message, else `dim(hint)`, cut by dropping items from the end
 before the last. The items come from the same facts `act` reads — `questionOf`, the card's
-phase, whether the row is a queue row — so the hint and the reducer cannot disagree about what
-applies; if a later spec adds a key, it adds an item next to its `act` case. `keys.ts`: `press`
-clears `state.message` before dispatching, so a sentence lives one frame; `says` still sets it
-in the same press. The help view gains `scroll`, kept in `View`'s `help` case, and `helpFrame`
+phase, whether the row is a queue row — and a test presses every printable key in a fixed set of
+states and checks that the keys which act are the keys the hint names, minus an explicit
+list of deliberate omissions; a key whose only effect is a sentence is out of that test's
+reach, because such a key does nothing and is not named. (The approved text claimed the two
+"cannot disagree"; they are two hand-written lists kept in step by that test — corrected
+after review round 2.) the loop clears
+`state.message` after the frame carrying it has been drawn and the next key arrives, so a
+sentence lives at least one frame; `says` still sets it in its press. (The approved text put
+the clear in `press`; review round 1 found that lets a sentence be drawn on no frame when two
+keys land in one redraw window — corrected with the fix.) The help view gains `scroll`, kept in `View`'s `help` case, and `helpFrame`
 windows the lines the way `cardFrame` does; `press`'s `help` case handles `j`/`k`/`down`/`up`
 and closes on anything else. `KEYS` gains 033's two lines when 033 has landed (the implementer
 checks; this spec does not add them if they are there).
@@ -101,7 +113,9 @@ columns, and scrolling is the card view's mechanism already.
 2. `hint(state)` for each row of the table renders the listed items in the listed order, and
    only those: asserted for a queue row with and without an offered move, a card row in each
    of the five phases, a card row whose card has an open question, an empty board, and the
-   card view in Idea and in Code. Every hint ends in `? keys`.
+   card view in Idea and in Code. Every hint the table lists for the board and the card view
+   ends in `? keys`; the keys list's hint ends in `q close`, and the chat has none (the approved
+   text said "every hint", against its own table — corrected after review round 1).
 3. At 60 columns a card row's hint is cut by dropping items from the end and still ends in
    `? keys`; at 100 columns it is whole.
 4. The bottom line is the prompt while one is open, the message on the frame after the key or

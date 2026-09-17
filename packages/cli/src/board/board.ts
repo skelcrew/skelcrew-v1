@@ -263,6 +263,14 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
     }, redrawMs);
   }
 
+  /** The frame a burst is waiting for, drawn now: what is on the state is on the screen. */
+  function flush(): void {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+    draw();
+  }
+
   /** The card a view is about, if it is about one: the card view's and the chat's. */
   function shows(view: View): number | undefined {
     return view.kind === "card" || view.kind === "chat" ? view.cardId : undefined;
@@ -315,6 +323,15 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
   async function onKey(chunk: unknown): Promise<void> {
     for (const key of keysOf(textOf(chunk))) {
       if (state === undefined || over) return;
+      // The screen's one sentence ends here rather than in the reducer: it is shown on the
+      // frame after the key or the call that set it, and the next key takes it off — but not
+      // before it has been on the screen. The loop draws one frame per burst, so two keys read
+      // together would otherwise set the sentence and end it between frames, and the owner
+      // would never see it (034, after review round 1). The pending frame is drawn first.
+      if (state.message.length > 0) {
+        flush();
+        state = { ...state, message: "" };
+      }
       const before = state.view;
       // Two lines pasted into the prompt arrive as one chunk with a newline in it. The line is
       // sent and the chunk ends there: what follows a newline is text the owner typed, and

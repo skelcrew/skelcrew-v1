@@ -12,9 +12,9 @@ import type {
   Member,
   OpenAttention,
 } from "@skelcrew/shared";
-import { cardLines, conversationLines } from "./frame";
+import { cardLines, clampScroll, conversationLines, frame, helpLines, hint } from "./frame";
 import { type Pressed, press } from "./keys";
-import { apply, type State } from "./state";
+import { apply, type State, type View } from "./state";
 
 const ME = 1;
 const MEMBERS: Member[] = [{ id: ME, name: "simon", kind: "human", createdAt: 1 }];
@@ -160,21 +160,65 @@ test("Enter on a board with no rows does nothing", () => {
   expect(pressed.action).toBeUndefined();
 });
 
-test("? opens the keys and any key closes them again", () => {
+test("? opens the keys; j and k scroll them and every other key closes them", () => {
   const board = state();
   const help = press(board, "?").state;
-  expect(help.view).toEqual({ kind: "help", from: { kind: "board" } });
-  for (const key of ["?", "j", "x", "enter", "escape", "q"]) {
+  expect(help.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 0 });
+  for (const key of ["?", "x", "enter", "escape", "q"]) {
     const closed = press(help, key);
     expect(closed.state.view).toEqual({ kind: "board" });
     expect(closed.action).toBeUndefined();
   }
 
+  // `j`, `k` and the arrows move through the list rather than closing it: it does not fit on
+  // every terminal the screen draws on, and every key in it has to be reachable (034).
+  const down = press(help, "j");
+  expect(down.action).toBeUndefined();
+  expect(down.state.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 1 });
+  expect(press(help, "down").state.view).toEqual(down.state.view);
+  expect(press(down.state, "k").state.view).toMatchObject({ scroll: 0 });
+  expect(press(down.state, "up").state.view).toMatchObject({ scroll: 0 });
+  // At the top it stays there.
+  expect(press(help, "k").state.view).toEqual(help.view);
+
+  // As far as the list goes, and no further: the loop tightens this to the window, as it does
+  // for the card view and the chat.
+  let far = help;
+  for (let i = 0; i < 200; i += 1) far = press(far, "j").state;
+  expect(far.view).toMatchObject({ scroll: helpLines().length - 1 });
+
   // Opened from a card, it closes back to that card.
   const open = openCard(state({ cursor: 2 }));
   const fromCard = press(open, "?").state;
-  expect(fromCard.view).toEqual({ kind: "help", from: open.view });
-  expect(press(fromCard, "j").state.view).toEqual(open.view);
+  expect(fromCard.view).toEqual({ kind: "help", from: open.view, scroll: 0 });
+  expect(press(fromCard, "q").state.view).toEqual(open.view);
+});
+
+test("j scrolls the keys list until its last line is on a twelve-row screen", () => {
+  // Criterion 5's two halves together: the reducer scrolls, the loop tightens the scroll to the
+  // terminal, and the frame draws the window that is left.
+  const size = { columns: 100, rows: 12 };
+  const last = helpLines().at(-1) as string;
+  let current = clampScroll(press(state(), "?").state, size);
+  const lines = () => frame(current, size, NOW);
+  const shows = () => lines().some((line) => line.includes(last));
+  expect(shows()).toBe(false);
+
+  const scrolls: number[] = [];
+  for (let attempt = 0; attempt < 40 && !shows(); attempt += 1) {
+    current = clampScroll(press(current, "j").state, size);
+    scrolls.push((current.view as Extract<View, { kind: "help" }>).scroll);
+  }
+  // A line at a time, and the last key line is on the screen at the end of it.
+  expect(scrolls).toEqual(scrolls.map((_, index) => index + 1));
+  expect(shows()).toBe(true);
+
+  // And `k` scrolls back to the top, where the list opened.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    current = clampScroll(press(current, "k").state, size);
+  }
+  expect(lines()[0]).toContain("keys");
+  expect(shows()).toBe(false);
 });
 
 test("archiving the card the keys were opened from leaves the keys open over the board", () => {
@@ -185,6 +229,7 @@ test("archiving the card the keys were opened from leaves the keys open over the
   expect(help.view).toEqual({
     kind: "help",
     from: { kind: "card", cardId: 3, scroll: 0, text: "" },
+    scroll: 0,
   });
 
   const event: Activity = {
@@ -196,8 +241,18 @@ test("archiving the card the keys were opened from leaves the keys open over the
     createdAt: NOW,
   };
   const archived = apply(help, event);
-  expect(archived.view).toEqual({ kind: "help", from: { kind: "board" } });
-  expect(press(archived, "j").state.view).toEqual({ kind: "board" });
+  expect(archived.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 0 });
+  expect(press(archived, "q").state.view).toEqual({ kind: "board" });
+
+  // And where the owner had scrolled to stays where it was: the list is the screen's own, so a
+  // card leaving the board underneath it is no reason to take the reader back to the top.
+  const scrolled = typing(help, ["j", "j"]).state;
+  expect(scrolled.view).toMatchObject({ scroll: 2 });
+  expect(apply(scrolled, event).view).toEqual({
+    kind: "help",
+    from: { kind: "board" },
+    scroll: 2,
+  });
 });
 
 test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () => {
@@ -275,6 +330,40 @@ function asking(over: Partial<Card> = {}, question: Attention | null = QUESTION)
     requests: question === null ? [] : [{ cardId: 7, ...question }],
     cursor: 0,
   });
+}
+
+/**
+ * The card view of that card, read and scrolled a line: a card view with nothing read yet is one
+ * line long, where neither `j` nor `k` has anywhere to go.
+ */
+function reading(over: Partial<Card> = {}, question: Attention | null = QUESTION): State {
+  const board = asking(over, question);
+  const activity: Activity[] = Array.from({ length: 30 }, (_, index) => ({
+    seq: index + 1,
+    cardId: 7,
+    actorId: ME,
+    type: "comment",
+    data: { text: `step ${index + 1}` },
+    createdAt: NOW,
+  }));
+  return {
+    ...board,
+    view: { kind: "card", cardId: 7, scroll: 1, text: "" },
+    detail: { ...(board.cards[0] as Card), activity },
+  };
+}
+
+/**
+ * The card view of a card with no activity at all, at the top: short enough to fit `SIZE`, so
+ * `j` has nowhere to go and the hint names no scroll keys (review round 2, finding 3).
+ */
+function readingShort(over: Partial<Card> = {}, question: Attention | null = QUESTION): State {
+  const board = asking(over, question);
+  return {
+    ...board,
+    view: { kind: "card", cardId: 7, scroll: 0, text: "" },
+    detail: { ...(board.cards[0] as Card), activity: [] },
+  };
 }
 
 /** Every key in turn, from `start`; the last press is what comes back. */
@@ -531,6 +620,127 @@ test("the screen's sentence stays behind on the board, and does not outlast a ke
   for (const key of ["x", "backspace", "enter", "up", "escape", "tab"]) {
     expect(press(refused, key).state.message).toBe("");
   }
+});
+
+// --- 034: a sentence shows once ---
+
+test("the reducer leaves the sentence where it is; a key with one of its own replaces it", () => {
+  // A sentence is shown on the frame after the key that set it and on no later one — and it is
+  // the loop that ends it, after that frame has been drawn, because only the loop knows whether
+  // it has been (034, after review round 1: two keys read together were one frame, and the
+  // sentence was on neither). `board.test.ts` holds that half; here the reducer is pure about
+  // the message, so a key cannot take a sentence off the screen before it was on it.
+  const done = asking({ phase: "done" }, null);
+  const said = press(done, "s").state;
+  expect(said.message).toContain("is done");
+
+  for (const key of ["j", "k", "g", "G", "z", "?", "escape"]) {
+    expect(press(said, key).state.message).toBe(said.message);
+  }
+
+  // A key with a sentence of its own says it in the same press, over whatever was there.
+  expect(press(said, "a").state.message).toContain("no open question");
+  // And in the card view, which has the same keys on the same card.
+  const open = openCard(done);
+  expect(press({ ...open, message: "#7 is done" }, "j").state.message).toBe("#7 is done");
+  expect(press({ ...open, message: "#7 is done" }, "a").state.message).toContain(
+    "no open question",
+  );
+
+  // The chat is the exception, and 033's: its sentence is read on the listening line, where a
+  // sentence carried in from the board would sit over the card's open question.
+  expect(press(said, "enter").state.message).toBe("");
+});
+
+// --- 034: the hint and the reducer say the same thing ---
+
+/** Every key a terminal sends as one printable character, which is every key `act` can answer. */
+const PRINTABLE = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index));
+
+function oneCharacter(key: string): boolean {
+  return [...key].length === 1 && key >= " ";
+}
+
+/**
+ * Whether the key does something where it was pressed: it acts, or it changes the state in some
+ * way other than the screen's sentence. A key whose whole effect is a sentence has done nothing
+ * — `says` is what the reducer answers when a key does not apply to the row it was pressed on —
+ * and the hint names the keys that do something, so it does not name that one.
+ */
+function acts(state: State, key: string): boolean {
+  const pressed = press(state, key);
+  if (pressed.action !== undefined) return true;
+  return !Bun.deepEquals({ ...pressed.state, message: "" }, { ...state, message: "" });
+}
+
+/**
+ * The terminal the hint is read on. It is one of the facts the line is drawn from: the card
+ * view names its scroll keys only while the card is taller than the window.
+ */
+const SIZE = { columns: 100, rows: 24 };
+
+/** The keys the hint names, as keys: `j k scroll` names two of them, `? keys` one. */
+function named(state: State): string[] {
+  return hint(state, SIZE)
+    .split(" · ")
+    .flatMap((item) => item.split(" ").slice(0, -1));
+}
+
+/**
+ * The keys that move the cursor and the one that leaves: they are about the screen rather than
+ * about the row under the cursor, so the hint leaves them to the keys list. Deliberate, and the
+ * spec's table says so by naming neither.
+ */
+const NOT_ABOUT_THE_ROW = ["j", "k", "g", "G", "q"];
+
+/**
+ * A queue row is about the request, so the spec's table gives it the keys that answer one and
+ * nothing else. The keys that act on the card underneath work there all the same — a queue row
+ * and the board row of the same card are the same card — and the line does not name them.
+ */
+const NOT_ABOUT_THE_REQUEST = ["s", "b", "c", "x", "o", "n"];
+
+test("the hint names every key that does something, and no key that does not", () => {
+  // What holds `frame.ts` and `keys.ts` together: a key added to `act` with no item beside it
+  // would be a key that works and is never named, and an item left behind by a key that went
+  // would be a line offering nothing. Neither passes here (review round 1, finding 2).
+  //
+  // The two views left out are the ones where every printable key does the same thing: in the
+  // chat each is text, and in the keys list each closes the list. Their hints are fixed strings
+  // — `j k scroll · q close`, and nothing at all — asserted in `frame.test.ts`.
+  const check = (where: string, state: State, allowed: string[] = NOT_ABOUT_THE_ROW): void => {
+    const keys = named(state);
+    // `allowed` is the keys that may do something here without being named for it; a key on
+    // that list which the hint names all the same is still a key the hint names.
+    const acting = PRINTABLE.filter(
+      (key) => acts(state, key) && (keys.includes(key) || !allowed.includes(key)),
+    );
+    // Named with the place it was pressed, so a failure says which row disagreed.
+    expect({ where, keys: acting.sort() }).toEqual({
+      where,
+      keys: keys.filter(oneCharacter).sort(),
+    });
+    // And the other way: every key the hint names does something, Enter and Tab included.
+    for (const key of keys) expect(acts(state, key)).toBe(true);
+  };
+
+  const queue = [...NOT_ABOUT_THE_ROW, ...NOT_ABOUT_THE_REQUEST];
+  check("a queue row", asking(), queue);
+  check("a queue row whose request offers no move", asking({}, { ...QUESTION, moves: [] }), queue);
+
+  for (const phase of ["idea", "spec", "code", "pr", "done"] as const) {
+    check(`a ${phase} row`, asking({ phase }, null));
+    // The same card with a question open: its row answers the request, like the queue row.
+    check(`a ${phase} row with a question`, { ...asking({ phase }), cursor: 1 }, queue);
+    check(`the card view of a ${phase} card`, reading({ phase }, null));
+    check(`the card view of a ${phase} card with a question`, reading({ phase }));
+    // A card short enough to fit the window, at its top: the hint names no scroll keys there,
+    // and `j` has nowhere to go (review round 2, finding 3). `k` still moves the state's
+    // scroll, which `clampScroll` takes straight back — an allowed key, named by neither.
+    check(`the card view of a short ${phase} card`, readingShort({ phase }, null));
+  }
+
+  check("a board with no rows", state({ cards: [], requests: [] }));
 });
 
 test("in the chat every printable key is text, and Enter sends the line as a comment", () => {

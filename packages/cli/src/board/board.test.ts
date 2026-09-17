@@ -1209,6 +1209,89 @@ test("a pasted Esc in the chat acts on nothing after it either", async () => {
   await running;
 });
 
+// --- 034: the keys that apply are on the screen ---
+
+/** The frame's last row: the prompt, the sentence, or the hint. */
+function bottom(terminal: FakeTerminal): string {
+  return (terminal.frames().at(-1) ?? "").split("\r\n").at(-1) ?? "";
+}
+
+test("the bottom line teaches, says the sentence once, and then teaches again", async () => {
+  // One card, in Done, with no open question: `s` there says why the card stays where it is.
+  const fake = fakeClient([card(1, "done and dusted", { phase: "done" })]);
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  // The screen teaches from the first frame: the keys that do something on the selected row.
+  expect(bottom(terminal)).toContain("enter chat");
+  expect(bottom(terminal)).toContain("? keys");
+
+  terminal.type("s");
+  await until("the sentence", () => bottom(terminal).includes("is done"));
+  expect(bottom(terminal)).not.toContain("? keys");
+
+  // The next key takes the line back to the hint: a sentence is shown on the frame after the
+  // key that set it and on no later one.
+  terminal.type("j");
+  await until("the hint again", () => bottom(terminal).includes("? keys"));
+  expect(bottom(terminal)).not.toContain("is done");
+
+  terminal.type("q");
+  await running;
+});
+
+test("a sentence is on a frame even when the next key is in the same read", async () => {
+  // The loop draws one frame per burst, so two keys arriving together are one redraw: a
+  // sentence set by the first and ended by the second was on no frame at all, and `#1 is
+  // done`, `a card needs a title` and a refusal all went the same way (review round 1).
+  const fake = fakeClient([card(1, "done and dusted", { phase: "done" })]);
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  const drawn = terminal.frames().length;
+  terminal.type("sj");
+  await until(
+    "the hint again",
+    () => terminal.frames().length > drawn && bottom(terminal).includes("? keys"),
+  );
+  // The sentence had a frame of its own, and the line teaches again on the one after it.
+  expect(
+    terminal
+      .frames()
+      .slice(drawn)
+      .some((each) => each.includes("is done")),
+  ).toBe(true);
+  expect(bottom(terminal)).not.toContain("is done");
+
+  terminal.type("q");
+  await running;
+});
+
+test("a sentence is on a frame even when the next key lands inside the redraw burst", async () => {
+  // The same again with the keys in two reads a moment apart, which is what the owner typing
+  // quickly sends: the burst is long here, so both keys are read before the frame is drawn.
+  const fake = fakeClient([card(1, "done and dusted", { phase: "done" })]);
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal, { redrawMs: 20 });
+
+  const drawn = terminal.frames().length;
+  terminal.type("s");
+  terminal.type("j");
+  await until(
+    "the hint again",
+    () => terminal.frames().length > drawn && bottom(terminal).includes("? keys"),
+  );
+  expect(
+    terminal
+      .frames()
+      .slice(drawn)
+      .some((each) => each.includes("is done")),
+  ).toBe(true);
+
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */

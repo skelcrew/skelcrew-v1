@@ -7,7 +7,14 @@
  * title or a note carrying an escape sequence is made visible by `oneLine` before the frame
  * adds the only control characters the screen writes on purpose (015).
  */
-import type { Activity, Card, CardDetail, Member, OpenAttention } from "@skelcrew/shared";
+import type {
+  Activity,
+  Attention,
+  Card,
+  CardDetail,
+  Member,
+  OpenAttention,
+} from "@skelcrew/shared";
 import {
   activityLine,
   cardHeader,
@@ -23,7 +30,7 @@ import {
   status,
 } from "../render";
 import { bold, dim, reverse } from "./ansi";
-import { type Prompt, questionOf, type State, type View } from "./state";
+import { cardIdAt, type Prompt, questionOf, type State, type View } from "./state";
 
 export interface Size {
   columns: number;
@@ -166,9 +173,121 @@ function typedLine(text: string, size: Size): string {
   return cutStart(oneLine(text), size.columns - 1) + reverse(" ");
 }
 
+/** Between the items of the hint. */
+const SEPARATOR = " · ";
+
+/** The keys that answer an open request, wherever the question is read. */
+function answering(question: Attention): string[] {
+  const move = question.moves.length > 0 ? ["m move"] : [];
+  return ["a allow", "d deny", ...move];
+}
+
+/**
+ * The keys a row of the board offers for the card it is about: a queue row and the board row of
+ * the same card are the same card, so a row with an open question names the keys that answer it
+ * whichever half it is in.
+ */
+function rowItems(state: State, cardId: number): string[] {
+  const question = questionOf(state, cardId);
+  if (question !== undefined) return [...answering(question), "enter chat", "? keys"];
+  const phase = state.cards.find((each) => each.id === cardId)?.phase;
+  return [
+    ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
+    "enter chat",
+    "c comment",
+    ...(phase === "idea" ? [] : ["b back"]),
+    "x archive",
+    "o shell",
+    "n new",
+    "? keys",
+  ];
+}
+
+/**
+ * The keys the card view offers, which are the row's without the ones that need a board. A card
+ * with an open question is answered from here as well as from its row, so those keys come first.
+ * The way back is second, ahead of the keys that act: the cut takes items from the end, and a
+ * view with no way out of it on the line is worse than one that names one fewer key.
+ *
+ * `j k scroll` only while there is something to scroll: a card whose lines all fit this terminal
+ * has nowhere for either key to go, and the line names the keys that do something (review round
+ * 2, finding 3). Which is why the hint is read with the terminal's size and not without it.
+ */
+function cardItems(state: State, size: Size, cardId: number): string[] {
+  const phase = state.cards.find((each) => each.id === cardId)?.phase;
+  const question = questionOf(state, cardId);
+  const scrolls = cardLines(state).length > size.rows - 1;
+  return [
+    ...(question === undefined ? [] : answering(question)),
+    "tab chat",
+    "q back",
+    ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
+    "c comment",
+    ...(phase === "idea" ? [] : ["b back"]),
+    "x archive",
+    "o shell",
+    ...(scrolls ? ["j k scroll"] : []),
+    "? keys",
+  ];
+}
+
+/**
+ * The keys that do something where the cursor is, each as `<key> <verb>`. They are read from
+ * the same facts `act` reads — the card's open question, its phase, which view is open — but
+ * this is a second list all the same, written by hand beside the reducer's. What keeps the two
+ * saying the same thing is a test: `keys.test.ts`, "the hint names every key that does
+ * something, and no key that does not", presses every printable key on a row of each kind and
+ * pins the keys that act against the keys named here. A key added to `act` that does something
+ * — yields an action, or changes the state other than by saying a sentence — and has no item
+ * beside it fails there, and so does an item left behind by a key that went. What that test
+ * cannot see is a key whose whole effect is a sentence: such a key does nothing, so it is not
+ * named here and not counted there (review round 2, finding 1).
+ *
+ * The chat has none: its bottom line is the input, and the line above it says who is listening.
+ */
+function hintItems(state: State, size: Size): string[] {
+  const view = state.view;
+  switch (view.kind) {
+    case "chat":
+      return [];
+    case "help":
+      return ["j k scroll", "q close"];
+    case "card":
+      return cardItems(state, size, view.cardId);
+    case "board": {
+      const cardId = cardIdAt(state, state.cursor);
+      // No rows at all: the only key with anything to do is the one that files a card.
+      return cardId === undefined ? ["n new", "? keys"] : rowItems(state, cardId);
+    }
+  }
+}
+
+/**
+ * The keys that apply where the cursor is, whole: what the bottom line teaches. The terminal's
+ * size is one of the facts — the card view's scroll keys apply only when the card is taller
+ * than the window — so the hint is read with the size the frame is drawn at.
+ */
+export function hint(state: State, size: Size): string {
+  return hintItems(state, size).join(SEPARATOR);
+}
+
+/**
+ * The hint within `columns` cells: items are dropped from the end, and never the last one —
+ * `? keys` opens the list, where whatever was dropped is still named. What survives is the head
+ * of the order, which is what the owner presses most.
+ */
+function fitHint(items: string[], columns: number): string {
+  let kept = items;
+  while (kept.length > 1 && cells(kept.join(SEPARATOR)) > columns) {
+    kept = [...kept.slice(0, -2), kept[kept.length - 1] as string];
+  }
+  return fit(kept.join(SEPARATOR), columns);
+}
+
 /**
  * The screen's last line: the prompt while one is open — the terminal's own cursor is hidden,
- * so the caret is a reverse-video cell — and the one sentence otherwise.
+ * so the caret is a reverse-video cell — the one sentence when there is one, and the keys that
+ * apply here otherwise. One thing at a time: a hint under a prompt would be two.
  */
 function bottomLine(state: State, size: Size): string {
   const prompt = state.prompt;
@@ -177,7 +296,9 @@ function bottomLine(state: State, size: Size): string {
     if (prompt.kind === "archive") return archiveQuestion(prompt, size.columns);
     return typedLine(promptLabel(prompt) + prompt.text, size);
   }
-  return state.message.length === 0 ? "" : dim(fit(state.message, size.columns));
+  if (state.message.length > 0) return dim(fit(state.message, size.columns));
+  const items = hintItems(state, size);
+  return items.length === 0 ? "" : dim(fitHint(items, size.columns));
 }
 
 /**
@@ -258,6 +379,10 @@ export function clampScroll(state: State, size: Size, now = Date.now()): State {
   }
   if (view.kind === "chat") {
     const scroll = chatScrollWithin(state, view, size, now);
+    return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
+  }
+  if (view.kind === "help") {
+    const scroll = helpScrollWithin(size, view.scroll);
     return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
   }
   return state;
@@ -455,8 +580,32 @@ const KEYS = [
   "  allow, deny  on a line of their own, answer the open question",
 ];
 
-function helpFrame(state: State, size: Size): string[] {
-  const lines = [dim("keys"), "", ...KEYS.map((line) => fit(line, size.columns))];
+/**
+ * The keys screen, line by line: a dim header, a blank, and the keys. Exported because the
+ * reducer scrolls through them and knows how many there are, the way it knows the card's lines.
+ */
+export function helpLines(): string[] {
+  return ["keys", "", ...KEYS];
+}
+
+/** The scroll the keys screen draws at: down as far as its last line reaching the bottom. */
+function helpScrollWithin(size: Size, scroll: number): number {
+  return Math.min(Math.max(0, scroll), Math.max(0, helpLines().length - (size.rows - 1)));
+}
+
+/**
+ * The keys, from the line the scroll starts at. The list is taller than the shortest terminal
+ * the screen draws on, so it scrolls a line at a time rather than being cut: no key the screen
+ * has is out of reach on a terminal it accepts (032's carried finding).
+ */
+function helpFrame(state: State, view: View & { kind: "help" }, size: Size): string[] {
+  const start = helpScrollWithin(size, view.scroll);
+  const lines = helpLines()
+    .slice(start)
+    .map((line, index) =>
+      // The header is the one dim line; it is above the list, so only the top of it has one.
+      start + index === 0 ? dim(fit(line, size.columns)) : fit(line, size.columns),
+    );
   return screenful(lines, -1, size, bottomLine(state, size));
 }
 
@@ -474,6 +623,6 @@ export function frame(state: State, size: Size, now = Date.now()): string[] {
     case "chat":
       return chatFrame(state, state.view, size, now);
     case "help":
-      return helpFrame(state, size);
+      return helpFrame(state, state.view, size);
   }
 }
