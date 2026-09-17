@@ -1035,6 +1035,59 @@ test("a line typed in the chat is a comment on that card, and allow answers its 
   await running;
 });
 
+test("a refused line goes back into the input, with the daemon's word above it", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  fake.refuse("a comment cannot be that long");
+  terminal.type("some news");
+  await until("the line", () => input(terminal).includes("some news"));
+  terminal.type("\r");
+  await until("the refusal", () => listening(terminal).includes("a comment cannot be that long"));
+
+  // The typed line is not lost with the call that was refused: it is back in the input, ready
+  // to be sent again or edited (027's carried finding, closed for this view).
+  expect(input(terminal)).toContain("some news");
+  // And the chat is still open above it.
+  expect(terminal.frames().at(-1)).toContain("created:");
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
+test("a pasted chunk with a newline in it sends the line and drops the tail", async () => {
+  const fake = fakeClient();
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+  const read = fake.calls.length;
+  const calls = (method: MethodName) => fake.calls.slice(read).filter(([each]) => each === method);
+
+  terminal.type("\r");
+  await until("the chat", () => (terminal.frames().at(-1) ?? "").includes("created:"));
+
+  // Two lines in one chunk: the first is sent, and the chunk ends at the newline, as the
+  // prompt's does (027).
+  terminal.type("hi\nallow");
+  await until("the comment", () => calls("comment").length > 0);
+  // Long enough for the tail to have landed, if it were going to.
+  await Bun.sleep(20);
+
+  expect(calls("comment")).toEqual([["comment", { id: 1, text: "hi" }]]);
+  expect(input(terminal)).not.toContain("allow");
+  expect(calls("resolveAttention")).toEqual([]);
+
+  terminal.type("\t");
+  terminal.type("q");
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */

@@ -321,6 +321,8 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       // reading it as board keys would answer questions and open shells they never asked for
       // (027 — of the prompt, "nothing else is interpreted").
       const prompting = state.prompt !== null;
+      // What the chat's input held before the key: the line a refused call gets put back.
+      const typed = before.kind === "chat" ? before.text : "";
       const pressed = press(state, key);
       // The reducer knows the card; the terminal's height is the loop's to hold.
       state = clampScroll(pressed.state, sizeOf(screen));
@@ -340,8 +342,13 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
           // what only its own answer carries — a filed card's id — is the sentence it returns.
           state = { ...state, message: said ?? "" };
         } catch (error) {
-          // Refused: the daemon's own sentence, and nothing else on the screen changes.
-          state = { ...state, message: error instanceof Error ? error.message : String(error) };
+          // Refused: the daemon's own sentence, and nothing else on the screen changes — except
+          // in the chat, where the line that was refused goes back into the input instead of
+          // being lost, and the sentence is read on the listening line just above it (033).
+          const message = error instanceof Error ? error.message : String(error);
+          const view = state.view;
+          const back = view.kind === "chat" && typed.length > 0 ? { ...view, text: typed } : view;
+          state = { ...state, message, view: back };
         }
       }
       const opening = opened(before, state.view);
@@ -351,6 +358,9 @@ export async function runBoard(deps: BoardDeps): Promise<void> {
       }
       redraw();
       if (prompting && state.prompt === null) return;
+      // The chat's line ends a chunk the same way: a paste with a newline in it sends the line
+      // and what follows it is dropped, rather than becoming the next line's text (033).
+      if (before.kind === "chat" && key === "enter") return;
     }
   }
 
