@@ -228,9 +228,12 @@ function cardItems(state: State, cardId: number): string[] {
 
 /**
  * The keys that do something where the cursor is, each as `<key> <verb>`. They are read from
- * the same facts `act` reads — the card's open question, its phase, which view is open — so the
- * line and the reducer cannot come to disagree about what applies: a key added to `act` adds
- * its item here.
+ * the same facts `act` reads — the card's open question, its phase, which view is open — but
+ * this is a second list all the same, written by hand beside the reducer's. What keeps the two
+ * saying the same thing is a test: `keys.test.ts`, "the hint names every key that does
+ * something, and no key that does not", presses every printable key on a row of each kind and
+ * pins the keys that act against the keys named here. A key added to `act` with no item beside
+ * it fails there, and so does an item left behind by a key that went.
  *
  * The chat has none: its bottom line is the input, and the line above it says who is listening.
  */

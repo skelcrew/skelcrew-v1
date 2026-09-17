@@ -12,7 +12,7 @@ import type {
   Member,
   OpenAttention,
 } from "@skelcrew/shared";
-import { cardLines, clampScroll, conversationLines, frame, helpLines } from "./frame";
+import { cardLines, clampScroll, conversationLines, frame, helpLines, hint } from "./frame";
 import { type Pressed, press } from "./keys";
 import { apply, type State, type View } from "./state";
 
@@ -322,6 +322,27 @@ function asking(over: Partial<Card> = {}, question: Attention | null = QUESTION)
   });
 }
 
+/**
+ * The card view of that card, read and scrolled a line: a card view with nothing read yet is one
+ * line long, where neither `j` nor `k` has anywhere to go.
+ */
+function reading(over: Partial<Card> = {}, question: Attention | null = QUESTION): State {
+  const board = asking(over, question);
+  const activity: Activity[] = Array.from({ length: 30 }, (_, index) => ({
+    seq: index + 1,
+    cardId: 7,
+    actorId: ME,
+    type: "comment",
+    data: { text: `step ${index + 1}` },
+    createdAt: NOW,
+  }));
+  return {
+    ...board,
+    view: { kind: "card", cardId: 7, scroll: 1, text: "" },
+    detail: { ...(board.cards[0] as Card), activity },
+  };
+}
+
 /** Every key in turn, from `start`; the last press is what comes back. */
 function typing(start: State, keys: string[]): Pressed {
   let pressed: Pressed = { state: start };
@@ -606,6 +627,87 @@ test("the reducer leaves the sentence where it is; a key with one of its own rep
   // The chat is the exception, and 033's: its sentence is read on the listening line, where a
   // sentence carried in from the board would sit over the card's open question.
   expect(press(said, "enter").state.message).toBe("");
+});
+
+// --- 034: the hint and the reducer say the same thing ---
+
+/** Every key a terminal sends as one printable character, which is every key `act` can answer. */
+const PRINTABLE = Array.from({ length: 95 }, (_, index) => String.fromCharCode(32 + index));
+
+function oneCharacter(key: string): boolean {
+  return [...key].length === 1 && key >= " ";
+}
+
+/**
+ * Whether the key does something where it was pressed: it acts, or it changes the state in some
+ * way other than the screen's sentence. A key whose whole effect is a sentence has done nothing
+ * — `says` is what the reducer answers when a key does not apply to the row it was pressed on —
+ * and the hint names the keys that do something, so it does not name that one.
+ */
+function acts(state: State, key: string): boolean {
+  const pressed = press(state, key);
+  if (pressed.action !== undefined) return true;
+  return !Bun.deepEquals({ ...pressed.state, message: "" }, { ...state, message: "" });
+}
+
+/** The keys the hint names, as keys: `j k scroll` names two of them, `? keys` one. */
+function named(state: State): string[] {
+  return hint(state)
+    .split(" · ")
+    .flatMap((item) => item.split(" ").slice(0, -1));
+}
+
+/**
+ * The keys that move the cursor and the one that leaves: they are about the screen rather than
+ * about the row under the cursor, so the hint leaves them to the keys list. Deliberate, and the
+ * spec's table says so by naming neither.
+ */
+const NOT_ABOUT_THE_ROW = ["j", "k", "g", "G", "q"];
+
+/**
+ * A queue row is about the request, so the spec's table gives it the keys that answer one and
+ * nothing else. The keys that act on the card underneath work there all the same — a queue row
+ * and the board row of the same card are the same card — and the line does not name them.
+ */
+const NOT_ABOUT_THE_REQUEST = ["s", "b", "c", "x", "o", "n"];
+
+test("the hint names every key that does something, and no key that does not", () => {
+  // What holds `frame.ts` and `keys.ts` together: a key added to `act` with no item beside it
+  // would be a key that works and is never named, and an item left behind by a key that went
+  // would be a line offering nothing. Neither passes here (review round 1, finding 2).
+  //
+  // The two views left out are the ones where every printable key does the same thing: in the
+  // chat each is text, and in the keys list each closes the list. Their hints are fixed strings
+  // — `j k scroll · q close`, and nothing at all — asserted in `frame.test.ts`.
+  const check = (where: string, state: State, allowed: string[] = NOT_ABOUT_THE_ROW): void => {
+    const keys = named(state);
+    // `allowed` is the keys that may do something here without being named for it; a key on
+    // that list which the hint names all the same is still a key the hint names.
+    const acting = PRINTABLE.filter(
+      (key) => acts(state, key) && (keys.includes(key) || !allowed.includes(key)),
+    );
+    // Named with the place it was pressed, so a failure says which row disagreed.
+    expect({ where, keys: acting.sort() }).toEqual({
+      where,
+      keys: keys.filter(oneCharacter).sort(),
+    });
+    // And the other way: every key the hint names does something, Enter and Tab included.
+    for (const key of keys) expect(acts(state, key)).toBe(true);
+  };
+
+  const queue = [...NOT_ABOUT_THE_ROW, ...NOT_ABOUT_THE_REQUEST];
+  check("a queue row", asking(), queue);
+  check("a queue row whose request offers no move", asking({}, { ...QUESTION, moves: [] }), queue);
+
+  for (const phase of ["idea", "spec", "code", "pr", "done"] as const) {
+    check(`a ${phase} row`, asking({ phase }, null));
+    // The same card with a question open: its row answers the request, like the queue row.
+    check(`a ${phase} row with a question`, { ...asking({ phase }), cursor: 1 }, queue);
+    check(`the card view of a ${phase} card`, reading({ phase }, null));
+    check(`the card view of a ${phase} card with a question`, reading({ phase }));
+  }
+
+  check("a board with no rows", state({ cards: [], requests: [] }));
 });
 
 test("in the chat every printable key is text, and Enter sends the line as a comment", () => {
