@@ -44,6 +44,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 28 | 031 The arrow keys move the cursor | landed, PR #29 — two review rounds; the decoder read sequences only at the start of a read |
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
+| 31 | 034 The keys that apply are on the screen | planned; after 033 |
 | | 005 | dropped |
 
 ## Background
@@ -1390,6 +1391,32 @@ inside it may be exactly what the product is. Neither is decided. The owner uses
 while first, and the next spec on this screen is written from that use, not from either
 argument. What passes either test now: stopping a run from the screen, an operator control
 over unattended work.
+
+## 034 — The keys that apply are on the screen
+
+Asked for by the owner on 2026-09-17, on first use of the screen with 032's keys: the shortcuts
+should be visible somewhere, either the most used ones with `?` for the rest, or `?` alone.
+The answer settled with the owner: the keys that apply to the selected row, on the bottom
+line, dim, and `?` for the full list. Not a fixed list, because what a key does depends on the
+row — a request row has `a allow · d deny · m move`, an Idea card has `s start`, a running card
+has almost nothing — and a fixed list would name keys that do nothing where the cursor is. Not
+`?` alone, because the full list does not fit below eighteen rows (032's carried finding) and a
+first-time owner should not have to open it to learn `s`.
+
+Where: the bottom line already exists. It shows the prompt while one is open and a message
+while there is one; the hint fills it the rest of the time, so it never competes with either.
+One line, no new area, no configuration. In the chat view (033) the bottom line is the input,
+so the hint there is the listening line's or nothing; in the card view it is the card's keys;
+on the board it is the selected row's. Shape, for a request row:
+
+```
+a allow · d deny · m move · enter open · ? keys
+```
+
+To settle in the spec: the hint is a pure function of the state, in `frame.ts` beside
+`bottomLine`, tested the way `KEYS` is; the order of keys is by how often the owner presses
+them, which is a guess until 033 has been used; whether the `?` list itself should be cut to
+fit or grow two columns, which closes 032's finding at the same time.
 
 ## Later, deliberately unplanned
 
