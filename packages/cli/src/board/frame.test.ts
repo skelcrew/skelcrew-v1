@@ -318,6 +318,26 @@ test("the keys screen says Enter opens the chat, and names the key that flips", 
   expect(quits).toContain("card view");
 });
 
+test("the keys screen has a chat section, drawn on a 24-row screen", () => {
+  // Every key above is the board's or the card's; in the chat a letter is text, and the
+  // screen says what is left. It has to fit: these lines are the last of the list.
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), SIZE).map(plain);
+  expect(shown.some((line) => line.includes("in the chat"))).toBe(true);
+
+  const sending = shown.find((line) => line.trimStart().startsWith("enter, esc"));
+  expect(sending).toContain("send the line");
+  expect(sending).toContain("back to the board");
+  const scrolling = shown.find((line) => line.trimStart().startsWith("↑, ↓, tab"));
+  expect(scrolling).toContain("scroll");
+  expect(scrolling).toContain("card view");
+  const answering = shown.find((line) => line.trimStart().startsWith("allow, deny"));
+  expect(answering).toContain("the open question");
+
+  // And `j, k` says where it is true: in the chat they are letters, and the arrows scroll.
+  const moving = shown.find((line) => line.trimStart().startsWith("j, k"));
+  expect(moving).toContain("in the chat");
+});
+
 test("the keys screen names the arrows beside j and k", () => {
   const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), {
     columns: 100,

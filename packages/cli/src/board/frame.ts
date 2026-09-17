@@ -427,7 +427,7 @@ function chatFrame(state: State, view: View & { kind: "chat" }, size: Size, now:
 }
 
 const KEYS = [
-  "  j, k, ↓, ↑   down and up; in a card, scroll",
+  "  j, k, ↓, ↑   down and up; in a card, scroll; in the chat, the arrows scroll",
   "  g, G         the first row and the last",
   "  enter        open the chat on the card under the cursor",
   "  tab          flip between the chat and the card",
@@ -444,6 +444,15 @@ const KEYS = [
   "  ?            these keys",
   // `q` is two keys and neither of them is the chat's, where it is a letter like any other.
   "  q            quit; in the card view, back to the board",
+  // Every key above is the board's or the card's. In the chat each one is a character in the
+  // line being written — `?` included, which is why the screen cannot be opened from there —
+  // so what is left is short enough to say in four lines, and has to be: the list ends level
+  // with the bottom of a 24-row terminal.
+  "",
+  "  in the chat, every letter is text and these are the keys:",
+  "  enter, esc   send the line; clear it, then back to the board",
+  "  ↑, ↓, tab    scroll the conversation; the card view",
+  "  allow, deny  on a line of their own, answer the open question",
 ];
 
 function helpFrame(state: State, size: Size): string[] {
