@@ -47,6 +47,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
 | 32 | 035 A running card stays running on the screen | planned; found in real use 2026-09-17; the screen's copy of a lease expires while the daemon's is renewed |
 | 33 | 036 The crew may look at the board | planned; found in real use 2026-09-17; `skelcrew ls` asked for permission |
+| 34 | 037 A comment wakes the crew | planned; decided by the owner from use 2026-09-17; after 035 |
 | | 005 | dropped |
 
 ## Background
@@ -1394,6 +1395,8 @@ while first, and the next spec on this screen is written from that use, not from
 argument. What passes either test now: stopping a run from the screen, an operator control
 over unattended work.
 
+Decided the same afternoon, from use, by the owner: the dev should just reply. See 037.
+
 Landed as PR #31. `Enter` on a row opens the chat view: the card's header at the top, the
 card's activity below it as a conversation — the owner's lines, the agent's turns whole under
 its name, its tool summaries, the record's own events dim between them — a line that says who
@@ -1523,6 +1526,45 @@ members, not plugins" says the agent gets them too. The spec adds `Bash(skelcrew
 when to use them, so `check:harness` covers them. A grant, so the spec red-teams it: `ls` and
 `queue` take `--all` and `--json` and nothing that writes; composed with the other grants
 they read what `show` already reads. Not `watch`, which never returns.
+
+## 037 — A comment wakes the crew
+
+The owner's words on 2026-09-17, the first afternoon inside the chat view: "when I go into a
+card and prompt it, I would like the card to wake up, so I can have a conversation with the
+agent that's assigned the card. Imagine I have a team of devs and I write a comment to a dev
+that's assigned a card; I would like that dev to just reply." This settles the question 033
+left open, and settles it on the harness side: the crew answers on the card whether or not a
+run happens to be live. Today a line typed with no run live waits on the card for the next
+run, and the listening line says so; the owner used that for an afternoon and found it is not
+what a team feels like.
+
+What it is, under the constraints. **Cards drive the runner**: the wake is the card's own
+comment, by the owner, on a card with no live run, in any phase but Done — the card asked. **A
+run is disposable, identity is durable**: the reply is a run of a new kind, `reply`, with its
+own playbook — read the card and its conversation, do what the latest owner comment asks
+within the phase's rules, answer as a comment, and stop — spawned by the runner as `crew`,
+holding the claim while it works, so the screen shows `running since` and the listening line
+says the crew is listening. **Phases end in artefacts, not in chat**: a reply run advances no
+phase and meets no contract; in Spec it may rewrite the body if asked, in Code it may edit the
+worktree and commit on the card's branch if asked, and the phase still ends only the way it
+does today. **Everything observable**: the reply is a comment like any other, and the wake
+itself is an event on the card. **No chat channel**: the conversation is still the card's
+comments; nothing new is stored.
+
+Catches to settle in the spec: a cold start per message is slow and costs tokens, so a reply
+run should linger — stay alive for some minutes after replying, reading further comments as
+the live run does today (015), and end when quiet; what happens when the owner comments while
+a phase run is live is already answered (forwarded, 015) and must stay so; a reply run and a
+phase run must not both hold the card, so a queued phase run waits for the reply run to end,
+and a reply run does not start while a phase run is queued — the scan decides, in id order as
+today; the reply playbook is product, shipped with the daemon (playbooks are the daemon's);
+an agent member's comment does not wake anything, only the owner's, or two crews talk to each
+other forever; `SKELCREW_RUNS` bounds reply runs with the rest; the listening line during the
+spawn says the crew is waking; and cost on the card (the Claude Tag note) becomes worth
+having once talking is this cheap to start.
+
+Out of it: the owner's side having a model (a member, later); a reply run for a card in Done;
+anything the phase playbooks do today changing.
 
 ## Later, deliberately unplanned
 
