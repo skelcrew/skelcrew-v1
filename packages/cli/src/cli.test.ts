@@ -24,6 +24,7 @@ import {
   TITLE_MAX_BYTES,
   VERSION,
 } from "@skelcrew/shared";
+import rootPackage from "../../../package.json";
 import { type Core, openCore } from "../../daemon/src/core/core";
 import type { AgentDriver } from "../../daemon/src/runner/agent";
 import { createGit } from "../../daemon/src/runner/git";
@@ -668,7 +669,13 @@ test("archive hides the card from ls, ls --all marks it, and show still works", 
   expect(shown.stdout).toContain("gone");
 });
 
-test("every command names the socket path and bun run daemon when nothing listens", async () => {
+/**
+ * What every message about a daemon that is not there says to run (030). One sentence, so the
+ * command, the board and `watch` cannot come to say different things.
+ */
+const START_A_DAEMON = "run `skelcrew` in a terminal, or `skelcrew --headless`";
+
+test("every command names the socket path and how to start a daemon when nothing listens", async () => {
   const empty = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
   extraDirs.push(empty);
   const deadSocket = join(empty, "skelcrew.sock");
@@ -685,7 +692,8 @@ test("every command names the socket path and bun run daemon when nothing listen
   for (const { args, stdin } of commands) {
     const stderr = await failed(1, args, { dataDir: empty, stdin });
     expect(stderr).toContain(deadSocket);
-    expect(stderr).toContain("bun run daemon");
+    expect(stderr).toContain(START_A_DAEMON);
+    expect(stderr).not.toContain("bun run daemon");
   }
   const withJson = await failed(1, ["ls", "--json"], { dataDir: empty });
   expect(withJson).toContain(deadSocket);
@@ -698,7 +706,7 @@ test("a socket file nobody answers on is reported the same way and left in place
   writeFileSync(stale, "");
   const stderr = await failed(1, ["ls"], { dataDir: empty });
   expect(stderr).toContain(stale);
-  expect(stderr).toContain("bun run daemon");
+  expect(stderr).toContain(START_A_DAEMON);
   expect(existsSync(stale)).toBe(true);
 });
 
@@ -1156,6 +1164,9 @@ test("watch exits 1 with an error naming the socket when the daemon goes away", 
   const error = await watch.stderr.next();
   expect(error.startsWith("error: ")).toBe(true);
   expect(error).toContain(socketPath);
+  // And how to get one back, in the one sentence every such message uses (030).
+  expect(error).toContain(START_A_DAEMON);
+  expect(error).not.toContain("bun run daemon");
 });
 
 test("watch still prints the event line when the notifier fails, and reports the failure", async () => {
@@ -2063,4 +2074,119 @@ test("there is no board subcommand, and bare skelcrew without a terminal is stil
   const bare = await ok([]);
   expect(bare.stdout.toLowerCase()).toContain("nothing is waiting on you");
   expect(bare).toEqual(await ok(["queue"]));
+});
+
+// --- the daemon alone (030) ---
+
+/**
+ * Every setting the daemon reads is set here and nowhere else, the way `process.test.ts` does
+ * it: a `--headless` run started from a developer's shell must not inherit their agent, their
+ * run count, or their notifier. No coding agent is ever spawned (`SKELCREW_AGENT=none`), the
+ * runner is off, and nothing pings anyone.
+ */
+const HEADLESS_ENV: Record<string, string | undefined> = {
+  SKELCREW_RUNNER: "0",
+  SKELCREW_AGENT: "none",
+  SKELCREW_NOTIFY: "none",
+  SKELCREW_RUNS: undefined,
+  SKELCREW_RUN_MINUTES: undefined,
+  SKELCREW_MERGE_POLL_SECONDS: undefined,
+};
+
+/** `skelcrew --headless` as the owner would run it: the daemon in this terminal, in front. */
+function spawnHeadless(dataDir: string) {
+  const env: Record<string, string | undefined> = { ...process.env };
+  delete env.SKELCREW_AS;
+  Object.assign(env, HEADLESS_ENV);
+  env.SKELCREW_DIR = dataDir;
+  env.TZ = TZ;
+  const proc = Bun.spawn([process.execPath, MAIN, "--headless"], {
+    cwd: dataDir,
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  // Stopped by the signal the spec gives it, so the daemon behind it goes too: a SIGKILL here
+  // would leave the daemon running against a directory the test is about to remove.
+  watchers.push({
+    kill() {
+      if (proc.exitCode === null) proc.kill("SIGTERM");
+    },
+  });
+  return {
+    proc,
+    stdout: lineReader(proc.stdout as ReadableStream<Uint8Array>),
+    stderr: lineReader(proc.stderr as ReadableStream<Uint8Array>),
+  };
+}
+
+test("--headless is the daemon alone: it listens, answers another process, and stops on SIGTERM", async () => {
+  const data = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(data);
+  const headless = spawnHeadless(data);
+  expect(await headless.stdout.next()).toBe(
+    `skelcrew daemon ${VERSION} listening on ${join(data, "skelcrew.sock")}`,
+  );
+
+  // A client of it from another process, which is the CLI itself.
+  await ok(["add", "Filed against the headless daemon"], { dataDir: data, cwd: data });
+  expect((await ok(["ls"], { dataDir: data, cwd: data })).stdout).toContain(
+    "Filed against the headless daemon",
+  );
+
+  headless.proc.kill("SIGTERM");
+  expect(await headless.proc.exited).toBe(0);
+});
+
+test("a second --headless on the same directory exits 1 naming the socket; the first is unaffected", async () => {
+  const data = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(data);
+  const headless = spawnHeadless(data);
+  await headless.stdout.next();
+  await ok(["add", "Filed against the first"], { dataDir: data, cwd: data });
+
+  const second = await cli(["--headless"], { dataDir: data, cwd: data, env: HEADLESS_ENV });
+  expect(second.code).toBe(1);
+  expect(second.stderr).toContain(join(data, "skelcrew.sock"));
+  expect(second.stderr).toContain("already running");
+  expect((await ok(["ls"], { dataDir: data, cwd: data })).stdout).toContain(
+    "Filed against the first",
+  );
+
+  headless.proc.kill("SIGTERM");
+  expect(await headless.proc.exited).toBe(0);
+});
+
+test("--headless takes no command word and no other option: that is a usage error, and no daemon starts", async () => {
+  const data = realpathSync(mkdtempSync(join(tmpdir(), "skc-")));
+  extraDirs.push(data);
+  for (const args of [
+    ["--headless", "ls"],
+    ["--headless", "--json"],
+    ["--headless", "--as", "crew-1"],
+  ]) {
+    const run = await cli(args, { dataDir: data, cwd: data, env: HEADLESS_ENV });
+    expect({ args, code: run.code }).toEqual({ args, code: 2 });
+    expect(run.stdout).toBe("");
+    expect(run.stderr).toContain("usage:");
+  }
+  // Nothing was started against that directory: no socket, no database.
+  expect(existsSync(join(data, "skelcrew.sock"))).toBe(false);
+  expect(existsSync(join(data, "skelcrew.db"))).toBe(false);
+
+  // `--help` is the one option it takes.
+  const help = await ok(["--headless", "--help"], { dataDir: data, cwd: data });
+  expect(help.stdout).toContain("--headless");
+});
+
+test("the daemon script is gone: the README starts the product with one command", () => {
+  expect(Object.keys(rootPackage.scripts)).not.toContain("daemon");
+  const readme = readFileSync(
+    fileURLToPath(new URL("../../../README.md", import.meta.url)),
+    "utf8",
+  );
+  expect(readme).toContain("bun run skelcrew\n");
+  expect(readme).toContain("bun run skelcrew --headless");
+  expect(readme).not.toContain("bun run daemon");
 });

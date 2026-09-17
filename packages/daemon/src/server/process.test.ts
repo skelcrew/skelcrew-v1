@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Activity, connect, type Member, RpcError, VERSION } from "@skelcrew/shared";
 import { openCore } from "../core/core";
+import { daemonAnswers } from "./paths";
 
 const MAIN = fileURLToPath(new URL("../main.ts", import.meta.url));
 
@@ -105,6 +106,8 @@ function spawnDaemon(options: {
   runner?: boolean;
   agent?: string;
   mergePollSeconds?: string;
+  /** The one argument the entry file takes: the daemon the screen started (030). */
+  stopWhenIdle?: boolean;
   /** Merged last: a `PATH` with a shim on it, and whatever that shim needs. */
   env?: Record<string, string>;
 }): Daemon {
@@ -119,7 +122,8 @@ function spawnDaemon(options: {
   delete env.SKELCREW_RUN_MINUTES;
   delete env.SKELCREW_NOTIFY;
   Object.assign(env, options.env ?? {});
-  const proc = Bun.spawn([process.execPath, MAIN], {
+  const args = options.stopWhenIdle ? [MAIN, "--stop-when-idle"] : [MAIN];
+  const proc = Bun.spawn([process.execPath, ...args], {
     cwd: options.cwd,
     env,
     stdout: "pipe",
@@ -172,6 +176,111 @@ test("SIGINT stops it the same way", async () => {
   await daemon.firstLine();
   expect(await stopped(daemon, "SIGINT")).toBe(0);
   expect(existsSync(join(dir, "skelcrew.sock"))).toBe(false);
+});
+
+// --- the daemon the screen started (030) ---
+
+/**
+ * `--stop-when-idle` is the whole of how a screen-started daemon ends: it exits through the
+ * same `shutdown()` a signal runs when it has no connection and no live run, so `q` with
+ * nothing running takes the daemon with the screen. Here with the runner off, which is the
+ * no-run half of the rule; the live-run half is `runner.test.ts`, over the runner's own count.
+ */
+test("with --stop-when-idle the daemon exits 0 on its own when the last client disconnects", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir, stopWhenIdle: true });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+  const screen = await connect(socketPath, { kind: "human" });
+  await screen.call("createCard", { title: "looked at once" });
+
+  // A command from another terminal is a client like any other: while it is connected, the
+  // screen closing leaves the daemon alone.
+  const other = await connect(socketPath, { kind: "human" });
+  await screen.close();
+  await Bun.sleep(300);
+  expect(daemon.proc.exitCode).toBeNull();
+
+  await other.close();
+  const outcome = await Promise.race([
+    daemon.proc.exited,
+    Bun.sleep(5000).then(() => "still running" as const),
+  ]);
+  expect(outcome).toBe(0);
+  // Through `shutdown()`, so the socket is gone and the database is not.
+  expect(existsSync(socketPath)).toBe(false);
+  expect(existsSync(join(dir, "skelcrew.db"))).toBe(true);
+});
+
+/**
+ * The daemon's life is not decidable by a peer that never said who it was. The probe every
+ * daemon makes before it starts (`daemonAnswers`) opens a connection and ends it without a
+ * `hello`, and so does anything else that merely checks the socket — a screen started in the
+ * window before the first client has connected would otherwise take the daemon it is waiting
+ * for away with it.
+ */
+test("a connection that never said hello cannot end a --stop-when-idle daemon", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir, stopWhenIdle: true });
+  await daemon.firstLine();
+
+  // Exactly what a second daemon does before it decides whether to start: connect, and end.
+  expect(await daemonAnswers(socketPath)).toBe(true);
+  await Bun.sleep(300);
+  expect(daemon.proc.exitCode).toBeNull();
+  expect(existsSync(socketPath)).toBe(true);
+
+  // A client that did say hello still ends it by leaving.
+  const client = await connect(socketPath, { kind: "human" });
+  await client.close();
+  expect(await daemon.proc.exited).toBe(0);
+});
+
+test("without --stop-when-idle the daemon stays when its last client disconnects", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir });
+  await daemon.firstLine();
+  const client = await connect(socketPath, { kind: "human" });
+  await client.call("createCard", { title: "still here" });
+  await client.close();
+
+  await Bun.sleep(1000);
+  expect(daemon.proc.exitCode).toBeNull();
+  const again = await connect(socketPath, { kind: "human" });
+  expect((await again.call("listCards", {})).map((card) => card.title)).toEqual(["still here"]);
+  await again.close();
+  expect(await stopped(daemon, "SIGTERM")).toBe(0);
+});
+
+/**
+ * Surviving the terminal it was started from is ignoring SIGHUP, and nothing else: a window
+ * closed over a live run is not a `run_interrupted`. Only the screen's daemon ignores it —
+ * a daemon in a terminal of its own dies with that terminal, as it always has.
+ */
+test("with --stop-when-idle the daemon keeps serving after SIGHUP", async () => {
+  const socketPath = join(dir, "skelcrew.sock");
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir, stopWhenIdle: true });
+  await daemon.firstLine();
+  const client = await connect(socketPath, { kind: "human" });
+  await client.call("createCard", { title: "outlives the window" });
+
+  daemon.proc.kill("SIGHUP");
+  await Bun.sleep(300);
+  expect(daemon.proc.exitCode).toBeNull();
+  expect((await client.call("listCards", {})).map((card) => card.title)).toEqual([
+    "outlives the window",
+  ]);
+
+  // And the idle rule still ends it, so the terminal is the only thing it outlived.
+  await client.close();
+  expect(await daemon.proc.exited).toBe(0);
+});
+
+test("without --stop-when-idle SIGHUP stops the daemon, as it does today", async () => {
+  const daemon = spawnDaemon({ cwd: dir, dataDir: dir });
+  await daemon.firstLine();
+  daemon.proc.kill("SIGHUP");
+  await daemon.proc.exited;
+  expect(daemon.proc.signalCode).toBe("SIGHUP");
 });
 
 test("a second daemon on the same directory exits 1 naming the socket; the first is unaffected", async () => {
@@ -1196,3 +1305,133 @@ test("a notifier that runs and fails is a warning too, and the request is still 
   await crew.close();
   expect(await daemon.stop()).toBe(0);
 }, 30_000);
+
+// --- the screen's daemon, with the runner on (030) ---
+
+/**
+ * The configuration every real `skelcrew` runs: `--stop-when-idle` *and* the execution half.
+ * The idle rule's live-run count crosses `main.ts` only here, and so does the moment a settled
+ * run asks it — the rule is a function of its counts (`idle.ts`), but which counts it is given
+ * is this file's, and nothing else that starts the daemon has a run to count.
+ *
+ * No coding agent: with `SKELCREW_AGENT=none` a run is 006's handoff, which is a real run — a
+ * claim the runner holds — and ends on its own.
+ */
+test("with the runner on, a --stop-when-idle daemon stays for the client on its way, through a run that came and went", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  // A card already in Spec when the daemon starts, so the runner takes it on its first scan —
+  // before the screen that started the daemon has had a chance to connect.
+  mkdirSync(data, { recursive: true });
+  const setup = openCore(join(data, "skelcrew.db"));
+  const ownerMember = setup.listMembers().find((m) => m.kind === "human") as Member;
+  const card = setup.createCard({ title: "Queued before anyone looked" }, ownerMember.id);
+  setup.moveCard(card.id, "spec", ownerMember.id);
+  setup.close();
+
+  const daemon = spawnDaemon({ cwd: repo, dataDir: data, runner: true, stopWhenIdle: true });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+
+  // The run comes and goes with nobody connected to see it, so it is read from the database —
+  // there is no client yet, which is the whole point.
+  const watching = openCore(join(data, "skelcrew.db"));
+  await until(
+    () => (watching.getCard(card.id).attention === null ? undefined : true),
+    20_000,
+    "the run did not end",
+  );
+  watching.close();
+  await Bun.sleep(500);
+
+  // The daemon is still there for the screen that started it, and that screen finds the card
+  // waiting on it — rather than an error, and a card whose turn was spent on nobody.
+  expect(daemon.proc.exitCode).toBeNull();
+  const screen = await connect(socketPath, { kind: "human" });
+  expect((await screen.call("getCard", { id: card.id })).attention?.note).toContain("no playbook");
+  await screen.close();
+  expect(await daemon.proc.exited).toBe(0);
+}, 45_000);
+
+/**
+ * A `git` of our own, first on `PATH`: it slows down the one subcommand a run spends its time
+ * in and forwards everything else to the real git, so a run stays live long enough for a client
+ * to leave during it. The same mechanism as the merge poll's `gh` shim; the run it holds open
+ * is a real one.
+ */
+const SLOW_GIT_SHIM = `#!/bin/sh
+case "$1 $2" in
+"worktree add") sleep "$SLOW_GIT_SECONDS" ;;
+esac
+exec "$REAL_GIT" "$@"
+`;
+
+/**
+ * Two cards and one slot, so that "the run was left to finish" is something the cards show: a
+ * daemon that ended when its last client left would take the first run's worktree with it
+ * — `stop()` waits for a live run either way — but the second card would never be claimed,
+ * because a stopping runner takes no further card. The queue after the daemon is gone is
+ * therefore what says whether the rule read the live run or ignored it.
+ */
+test("with the runner on, a --stop-when-idle daemon outlives its last client while a run is live, and goes when the runs end", async () => {
+  const repo = await tempRepo();
+  const data = join(dir, "data");
+  const socketPath = join(data, "skelcrew.sock");
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "git"), SLOW_GIT_SHIM, { mode: 0o755 });
+  const realGit = Bun.which("git");
+  expect(realGit).not.toBeNull();
+
+  const daemon = spawnDaemon({
+    cwd: repo,
+    dataDir: data,
+    runner: true,
+    stopWhenIdle: true,
+    env: {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      REAL_GIT: realGit as string,
+      SLOW_GIT_SECONDS: "2",
+      SKELCREW_RUNS: "1",
+    },
+  });
+  expect(await daemon.firstLine()).toBe(`skelcrew daemon ${VERSION} listening on ${socketPath}`);
+
+  const screen = await connect(socketPath, { kind: "human" });
+  const events: Activity[] = [];
+  await screen.subscribe((event) => events.push(event));
+  const first = await screen.call("createCard", { title: "Left running" });
+  const second = await screen.call("createCard", { title: "Still queued behind it" });
+  await screen.call("moveCard", { id: first.id, phase: "spec" });
+  await screen.call("moveCard", { id: second.id, phase: "spec" });
+  await until(
+    () => events.find((event) => event.type === "claimed" && event.cardId === first.id),
+    10_000,
+    "the runner did not take the first card",
+  );
+
+  // `q` over a run in flight: the screen goes, the run stays, and so does the daemon — still
+  // serving, which is what a command run from another terminal meanwhile would find.
+  await screen.close();
+  await Bun.sleep(500);
+  const meanwhile = await connect(socketPath, { kind: "human" });
+  expect((await meanwhile.call("getCard", { id: first.id })).claim).not.toBeNull();
+  await meanwhile.close();
+
+  // And when the runs end with nobody connected, the daemon goes.
+  const outcome = await Promise.race([
+    daemon.proc.exited,
+    Bun.sleep(30_000).then(() => "still running" as const),
+  ]);
+  expect(outcome).toBe(0);
+  expect(existsSync(socketPath)).toBe(false);
+
+  // Both cards were run, in their own worktrees: the second was claimed after the screen had
+  // gone, which a daemon that stopped over a live run would never have reached.
+  const after = openCore(join(data, "skelcrew.db"));
+  for (const card of [first, second]) {
+    const note = after.getCard(card.id).attention?.note ?? "(this card was never run)";
+    expect(note).toContain(join(data, "worktrees", `${card.id}`));
+  }
+  after.close();
+}, 90_000);

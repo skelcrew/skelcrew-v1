@@ -29,10 +29,14 @@ API key in your shell. For the merge and conflict polls you need `gh` logged in.
 git clone https://github.com/skelcrew/skelcrew
 cd skelcrew
 bun install
-bun run daemon
+bun run skelcrew
 ```
 
-In another terminal, from the same repository:
+That is the product running: it starts the daemon if none is listening and opens the board over
+it. `q` leaves the board, and takes the daemon with it when nothing is running. For an always-on
+machine, or a second terminal, `bun run skelcrew --headless` is the daemon alone.
+
+From the same repository, in any terminal:
 
 ```
 bun run skelcrew add "Write the README"      # an idea, as a card
@@ -44,8 +48,9 @@ bun run skelcrew watch                       # the live feed, with a desktop pin
 bun run skelcrew                             # the board on one screen, live; q leaves it
 ```
 
-When a run needs you, the daemon in its terminal sends a desktop notification, and the card
-and `queue` say what it needs, with the command that answers:
+When a run needs you, the board shows it live, `watch` pings you wherever you are running it,
+and a `--headless` daemon in its own terminal sends a desktop notification. The card and `queue`
+say what it needs, with the command that answers:
 
 ```
 bun run skelcrew resolve 1 -m allow          # a permission question
@@ -55,7 +60,7 @@ bun run skelcrew comment 1 "look at the ordering test"    # reaches a live run a
 
 Merge the pull request on GitHub. The card moves to Done within a minute.
 
-To look without running anything: `SKELCREW_AGENT=none bun run daemon` claims cards, makes
+To look without running anything: `SKELCREW_AGENT=none bun run skelcrew` claims cards, makes
 worktrees, and hands them back to you with no agent spawned. `SKELCREW_RUNNER=0` is the board
 alone.
 

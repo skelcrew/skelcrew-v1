@@ -16,12 +16,25 @@ import {
   VERSION,
 } from "@skelcrew/shared";
 import { board } from "./board/board";
+import {
+  DAEMON_ENTRY,
+  type DaemonProcess,
+  reportDaemon,
+  spawnDaemon,
+  startForScreen,
+} from "./board/start";
 import { add } from "./commands/add";
 import { archive } from "./commands/archive";
 import { attention } from "./commands/attention";
 import { body } from "./commands/body";
 import { claim } from "./commands/claim";
-import { type Args, type Command, UsageError, withLfLineEndings } from "./commands/command";
+import {
+  type Args,
+  type Command,
+  START_A_DAEMON,
+  UsageError,
+  withLfLineEndings,
+} from "./commands/command";
 import { comment } from "./commands/comment";
 import { heartbeat } from "./commands/heartbeat";
 import { ls } from "./commands/ls";
@@ -56,6 +69,7 @@ const COMMANDS: Record<string, Command> = {
 const GLOBAL_OPTIONS: ParseArgsOptionsConfig = {
   as: { type: "string" },
   json: { type: "boolean" },
+  headless: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean" },
 };
@@ -75,9 +89,37 @@ function usage(name?: string): string {
     "options:",
     "  --as <name>   speak as that agent member (or set SKELCREW_AS); default: the owner",
     "  --json        print the daemon's result as JSON",
+    "  --headless    the daemon alone, in this terminal; no command and no other option",
     "  --version     print the version",
     "  -h, --help    print usage",
   ].join("\n");
+}
+
+/**
+ * `skelcrew --headless`: the daemon alone, in the foreground, in this terminal — what
+ * `bun run daemon` was. Its entry file is started with this process's `cwd` and environment and
+ * with the terminal inherited, so the lines it prints, the warnings it writes and 023's bell are
+ * this terminal's. The daemon's code is never loaded here: the two halves stay two processes.
+ *
+ * Ctrl-C reaches it through the terminal's process group; SIGINT and SIGTERM are passed on as
+ * well, so a signal sent to this process alone stops the daemon too and this process reports
+ * what the daemon exited rather than dying in front of it.
+ */
+async function headless(): Promise<number> {
+  const child = Bun.spawn([process.execPath, DAEMON_ENTRY], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      if (child.exitCode === null) child.kill(signal);
+    });
+  }
+  await child.exited;
+  return child.exitCode ?? 1;
 }
 
 /**
@@ -142,6 +184,21 @@ async function main(argv: string[]): Promise<number> {
     strict: false,
     allowPositionals: true,
   });
+  // The daemon alone, before anything else is read: `--headless` is not a command and takes
+  // none, so a command word or any other option is a usage error rather than a daemon nobody
+  // asked for. `--help` is the one option it takes.
+  if (loose.values.headless === true) {
+    if (loose.values.help === true) {
+      process.stdout.write(`${usage()}\n`);
+      return 0;
+    }
+    const others = Object.keys(loose.values).filter((name) => name !== "headless");
+    if (others.length > 0 || loose.positionals.length > 0) {
+      fail("--headless takes no command and no other option", usage());
+      return 2;
+    }
+    return await headless();
+  }
   if (loose.values.version === true) {
     process.stdout.write(`skelcrew ${VERSION}\n`);
     return 0;
@@ -214,12 +271,29 @@ async function main(argv: string[]): Promise<number> {
   }
   const { socketPath } = dataPaths(dir);
   let client: Awaited<ReturnType<typeof connect>>;
+  /** The daemon this process started, when it did: the screen's, and no other client's. */
+  let daemon: DaemonProcess | undefined;
   try {
-    client = await connect(socketPath, hello);
+    if (screen) {
+      // The screen is the one client that starts a daemon when none is listening, and it is
+      // started before the terminal is taken, so the alternate screen is never entered before
+      // there is a daemon to draw from.
+      const opened = await startForScreen({
+        socketPath,
+        dataDir: dir,
+        hello,
+        spawn: () => spawnDaemon({ dataDir: dir, env: process.env, cwd: process.cwd() }),
+      });
+      client = opened.client;
+      daemon = opened.daemon;
+    } else {
+      client = await connect(socketPath, hello);
+    }
   } catch (error) {
-    if (error instanceof RpcError) fail(describe(error));
-    else
-      fail(`no daemon is listening on ${socketPath}; run \`bun run daemon\` from the repository`);
+    // A start that failed says what the daemon said; every other client says nothing is
+    // listening, and what to run to get one.
+    if (screen || error instanceof RpcError) fail(describe(error));
+    else fail(`no daemon is listening on ${socketPath}; ${START_A_DAEMON}`);
     return 1;
   }
 
@@ -248,6 +322,9 @@ async function main(argv: string[]): Promise<number> {
     return 1;
   } finally {
     await client.close();
+    // The screen has closed and the terminal is back: one line about the daemon this process
+    // started, and nothing at all when it attached to one it did not.
+    await reportDaemon(daemon, (line) => process.stdout.write(`${safeLine(line)}\n`));
   }
 }
 

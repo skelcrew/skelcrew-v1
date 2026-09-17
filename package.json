@@ -13,7 +13,6 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
     "fix": "biome check --write .",
-    "daemon": "bun packages/daemon/src/main.ts",
     "skelcrew": "bun packages/cli/src/main.ts"
   },
   "devDependencies": {
