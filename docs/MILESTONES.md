@@ -1237,6 +1237,10 @@ row first.
 
 ## 033 — Talking to the crew on a card
 
+The owner's word on 2026-09-17: this is the one that matters, the point where skelcrew stops
+being a board over agents and becomes a harness — the owner and the crew in one place, on the
+work. It comes straight after 032, ahead of the editor and the feed view.
+
 Asked for by the owner on 2026-09-17: inside a card, a prompt at the bottom of the screen, the
 way a coding agent's own terminal has one, where the owner types to the agent working that card
 and reads what it says back. Today that is `c` on the card view: press a key, type one line,
