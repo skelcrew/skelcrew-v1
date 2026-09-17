@@ -43,7 +43,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 27 | 030 The screen starts the daemon | landed, PR #28 — four review rounds, the fourth by the owner's leave; a Critical in the idle rule |
 | 28 | 031 The arrow keys move the cursor | landed, PR #29 — two review rounds; the decoder read sequences only at the start of a read |
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
-| 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
+| 30 | 033 Talking to the crew on a card | landed, PR #31 — three review rounds, one Critical: a pasted tab ran as keys and answered a question |
 | 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
 | | 005 | dropped |
 
@@ -1391,6 +1391,66 @@ inside it may be exactly what the product is. Neither is decided. The owner uses
 while first, and the next spec on this screen is written from that use, not from either
 argument. What passes either test now: stopping a run from the screen, an operator control
 over unattended work.
+
+Landed as PR #31. `Enter` on a row opens the chat view: the card's header at the top, the
+card's activity below it as a conversation — the owner's lines, the agent's turns whole under
+its name, its tool summaries, the record's own events dim between them — a line that says who
+is listening, and an input that is open as long as the view is. `Tab` flips to 027's card view
+and back, keeping the typed line; `Esc` clears the line, then leaves. `allow` and `deny` typed
+while a question is open answer it; everything else is a comment. No daemon change: the
+agent's output was already on the card, and a comment already reaches a live run.
+
+Three spec amendments, disclosed inline: a guessed test count in criterion 9, corrected twice;
+"one dim line" for a request became "one dim entry", because a `why:` line is a second line;
+and "`Tab` keeps the typed line", on which the spec was silent until round 1 found the flip
+dropping it.
+
+Three review rounds, every finding confirmed live against a real daemon under a
+pseudo-terminal. Round 1, three Importants: a message set on the board rode into the chat's
+listening line and hid the open question; a request note with a `why:` line drew in the header
+as one line with a literal newline; `Tab` to the card view and back dropped a half-written
+reply. Round 2, a Critical: a pasted chunk containing a tab flipped the chat to the card view
+mid-chunk and the rest of the paste ran as keys — the reviewer's paste resolved an open
+permission question, the hazard 027 named, reintroduced by making Tab a key. Fixed by ending
+the chunk when the chat flips away, as a closing prompt already ended it. Round 3 checked
+every criterion and passed the code; its one Important was a false absolute in the run record
+("no call is made, nothing is answered" for a paste into the card view), which the reviewer
+disproved with a paste ending in `allow` and a newline — unchanged from before the branch,
+where the `a` alone resolved it. No fourth review ran; the verifier reproduced the Critical on
+the commit before its fix and confirmed it closed after, and the owner said to merge.
+
+**Lesson for the screen.** Twice now a paste has crossed a view boundary and run as keys
+(027's newline, 033's tab). Bracketed paste mode, where the terminal marks a paste as one
+unit, is the fix that ends the class; both specs put it out of scope. The next screen spec
+that touches the loop should take it.
+
+**Carried findings.**
+
+- **Process-spawning tests stall under a full run on an idle machine.** During 033's fix
+  round, four full checks in a row stalled one or two tests each, never the same ones, all of
+  them tests that spawn a real process against a 5-second deadline (`cli.test.ts`'s
+  `--headless`, `process.test.ts`'s sweep and `--stop-when-idle`, `runner.test.ts`'s
+  teardown): each reported about 300 seconds elapsed against 5, the suite took 388–697 seconds
+  instead of 85, and every test passed alone in seconds. A worse form of the flake 028, 029
+  and 032 saw. Two shell processes from another session were pinned at 100% CPU for 22 hours
+  during 033's round 0, and a 2-hour polling loop from another session was live during
+  verification. A spec of its own, now: the suite's process tests need either a bounded
+  parallelism or a budget that scales, and orphaned session processes need a look.
+- **The chat's prefix is heavy at 60 columns**: date and name take 33 of 60 cells before a
+  word. It is `activityLine`'s format, kept for consistency with `show`; a shorter time on
+  chat lines is one line for a later spec if use says so.
+- **The card view carries a `text` field it never draws**, so the flip keeps the line. The
+  alternative was a draft per card in `State` with its own invalidation. Chosen for the
+  smaller rule.
+- **The keys list now fills a 24-row terminal exactly**, twenty-three content lines with the
+  chat section last, so on anything shorter the chat section is what gets cut, and the `j, k`
+  line grew to 77 characters against a 60-column floor. 034 scrolls the list; it should also
+  shorten the lines that exceed the floor.
+- **A paste into the card view whose tail is `allow` or `deny …` plus a newline still answers
+  the question.** Unchanged from base; 027's finding stands outside the chat; bracketed paste
+  closes it.
+- **The status column still pads in UTF-16 units.** Carried since 024; 034 is the next
+  screen spec and owes it or says why not.
 
 ## 034 — The keys that apply are on the screen
 
