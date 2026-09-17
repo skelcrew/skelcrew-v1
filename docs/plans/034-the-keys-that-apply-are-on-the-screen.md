@@ -5,7 +5,8 @@ Run record. Spec: `docs/specs/034-the-keys-that-apply-are-on-the-screen.md`. Wor
 `worktree-the-keys-that-apply-are-on-the-screen`, base `main` at `b310d5c`.
 
 Baseline before any change: `bun test` green, **907 pass, 0 fail, 35 files**.
-After: **914 pass, 0 fail, 35 files** (+7).
+After: **917 pass, 0 fail, 35 files** (+10), which is where the two review rounds ended; the
+four commits of the first pass were at 914.
 
 ## The slices, planned before starting
 
@@ -304,3 +305,78 @@ for it as a pure function tested on its own.
 `bun run check` green at each of the four commits. **917 pass, 0 fail, 35 files** at the end
 (+3 on the 914 this branch had before the round: the two loop tests and the agreement test.
 Finding 7's and finding 4's assertions went into tests that already existed.)
+
+## Fix round 2 (post-approval)
+
+Review round 2 approved with six Minors. The plan, before touching anything:
+
+1. **`j k scroll` only when there is something to scroll** (finding 3, the one code change).
+   `hint` and `hintItems` take the `Size` `bottomLine` already has; the card view's items name
+   `j k scroll` only when `cardLines(state).length > size.rows - 1`. Red first in
+   `frame.test.ts` — a short card without the item, a long one with it — then the agreement
+   test in `keys.test.ts` gains the short card at scroll 0, which is the state the finding
+   names. Commits the orchestrator's three spec amendments with it.
+2. **What the agreement test catches, said truly** (finding 1). `hintItems`'s comment claims a
+   key added to `act` with no item fails the test; a key whose only effect is `says(…)` does
+   not. Reword to what holds.
+3. **`pressChat`'s message clear** (finding 5): keep it, with one line saying why it is there
+   when the loop already clears.
+4. **The run record's header** (finding 6): 917, not 914.
+
+Findings 2 and 4 are wording in the spec, amended by the orchestrator and committed here; no
+code follows from either.
+
+### What changed
+
+**Finding 3 — `j k scroll` on a card with nothing to scroll.** `hint` and `hintItems` take the
+`Size` `bottomLine` is already called with, and `cardItems` names `j k scroll` only while
+`cardLines(state).length > size.rows - 1`, which is the same count `scrollWithin` uses to decide
+how far the card can go. Red first in `frame.test.ts`, on the short card the existing `reading`
+helper builds:
+
+```
+expect(hint(reading("idea"), HINT_SIZE)).toBe(
+error: expect(received).toBe(expected)
+Expected: "tab chat · q back · s start · c comment · x archive · o shell · ? keys"
+Received: "tab chat · q back · s start · c comment · x archive · o shell · j k scroll · ? keys"
+(fail) the hint is the keys that do something where the cursor is, in that order
+```
+
+A `readingLong` helper beside it — the same card with 30 comments — holds the other direction:
+`j k scroll` at 24 rows, and gone again at 200 rows, where the whole card fits.
+
+The agreement test in `keys.test.ts` now covers the state the finding named: a card with no
+activity at all, at scroll 0, on a 24-row terminal. It is red without the condition, which is
+what the finding is about — with `scrolls` forced to `true` in `cardItems`:
+
+```
+expect({ where, keys: acting.sort() }).toEqual({ where, keys: keys.filter(oneCharacter).sort() })
+@@ -4,3 +4,3 @@       "c",
+-     "j",
+      "k",
+```
+
+`k` is not named there either, and still moves the reducer's scroll — which `clampScroll` takes
+straight back, so nothing on the screen moves. It is on `NOT_ABOUT_THE_ROW`, the list of keys
+that may act without being named, so the test allows it; the comment beside the check says so.
+
+**Finding 1 — what the agreement test catches.** `hintItems`'s comment said a key added to `act`
+with no item beside it fails there. It does not, if that key's whole effect is `says(…)`: `acts`
+ignores the message, so such a key counts as doing nothing and is not named either. The comment
+now says that, and says which half the test does hold.
+
+**Finding 5 — `pressChat`'s message clear.** Kept, with a line saying why: the loop clears the
+sentence before every key, so the branch is reachable only from a caller pressing straight into
+the reducer, which is how 033's test asserts the chat is never handed a sentence.
+
+**Finding 6 — the header.** 917, with a note that the first pass ended at 914.
+
+**Findings 2 and 4 — the spec's wording.** The orchestrator's three amendments are committed
+with this round: the card view's `j k scroll` made conditional (finding 3's shape), "until the
+next key" with an event-driven redraw keeping the sentence (finding 4), and the description of
+the agreement test in place of the "cannot disagree" claim (finding 1's shape). No code follows
+from the last two: `press` leaves the message where it is and the loop ends it on the next key,
+which is what the amended sentence describes.
+
+`bun run check` green: Biome, `tsc` in all three packages, **917 pass, 0 fail, 35 files**. No
+test was added or removed by this round, so the count is the one the round before it reached.

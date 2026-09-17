@@ -208,10 +208,15 @@ function rowItems(state: State, cardId: number): string[] {
  * with an open question is answered from here as well as from its row, so those keys come first.
  * The way back is second, ahead of the keys that act: the cut takes items from the end, and a
  * view with no way out of it on the line is worse than one that names one fewer key.
+ *
+ * `j k scroll` only while there is something to scroll: a card whose lines all fit this terminal
+ * has nowhere for either key to go, and the line names the keys that do something (review round
+ * 2, finding 3). Which is why the hint is read with the terminal's size and not without it.
  */
-function cardItems(state: State, cardId: number): string[] {
+function cardItems(state: State, size: Size, cardId: number): string[] {
   const phase = state.cards.find((each) => each.id === cardId)?.phase;
   const question = questionOf(state, cardId);
+  const scrolls = cardLines(state).length > size.rows - 1;
   return [
     ...(question === undefined ? [] : answering(question)),
     "tab chat",
@@ -221,7 +226,7 @@ function cardItems(state: State, cardId: number): string[] {
     ...(phase === "idea" ? [] : ["b back"]),
     "x archive",
     "o shell",
-    "j k scroll",
+    ...(scrolls ? ["j k scroll"] : []),
     "? keys",
   ];
 }
@@ -232,12 +237,15 @@ function cardItems(state: State, cardId: number): string[] {
  * this is a second list all the same, written by hand beside the reducer's. What keeps the two
  * saying the same thing is a test: `keys.test.ts`, "the hint names every key that does
  * something, and no key that does not", presses every printable key on a row of each kind and
- * pins the keys that act against the keys named here. A key added to `act` with no item beside
- * it fails there, and so does an item left behind by a key that went.
+ * pins the keys that act against the keys named here. A key added to `act` that does something
+ * — yields an action, or changes the state other than by saying a sentence — and has no item
+ * beside it fails there, and so does an item left behind by a key that went. What that test
+ * cannot see is a key whose whole effect is a sentence: such a key does nothing, so it is not
+ * named here and not counted there (review round 2, finding 1).
  *
  * The chat has none: its bottom line is the input, and the line above it says who is listening.
  */
-function hintItems(state: State): string[] {
+function hintItems(state: State, size: Size): string[] {
   const view = state.view;
   switch (view.kind) {
     case "chat":
@@ -245,7 +253,7 @@ function hintItems(state: State): string[] {
     case "help":
       return ["j k scroll", "q close"];
     case "card":
-      return cardItems(state, view.cardId);
+      return cardItems(state, size, view.cardId);
     case "board": {
       const cardId = cardIdAt(state, state.cursor);
       // No rows at all: the only key with anything to do is the one that files a card.
@@ -254,9 +262,13 @@ function hintItems(state: State): string[] {
   }
 }
 
-/** The keys that apply where the cursor is, whole: what the bottom line teaches. */
-export function hint(state: State): string {
-  return hintItems(state).join(SEPARATOR);
+/**
+ * The keys that apply where the cursor is, whole: what the bottom line teaches. The terminal's
+ * size is one of the facts — the card view's scroll keys apply only when the card is taller
+ * than the window — so the hint is read with the size the frame is drawn at.
+ */
+export function hint(state: State, size: Size): string {
+  return hintItems(state, size).join(SEPARATOR);
 }
 
 /**
@@ -285,7 +297,7 @@ function bottomLine(state: State, size: Size): string {
     return typedLine(promptLabel(prompt) + prompt.text, size);
   }
   if (state.message.length > 0) return dim(fit(state.message, size.columns));
-  const items = hintItems(state);
+  const items = hintItems(state, size);
   return items.length === 0 ? "" : dim(fitHint(items, size.columns));
 }
 

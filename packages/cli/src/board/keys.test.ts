@@ -353,6 +353,19 @@ function reading(over: Partial<Card> = {}, question: Attention | null = QUESTION
   };
 }
 
+/**
+ * The card view of a card with no activity at all, at the top: short enough to fit `SIZE`, so
+ * `j` has nowhere to go and the hint names no scroll keys (review round 2, finding 3).
+ */
+function readingShort(over: Partial<Card> = {}, question: Attention | null = QUESTION): State {
+  const board = asking(over, question);
+  return {
+    ...board,
+    view: { kind: "card", cardId: 7, scroll: 0, text: "" },
+    detail: { ...(board.cards[0] as Card), activity: [] },
+  };
+}
+
 /** Every key in turn, from `start`; the last press is what comes back. */
 function typing(start: State, keys: string[]): Pressed {
   let pressed: Pressed = { state: start };
@@ -660,9 +673,15 @@ function acts(state: State, key: string): boolean {
   return !Bun.deepEquals({ ...pressed.state, message: "" }, { ...state, message: "" });
 }
 
+/**
+ * The terminal the hint is read on. It is one of the facts the line is drawn from: the card
+ * view names its scroll keys only while the card is taller than the window.
+ */
+const SIZE = { columns: 100, rows: 24 };
+
 /** The keys the hint names, as keys: `j k scroll` names two of them, `? keys` one. */
 function named(state: State): string[] {
-  return hint(state)
+  return hint(state, SIZE)
     .split(" · ")
     .flatMap((item) => item.split(" ").slice(0, -1));
 }
@@ -715,6 +734,10 @@ test("the hint names every key that does something, and no key that does not", (
     check(`a ${phase} row with a question`, { ...asking({ phase }), cursor: 1 }, queue);
     check(`the card view of a ${phase} card`, reading({ phase }, null));
     check(`the card view of a ${phase} card with a question`, reading({ phase }));
+    // A card short enough to fit the window, at its top: the hint names no scroll keys there,
+    // and `j` has nowhere to go (review round 2, finding 3). `k` still moves the state's
+    // scroll, which `clampScroll` takes straight back — an allowed key, named by neither.
+    check(`the card view of a short ${phase} card`, readingShort({ phase }, null));
   }
 
   check("a board with no rows", state({ cards: [], requests: [] }));

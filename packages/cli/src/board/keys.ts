@@ -250,6 +250,8 @@ function chatScrollTo(state: State, view: ChatView, scroll: number): Pressed {
  * the owner does something and then goes back to saying who is listening (033).
  */
 function pressChat(state: State, view: ChatView, key: string): Pressed {
+  // The loop clears the sentence ahead of every key (034), so this line is for a caller pressing
+  // straight into the reducer: the chat is never handed one (review round 2, finding 5).
   if (state.message.length > 0) return pressChat({ ...state, message: "" }, view, key);
   const typed = (text: string): Pressed => ({
     state: { ...state, view: { ...view, text, scroll: 0 } },
