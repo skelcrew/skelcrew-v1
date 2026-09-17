@@ -250,9 +250,9 @@ export function hint(state: State): string {
 }
 
 /**
- * The hint within `columns` cells: items go from the end, and never the last one — `? keys`
- * opens the list where whatever was dropped is still named. What survives is the head of the
- * order, which is what the owner presses most.
+ * The hint within `columns` cells: items are dropped from the end, and never the last one —
+ * `? keys` opens the list, where whatever was dropped is still named. What survives is the head
+ * of the order, which is what the owner presses most.
  */
 function fitHint(items: string[], columns: number): string {
   let kept = items;
