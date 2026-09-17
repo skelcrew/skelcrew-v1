@@ -45,6 +45,9 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 29 | 032 A card is added, started and archived from the screen | landed, PR #30 — two review rounds; the first was history, one commit for three keys; editing and the feed view follow |
 | 30 | 033 Talking to the crew on a card | landed, PR #31 — three review rounds, one Critical: a pasted tab ran as keys and answered a question |
 | 31 | 034 The keys that apply are on the screen | specified; after 033; the keys list scrolls, closing 032's finding |
+| 32 | 035 A running card stays running on the screen | specified; the screen trusts events, not its clock, about a lease |
+| 33 | 036 The crew may look at the board | planned; found in real use 2026-09-17; `skelcrew ls` asked for permission |
+| 34 | 037 A comment wakes the crew | planned; decided by the owner from use 2026-09-17; after 035 |
 | | 005 | dropped |
 
 ## Background
@@ -1392,6 +1395,8 @@ while first, and the next spec on this screen is written from that use, not from
 argument. What passes either test now: stopping a run from the screen, an operator control
 over unattended work.
 
+Decided the same afternoon, from use, by the owner: the dev should just reply. See 037.
+
 Landed as PR #31. `Enter` on a row opens the chat view: the card's header at the top, the
 card's activity below it as a conversation — the owner's lines, the agent's turns whole under
 its name, its tool summaries, the record's own events dim between them — a line that says who
@@ -1477,6 +1482,89 @@ To settle in the spec: the hint is a pure function of the state, in `frame.ts` b
 `bottomLine`, tested the way `KEYS` is; the order of keys is by how often the owner presses
 them, which is a guess until 033 has been used; whether the `?` list itself should be cut to
 fit or grow two columns, which closes 032's finding at the same time.
+
+## 035 — A running card stays running on the screen
+
+Found on 2026-09-17, the first afternoon of real use of the chat view: a Spec run on card 3
+asked a permission question, the owner allowed it, and the chat's listening line then read
+`no run is live; the next run reads what you write here`, so the owner thought nothing had
+happened. The run was live the whole time — `skelcrew ls` in a terminal said `running since
+16:23`, the daemon's lease was being renewed every heartbeat, and the agent ran four more tools
+a minute later. Verified by reading the daemon's claim (`show 3 --json`: expiry two minutes
+ahead of the clock) and the screen's code.
+
+The cause, in the screen: `state.ts`'s `apply` sets a card's claim from the `claimed` event,
+whose `expiresAt` is the lease's first expiry, two minutes out; `heartbeat` in `core.ts` renews
+the lease and logs no event (by design — a heartbeat every thirty seconds is not activity);
+and `board.ts`'s `onEvent` refetches a card it already has only into `detail`, never into
+`state.cards`. So two minutes into any run the screen's copy of the lease has expired, and
+024's `status`, which reads the clock, says `interrupted` on the board row and the chat's
+listening line says no run is live, until an event on that card is followed by a refetch —
+which for a running card is never, since the refetch does not replace the card. Every run
+looks dead on the screen after two minutes; `ls` and `queue` in a terminal are right because
+they fetch fresh. 026, 027, 032 and 033 all passed review with this latent, because their
+tests use fake clocks and short runs, and the reviewers' live sessions were under two minutes.
+
+The fix, to settle in the spec: the screen should trust events, not its clock, for whether a
+run is live. The daemon's sweep is the authority on a lapse and announces one within five
+seconds as `run_interrupted`; until that event arrives, a claim the runner holds is live. So
+`status` needs a form for the screen that does not consult `expiresAt` — or the screen refetches
+the card on every event that names it, which fixes the chat (the run's own comments are events)
+but not a quiet run. Prefer the event-trust form: it is what the daemon means, and it makes
+024's `~` (lapsed, not yet swept) a terminal-only marker, which is where the clock is fresh.
+Say what a card looks like on the screen in the five seconds between a real lapse and the
+sweep's event: still running, which is honest, since the daemon has not said otherwise.
+
+## 036 — The crew may look at the board
+
+Found the same afternoon: a Spec run wanted `skelcrew ls` and the harness stopped to ask,
+because the runner's fixed allowlist pre-allows only the CLI verbs the playbooks instruct —
+`show`, `comment`, `body`, `refs`, `attention`, `review` (`allowlist.ts:230-284`). `ls` and
+`queue` are read-only and are what any member does to see the board; CLAUDE.md's "agents are
+members, not plugins" says the agent gets them too. The spec adds `Bash(skelcrew ls *)` and
+`Bash(skelcrew queue *)` to every run kind's list, and 022's rule applies: the playbooks say
+when to use them, so `check:harness` covers them. A grant, so the spec red-teams it: `ls` and
+`queue` take `--all` and `--json` and nothing that writes; composed with the other grants
+they read what `show` already reads. Not `watch`, which never returns.
+
+## 037 — A comment wakes the crew
+
+The owner's words on 2026-09-17, the first afternoon inside the chat view: "when I go into a
+card and prompt it, I would like the card to wake up, so I can have a conversation with the
+agent that's assigned the card. Imagine I have a team of devs and I write a comment to a dev
+that's assigned a card; I would like that dev to just reply." This settles the question 033
+left open, and settles it on the harness side: the crew answers on the card whether or not a
+run happens to be live. Today a line typed with no run live waits on the card for the next
+run, and the listening line says so; the owner used that for an afternoon and found it is not
+what a team feels like.
+
+What it is, under the constraints. **Cards drive the runner**: the wake is the card's own
+comment, by the owner, on a card with no live run, in any phase but Done — the card asked. **A
+run is disposable, identity is durable**: the reply is a run of a new kind, `reply`, with its
+own playbook — read the card and its conversation, do what the latest owner comment asks
+within the phase's rules, answer as a comment, and stop — spawned by the runner as `crew`,
+holding the claim while it works, so the screen shows `running since` and the listening line
+says the crew is listening. **Phases end in artefacts, not in chat**: a reply run advances no
+phase and meets no contract; in Spec it may rewrite the body if asked, in Code it may edit the
+worktree and commit on the card's branch if asked, and the phase still ends only the way it
+does today. **Everything observable**: the reply is a comment like any other, and the wake
+itself is an event on the card. **No chat channel**: the conversation is still the card's
+comments; nothing new is stored.
+
+Catches to settle in the spec: a cold start per message is slow and costs tokens, so a reply
+run should linger — stay alive for some minutes after replying, reading further comments as
+the live run does today (015), and end when quiet; what happens when the owner comments while
+a phase run is live is already answered (forwarded, 015) and must stay so; a reply run and a
+phase run must not both hold the card, so a queued phase run waits for the reply run to end,
+and a reply run does not start while a phase run is queued — the scan decides, in id order as
+today; the reply playbook is product, shipped with the daemon (playbooks are the daemon's);
+an agent member's comment does not wake anything, only the owner's, or two crews talk to each
+other forever; `SKELCREW_RUNS` bounds reply runs with the rest; the listening line during the
+spawn says the crew is waking; and cost on the card (the Claude Tag note) becomes worth
+having once talking is this cheap to start.
+
+Out of it: the owner's side having a model (a member, later); a reply run for a card in Done;
+anything the phase playbooks do today changing.
 
 ## Later, deliberately unplanned
 
