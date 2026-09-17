@@ -166,9 +166,11 @@ run (cards drive the runner).
 9. `keysOf` decodes `\t` as `tab` and nothing else new; no 026 or 027 test is weakened or
    removed; the tests that pinned `Enter` opening the card view now open the chat and flip
    with `Tab` (say which, in the run record). (The approved text said "except the two that
-   pin `Enter`"; thirteen tests reach the card view through `Enter`, ten in `keys.test.ts`
-   and three in `board.test.ts`. A count guessed, not run — corrected by the orchestrator
-   during development.)
+   pin `Enter`"; thirteen tests pinned the card view through `Enter` — ten in `keys.test.ts`,
+   three in `board.test.ts` — and a fourteenth site in `board.test.ts` presses `Enter` only to
+   trigger a failing read and never pinned the view. A count guessed, not run — corrected by
+   the orchestrator during development, and corrected again after review round 3 counted the
+   sites.)
 10. The help view lists `Tab` and says `Enter` opens the chat.
 11. `docs/MILESTONES.md` marks 033 landed at landing.
 

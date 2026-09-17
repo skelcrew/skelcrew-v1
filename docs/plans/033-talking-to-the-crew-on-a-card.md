@@ -333,12 +333,15 @@ Green: one line beside the two that already end a chunk —
 mid-read drops what follows, whichever exit it took, the way the prompt's close already does.
 The test's second half pastes `!<TAB>deny it` and asserts no prompt opened.
 
-**The card view flipping *into* the chat needs no guard**, which the orchestrator asked to be
-thought about and said. A chunk pressed on the card view with a tab in it flips to the chat and
-the letters after it become the line being written. That is text arriving where text belongs: no
-call is made, nothing is answered, and the owner sees every character on the input line and can
-erase it. The hazard the guard closes is the other direction — text becoming keys — and it does
-not exist here.
+**The card view flipping *into* the chat is left unguarded**, which the orchestrator asked to be
+thought about and said. (This paragraph said something false until fix round 3; what follows is
+what the code does, run.) A chunk pressed on the card view with a tab in it flips to the chat,
+the letters after it become the line being written — and a newline still inside the same chunk
+sends that line, because the guard above only fires for the chat→elsewhere direction and only
+after the call. So the flip makes a pasted chunk safer than base in every case but one, and in
+that one it is no worse: a paste whose tail is exactly `allow`, or `deny …`, followed by a
+newline answers the open question here exactly as it does at base, where 027's finding still
+stands outside the chat (the spec's Out of scope keeps it there).
 
 **Esc inside a chunk was already closed, one layer lower.** The sibling test, "a pasted Esc in
 the chat acts on nothing after it either", was green before the guard and after it: `keysOf`
@@ -379,5 +382,58 @@ and the `state.test.ts` one named.
 Green every time — **906** pass after the first, **907** after the second and again after the
 third, 0 fail, 35 files; three new tests over the 904 this round started from, the third commit
 adding none. No `bun run fix` was needed.
+`bun run check:harness` was not run: it spawns the pinned coding agent and covers the playbooks
+and the runner's fixed allowlist, and this round changes neither.
+
+## Fix round 3
+
+Documentation only, by the orchestrator's direction: the review's one finding is that this
+record stated an absolute that is false, and the fix is to the record, not to the code. No
+source and no test changed this round. One commit, carrying the corrected paragraph above, this
+section, and the orchestrator's uncommitted amendment to criterion 9's count in the spec.
+
+**The false sentence.** Round 2's paragraph on the card view said of a chunk with a tab in it:
+"no call is made, nothing is answered". A call is made, and the question is answered. The
+paragraph above now says what happens instead.
+
+**Run before writing it.** The reviewer's scenario went through the loop test harness — the fake
+client, the injected streams, no real terminal — as a temporary test appended to
+`board.test.ts`, which logged the calls and was reverted afterwards (`git checkout --`; the file
+is untouched in this round's commit). On card 1, which has an open question, `Enter` then `Tab`
+to reach the card view, then the chunk `<TAB>allow<NEWLINE>` in one read:
+
+```
+CALLS AFTER THE CHUNK: [["resolveAttention",{"id":1,"text":"allow"}]]
+LISTENING LINE: "why: ready · allow · deny · or write"
+INPUT LINE: ""
+```
+
+One call, and it is the answer. The same probe with `<TAB>xyz<NEWLINE>`, the case that is not
+`allow` or `deny`:
+
+```
+3b CALLS AFTER THE CHUNK: [["comment",{"id":1,"text":"xyz"}]]
+```
+
+A comment, which is the safer half of the trade: the reviewer checked both pastes against base
+`8ecaec8` and got, for the first, the same answer by another route — base's `keysOf` drops a
+`\t` (`char >= " "` is what it keeps, `board.ts` at base) so the `a` of `allow` reaches
+`pressCard`'s `case "a"` and resolves the question directly — and for the second, an archived
+card, because base's `x` opens the archive question and the newline confirms it. Neither
+behaviour is a regression, and the second is an improvement; the record now says so rather than
+claiming nothing happens.
+
+**The spec's criterion 9** gains the orchestrator's count correction, as it stands in the tree:
+thirteen tests pinned the card view through `Enter`, and a fourteenth site in `board.test.ts`
+presses `Enter` only to trigger a failing read and never pinned the view. The
+criterion-9 section above names the thirteen and is unchanged.
+
+**No guard was added**, as directed. The card view's exposure to a pasted chunk is 027's
+carried finding, which this spec's Out of scope leaves standing everywhere but inside the chat.
+
+### Checks run
+
+`bun run check`: Biome (104 files), `tsc` for all three packages, `bun test` — **907** pass, 0
+fail, 35 files, unchanged from round 2, since nothing outside `docs/` changed.
 `bun run check:harness` was not run: it spawns the pinned coding agent and covers the playbooks
 and the runner's fixed allowlist, and this round changes neither.
