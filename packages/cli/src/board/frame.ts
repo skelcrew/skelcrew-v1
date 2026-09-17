@@ -176,10 +176,10 @@ function typedLine(text: string, size: Size): string {
 /** Between the items of the hint. */
 const SEPARATOR = " · ";
 
-/** The keys that answer an open request, whichever kind of row it is read on. */
+/** The keys that answer an open request, wherever the question is read. */
 function answering(question: Attention): string[] {
   const move = question.moves.length > 0 ? ["m move"] : [];
-  return ["a allow", "d deny", ...move, "enter open", "? keys"];
+  return ["a allow", "d deny", ...move];
 }
 
 /**
@@ -189,11 +189,11 @@ function answering(question: Attention): string[] {
  */
 function rowItems(state: State, cardId: number): string[] {
   const question = questionOf(state, cardId);
-  if (question !== undefined) return answering(question);
+  if (question !== undefined) return [...answering(question), "enter chat", "? keys"];
   const phase = state.cards.find((each) => each.id === cardId)?.phase;
   return [
     ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
-    "enter open",
+    "enter chat",
     "c comment",
     ...(phase === "idea" ? [] : ["b back"]),
     "x archive",
@@ -203,10 +203,15 @@ function rowItems(state: State, cardId: number): string[] {
   ];
 }
 
-/** The keys the card view offers, which are the row's without the ones that need a board. */
+/**
+ * The keys the card view offers, which are the row's without the ones that need a board. A card
+ * with an open question is answered from here as well as from its row, so those keys come first.
+ */
 function cardItems(state: State, cardId: number): string[] {
   const phase = state.cards.find((each) => each.id === cardId)?.phase;
+  const question = questionOf(state, cardId);
   return [
+    ...(question === undefined ? [] : answering(question)),
     "tab chat",
     ...(phase === "idea" || phase === "spec" ? ["s start"] : []),
     "c comment",

@@ -48,16 +48,20 @@ the end, except `? keys`, which is always present. What the hint says, by where 
 
 | Where | The hint, in order |
 | --- | --- |
-| board, a queue row (a request to the owner) | `a allow · d deny · m move` (m only when the request offers one) `· enter open · ? keys` |
-| board, a card row in Idea or Spec | `s start · enter open · c comment · b back` (not in Idea) `· x archive · o shell · n new · ? keys` |
-| board, a card row in Code, PR or Done | `enter open · c comment · b back · x archive · o shell · n new · ? keys` |
+| board, a queue row (a request to the owner) | `a allow · d deny · m move` (m only when the request offers one) `· enter chat · ? keys` |
+| board, a card row in Idea or Spec | `s start · enter chat · c comment · b back` (not in Idea) `· x archive · o shell · n new · ? keys` |
+| board, a card row in Code, PR or Done | `enter chat · c comment · b back · x archive · o shell · n new · ? keys` |
 | board, no rows | `n new · ? keys` |
 | card view | `tab chat · s start` (Idea, Spec only) `· c comment · b back` (not Idea) `· x archive · o shell · j k scroll · q back · ? keys` |
 | chat view (033) | no hint; the bottom line is the input |
 | keys list | `j k scroll · q close` |
 
 A card row with an open question shows the queue row's hint, since `a`, `d` and `m` apply
-there too.
+there too. The card view of a card with an open question puts `a allow · d deny · m move`
+(m only when the request offers one) before its own items, for the same reason. (Both
+"enter chat" and this sentence were amended by the orchestrator after implementation: the
+spec said "enter open" from before 033 landed, and was silent on the card view with a
+question open.)
 
 **A message shows once.** A sentence set by a key or a call is shown on the frame that follows
 it and on no later one: the next key returns the hint (or sets its own sentence). So `s` on a

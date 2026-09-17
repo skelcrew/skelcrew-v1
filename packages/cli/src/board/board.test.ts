@@ -1223,7 +1223,7 @@ test("the bottom line teaches, says the sentence once, and then teaches again", 
   const { running } = await started(fake, terminal);
 
   // The screen teaches from the first frame: the keys that do something on the selected row.
-  expect(bottom(terminal)).toContain("enter open");
+  expect(bottom(terminal)).toContain("enter chat");
   expect(bottom(terminal)).toContain("? keys");
 
   terminal.type("s");

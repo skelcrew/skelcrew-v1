@@ -732,7 +732,7 @@ function reading(phase: Card["phase"], over: Partial<Card> = {}): State {
 
 test("the hint is the keys that do something where the cursor is, in that order", () => {
   // A queue row: the three keys that answer a request, and the one that opens the card.
-  expect(hint(state())).toBe("a allow · d deny · m move · enter open · ? keys");
+  expect(hint(state())).toBe("a allow · d deny · m move · enter chat · ? keys");
 
   // `m` is named only while the request offers a move.
   const noMove: Attention = { ...CONFLICT, moves: [] };
@@ -740,25 +740,25 @@ test("the hint is the keys that do something where the cursor is, in that order"
     cards: [card(1, "waiting on me", { attention: noMove })],
     requests: [{ cardId: 1, ...noMove }],
   });
-  expect(hint(offered)).toBe("a allow · d deny · enter open · ? keys");
+  expect(hint(offered)).toBe("a allow · d deny · enter chat · ? keys");
 
   // A card row, by phase: `s` starts a card in Idea or Spec, and `b` has nowhere to send one
   // back to from Idea. The rest apply on every row.
   expect(hint(oneCard("idea"))).toBe(
-    "s start · enter open · c comment · x archive · o shell · n new · ? keys",
+    "s start · enter chat · c comment · x archive · o shell · n new · ? keys",
   );
   expect(hint(oneCard("spec"))).toBe(
-    "s start · enter open · c comment · b back · x archive · o shell · n new · ? keys",
+    "s start · enter chat · c comment · b back · x archive · o shell · n new · ? keys",
   );
   for (const phase of ["code", "pr", "done"] as const) {
     expect(hint(oneCard(phase))).toBe(
-      "enter open · c comment · b back · x archive · o shell · n new · ? keys",
+      "enter chat · c comment · b back · x archive · o shell · n new · ? keys",
     );
   }
 
   // A card row whose card has an open question is a row `a`, `d` and `m` answer too.
   expect(hint(oneCard("code", { attention: CONFLICT }))).toBe(
-    "a allow · d deny · m move · enter open · ? keys",
+    "a allow · d deny · m move · enter chat · ? keys",
   );
 
   // A board with no rows at all: the one key with anything to do is the one that files a card.
@@ -770,6 +770,15 @@ test("the hint is the keys that do something where the cursor is, in that order"
   );
   expect(hint(reading("code"))).toBe(
     "tab chat · c comment · b back · x archive · o shell · j k scroll · q back · ? keys",
+  );
+
+  // The card view of a card with an open question answers it too: the three keys come first,
+  // and `m` only while the request offers a move.
+  expect(hint(reading("code", { attention: CONFLICT }))).toBe(
+    "a allow · d deny · m move · tab chat · c comment · b back · x archive · o shell · j k scroll · q back · ? keys",
+  );
+  expect(hint(reading("idea", { attention: { ...CONFLICT, moves: [] } }))).toBe(
+    "a allow · d deny · tab chat · s start · c comment · x archive · o shell · j k scroll · q back · ? keys",
   );
 
   // The keys list says how to move through it and how to close it; the chat has no hint at all,
@@ -854,5 +863,5 @@ test("a hint too long for the terminal drops items from the end, and keeps ? key
   expect(Bun.stringWidth(cut)).toBeLessThanOrEqual(MIN_COLUMNS);
   expect(cut).toEndWith("? keys");
   // What survives is the head of the order, which is what the owner presses most.
-  expect(cut).toBe("s start · enter open · c comment · b back · ? keys");
+  expect(cut).toBe("s start · enter chat · c comment · b back · ? keys");
 });

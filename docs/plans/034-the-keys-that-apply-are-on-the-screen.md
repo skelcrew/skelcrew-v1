@@ -144,3 +144,46 @@ requires. No assertion was loosened or removed.
   the spec does not, and its criterion 5 asks only that every key be reachable by scrolling,
   which it is. The finding stands for whoever takes it.
 - **The status column's UTF-16 padding**, carried since 024 — out of scope in the spec.
+
+## Amendment round (pre-review)
+
+The orchestrator amended the spec in the tree and this commit carries that amendment with the
+code that satisfies it. Two things changed, and they overturn the first two entries under
+*Decisions the spec left open* above:
+
+1. **The item reads `enter chat`, not `enter open`**, everywhere in the hint. Enter opens the
+   chat since 033, so the item now says what the key does. Three lines of the desired-behaviour
+   table, two strings in `frame.ts` (`answering`, `rowItems`), and eight assertions in
+   `frame.test.ts` and `board.test.ts`.
+2. **The card view of a card with an open question puts `a allow · d deny · m move` first**
+   (`m` only when the request offers a move), before the card view's own items. `pressCard`
+   already routes `a`, `d` and `m` through `act`, so those keys worked there and the line did
+   not say so. `answering` now returns just the three answering keys; the board row appends
+   `enter chat · ? keys` to them, and `cardItems` puts them in front of its own.
+
+Red first, in two steps, so each change failed on its own before it was made:
+
+```
+expect(hint(state())).toBe("a allow · d deny · m move · enter chat · ? keys")
+Expected: "a allow · d deny · m move · enter chat · ? keys"
+Received: "a allow · d deny · m move · enter open · ? keys"
+```
+
+```
+expect(bottom(terminal)).toContain("enter chat")     // board.test.ts, through the loop
+Expected to contain: "enter chat"
+Received: the dim line, still "enter open · c comment · b back · x archive · o shell · n new · ? keys"
+```
+
+then, with the rename made and the new card-view case reached:
+
+```
+expect(hint(reading("code", { attention: CONFLICT }))).toBe(...)
+Expected: "a allow · d deny · m move · tab chat · c comment · b back · x archive · o shell · j k scroll · q back · ? keys"
+Received: "tab chat · c comment · b back · x archive · o shell · j k scroll · q back · ? keys"
+```
+
+`bun run check` green after: **914 pass, 0 fail, 35 files** - the same count as before, because
+the card-view cases are two more assertions inside the existing hint test rather than a new
+test. The second of them is the no-move card view, which pins the `m`-only condition the
+amended sentence states.
