@@ -5,7 +5,7 @@
  */
 import { PHASES, type Phase } from "@skelcrew/shared";
 import { formatId, phaseName } from "../render";
-import { cardLines, chatLines } from "./frame";
+import { cardLines, chatLines, helpLines } from "./frame";
 import { cardIdAt, type Prompt, questionOf, rowCount, type State, type View } from "./state";
 
 /** The chat view, which carries the line being typed as well as the card and the scroll. */
@@ -13,6 +13,9 @@ type ChatView = Extract<View, { kind: "chat" }>;
 
 /** The card view, which carries the chat's line for the flip back but draws none of it. */
 type CardView = Extract<View, { kind: "card" }>;
+
+/** The keys screen, which carries the view it was opened from and how far down the list it is. */
+type HelpView = Extract<View, { kind: "help" }>;
 
 /** The chat on a card, at the newest of the conversation, with the line it was left writing. */
 function chatOn(cardId: number, text = ""): ChatView {
@@ -307,7 +310,7 @@ function pressBoard(state: State, key: string): Pressed {
       return entersChat(state, cardId);
     }
     case "?":
-      return { state: { ...state, view: { kind: "help", from: state.view } } };
+      return { state: { ...state, view: { kind: "help", from: state.view, scroll: 0 } } };
     case "q":
       return { state, action: QUIT };
     default:
@@ -332,7 +335,7 @@ function pressCard(state: State, view: CardView, key: string): Pressed {
     case "escape":
       return { state: { ...state, view: { kind: "board" } } };
     case "?":
-      return { state: { ...state, view: { kind: "help", from: state.view } } };
+      return { state: { ...state, view: { kind: "help", from: state.view, scroll: 0 } } };
     default:
       return { state };
   }
@@ -344,6 +347,25 @@ function scrollTo(state: State, scroll: number): Pressed {
   // The top of what `show` would print is as far back as it goes.
   const top = Math.max(0, cardLines(state).length - 1);
   return { state: { ...state, view: { ...view, scroll: Math.min(Math.max(0, scroll), top) } } };
+}
+
+/** The keys list scrolled to `scroll` lines down from its first, and no further than its last. */
+function helpScrollTo(state: State, view: HelpView, scroll: number): Pressed {
+  // The reducer knows the list but not the terminal, which is why the loop tightens this to the
+  // window with `clampScroll`, as it does for the card view and the chat.
+  const last = Math.max(0, helpLines().length - 1);
+  return { state: { ...state, view: { ...view, scroll: Math.min(Math.max(0, scroll), last) } } };
+}
+
+/**
+ * The keys screen: `j` and `k` move through the list a line at a time, because it is taller
+ * than the shortest terminal the screen draws on and every key in it has to be reachable (034).
+ * Every other key closes it, back to wherever it was opened from, as any key did before.
+ */
+function pressHelp(state: State, view: HelpView, key: string): Pressed {
+  if (key === "j") return helpScrollTo(state, view, view.scroll + 1);
+  if (key === "k") return helpScrollTo(state, view, view.scroll - 1);
+  return { state: { ...state, view: view.from } };
 }
 
 /**
@@ -380,7 +402,7 @@ export function press(state: State, key: string): Pressed {
       // The arrows are not `j` and `k` here: both letters are text.
       return pressChat(state, state.view, key);
     case "help":
-      // Any key closes the keys, back to wherever they were opened from.
-      return { state: { ...state, view: state.view.from } };
+      // The two that scroll the list; every other key closes it.
+      return pressHelp(state, state.view, moving(key));
   }
 }

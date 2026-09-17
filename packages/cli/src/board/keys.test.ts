@@ -12,9 +12,9 @@ import type {
   Member,
   OpenAttention,
 } from "@skelcrew/shared";
-import { cardLines, conversationLines } from "./frame";
+import { cardLines, clampScroll, conversationLines, frame, helpLines } from "./frame";
 import { type Pressed, press } from "./keys";
-import { apply, type State } from "./state";
+import { apply, type State, type View } from "./state";
 
 const ME = 1;
 const MEMBERS: Member[] = [{ id: ME, name: "simon", kind: "human", createdAt: 1 }];
@@ -160,21 +160,65 @@ test("Enter on a board with no rows does nothing", () => {
   expect(pressed.action).toBeUndefined();
 });
 
-test("? opens the keys and any key closes them again", () => {
+test("? opens the keys; j and k scroll them and every other key closes them", () => {
   const board = state();
   const help = press(board, "?").state;
-  expect(help.view).toEqual({ kind: "help", from: { kind: "board" } });
-  for (const key of ["?", "j", "x", "enter", "escape", "q"]) {
+  expect(help.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 0 });
+  for (const key of ["?", "x", "enter", "escape", "q"]) {
     const closed = press(help, key);
     expect(closed.state.view).toEqual({ kind: "board" });
     expect(closed.action).toBeUndefined();
   }
 
+  // `j`, `k` and the arrows move through the list rather than closing it: it does not fit on
+  // every terminal the screen draws on, and every key in it has to be reachable (034).
+  const down = press(help, "j");
+  expect(down.action).toBeUndefined();
+  expect(down.state.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 1 });
+  expect(press(help, "down").state.view).toEqual(down.state.view);
+  expect(press(down.state, "k").state.view).toMatchObject({ scroll: 0 });
+  expect(press(down.state, "up").state.view).toMatchObject({ scroll: 0 });
+  // At the top it stays there.
+  expect(press(help, "k").state.view).toEqual(help.view);
+
+  // As far as the list goes, and no further: the loop tightens this to the window, as it does
+  // for the card view and the chat.
+  let far = help;
+  for (let i = 0; i < 200; i += 1) far = press(far, "j").state;
+  expect(far.view).toMatchObject({ scroll: helpLines().length - 1 });
+
   // Opened from a card, it closes back to that card.
   const open = openCard(state({ cursor: 2 }));
   const fromCard = press(open, "?").state;
-  expect(fromCard.view).toEqual({ kind: "help", from: open.view });
-  expect(press(fromCard, "j").state.view).toEqual(open.view);
+  expect(fromCard.view).toEqual({ kind: "help", from: open.view, scroll: 0 });
+  expect(press(fromCard, "q").state.view).toEqual(open.view);
+});
+
+test("j scrolls the keys list until its last line is on a twelve-row screen", () => {
+  // Criterion 5's two halves together: the reducer scrolls, the loop tightens the scroll to the
+  // terminal, and the frame draws the window that is left.
+  const size = { columns: 100, rows: 12 };
+  const last = helpLines().at(-1) as string;
+  let current = clampScroll(press(state(), "?").state, size);
+  const lines = () => frame(current, size, NOW);
+  const shows = () => lines().some((line) => line.includes(last));
+  expect(shows()).toBe(false);
+
+  const scrolls: number[] = [];
+  for (let attempt = 0; attempt < 40 && !shows(); attempt += 1) {
+    current = clampScroll(press(current, "j").state, size);
+    scrolls.push((current.view as Extract<View, { kind: "help" }>).scroll);
+  }
+  // A line at a time, and the last key line is on the screen at the end of it.
+  expect(scrolls).toEqual(scrolls.map((_, index) => index + 1));
+  expect(shows()).toBe(true);
+
+  // And `k` scrolls back to the top, where the list opened.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    current = clampScroll(press(current, "k").state, size);
+  }
+  expect(lines()[0]).toContain("keys");
+  expect(shows()).toBe(false);
 });
 
 test("archiving the card the keys were opened from leaves the keys open over the board", () => {
@@ -185,6 +229,7 @@ test("archiving the card the keys were opened from leaves the keys open over the
   expect(help.view).toEqual({
     kind: "help",
     from: { kind: "card", cardId: 3, scroll: 0, text: "" },
+    scroll: 0,
   });
 
   const event: Activity = {
@@ -196,8 +241,8 @@ test("archiving the card the keys were opened from leaves the keys open over the
     createdAt: NOW,
   };
   const archived = apply(help, event);
-  expect(archived.view).toEqual({ kind: "help", from: { kind: "board" } });
-  expect(press(archived, "j").state.view).toEqual({ kind: "board" });
+  expect(archived.view).toEqual({ kind: "help", from: { kind: "board" }, scroll: 0 });
+  expect(press(archived, "q").state.view).toEqual({ kind: "board" });
 });
 
 test("q quits the board, ctrl-c quits from anywhere, and nothing else acts", () => {

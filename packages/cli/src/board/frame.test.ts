@@ -17,6 +17,7 @@ import {
   clampScroll,
   conversationLines,
   frame,
+  helpLines,
   hint,
   MIN_COLUMNS,
   MIN_ROWS,
@@ -290,7 +291,7 @@ test("the message is the bottom line, and the prompt takes it while one is open"
 });
 
 test("the keys screen names every key, including the ones that answer", () => {
-  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), {
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" }, scroll: 0 } }), {
     columns: 100,
     rows: 24,
   }).map(plain);
@@ -302,7 +303,10 @@ test("the keys screen names every key, including the ones that answer", () => {
 
 test("the keys screen says Enter opens the chat, and names the key that flips", () => {
   // 033's criterion 10.
-  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), SIZE).map(plain);
+  const shown = frame(
+    state({ view: { kind: "help", from: { kind: "board" }, scroll: 0 } }),
+    SIZE,
+  ).map(plain);
   const enter = shown.find((line) => line.trimStart().startsWith("enter"));
   expect(enter).toContain("chat");
   const tab = shown.find((line) => line.trimStart().startsWith("tab"));
@@ -324,7 +328,10 @@ test("the keys screen says Enter opens the chat, and names the key that flips", 
 test("the keys screen has a chat section, drawn on a 24-row screen", () => {
   // Every key above is the board's or the card's; in the chat a letter is text, and the
   // screen says what is left. It has to fit: these lines are the last of the list.
-  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), SIZE).map(plain);
+  const shown = frame(
+    state({ view: { kind: "help", from: { kind: "board" }, scroll: 0 } }),
+    SIZE,
+  ).map(plain);
   expect(shown.some((line) => line.includes("in the chat"))).toBe(true);
 
   const sending = shown.find((line) => line.trimStart().startsWith("enter, esc"));
@@ -342,7 +349,7 @@ test("the keys screen has a chat section, drawn on a 24-row screen", () => {
 });
 
 test("the keys screen names the arrows beside j and k", () => {
-  const shown = frame(state({ view: { kind: "help", from: { kind: "board" } } }), {
+  const shown = frame(state({ view: { kind: "help", from: { kind: "board" }, scroll: 0 } }), {
     columns: 100,
     rows: 24,
   }).map(plain);
@@ -355,7 +362,7 @@ test("the keys screen names the arrows beside j and k", () => {
 test("no frame writes a colour", () => {
   const views: State[] = [
     state(),
-    state({ view: { kind: "help", from: { kind: "board" } } }),
+    state({ view: { kind: "help", from: { kind: "board" }, scroll: 0 } }),
     state({ message: "lost the daemon" }),
     state({ prompt: { kind: "deny", cardId: 1, text: "not yet" } }),
     state({ view: { kind: "card", cardId: 1, scroll: 0, text: "" }, detail: detail() }),
@@ -767,7 +774,7 @@ test("the hint is the keys that do something where the cursor is, in that order"
 
   // The keys list says how to move through it and how to close it; the chat has no hint at all,
   // because its bottom line is the input and the line above it says who is listening (033).
-  expect(hint(state({ view: { kind: "help", from: { kind: "board" } } }))).toBe(
+  expect(hint(state({ view: { kind: "help", from: { kind: "board" }, scroll: 0 } }))).toBe(
     "j k scroll · q close",
   );
   expect(hint(state({ view: chat(3) }))).toBe("");
@@ -793,6 +800,45 @@ test("the bottom line teaches whenever it has nothing more important to show", (
   // And the card view's bottom line is the card's keys.
   const open = reading("code");
   expect(plain(frame(open, size, NOW)[size.rows - 1] as string)).toBe(hint(open));
+});
+
+test("the keys list scrolls, so no terminal the screen accepts hides a key", () => {
+  // The smallest terminal the screen draws on at all: the list is taller than it, and every
+  // key in it has to be reachable (032's carried finding).
+  const small = { columns: 100, rows: MIN_ROWS };
+  const keys = (scroll: number): State =>
+    state({ view: { kind: "help", from: { kind: "board" }, scroll } });
+  const shown = (scroll: number) => frame(keys(scroll), small, NOW).map(plain);
+
+  expect(helpLines().length).toBeGreaterThan(small.rows - 1);
+
+  // It opens at the top: the header, and the first of the keys.
+  const top = shown(0);
+  expect(top[0]).toBe("keys");
+  expect(top.some((line) => line.trimStart().startsWith("j, k"))).toBe(true);
+  expect(top.some((line) => line.trimStart().startsWith("allow, deny"))).toBe(false);
+  // The bottom line says how to move through the list and how to close it.
+  expect(top[small.rows - 1]).toBe("j k scroll · q close");
+
+  // Scrolled a line, the window moves a line: the header is gone and the first key line is.
+  expect(shown(1)[0]).toBe("");
+  expect(shown(2)[0]).toContain("j, k");
+
+  // As far as the list goes, and no further: its last line is on the screen, the window is
+  // full, and the frame is exactly as tall as the terminal.
+  const end = shown(500);
+  expect(end.some((line) => line.trimStart().startsWith("allow, deny"))).toBe(true);
+  expect(end[small.rows - 2]).not.toBe("");
+  expect(end.length).toBe(small.rows);
+
+  // And the scroll the state carries is brought inside the window, as the card view's is.
+  const clamped = clampScroll(keys(500), small);
+  expect(clamped.view).toEqual({
+    kind: "help",
+    from: { kind: "board" },
+    scroll: helpLines().length - (small.rows - 1),
+  });
+  expect(clampScroll(clamped, small)).toBe(clamped);
 });
 
 test("a hint too long for the terminal drops items from the end, and keeps ? keys", () => {

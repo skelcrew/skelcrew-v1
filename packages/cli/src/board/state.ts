@@ -33,7 +33,8 @@ export type View =
    */
   | { kind: "card"; cardId: number; scroll: number; text: string }
   | { kind: "chat"; cardId: number; scroll: number; text: string }
-  | { kind: "help"; from: View };
+  /** The keys, over the view they were opened from, scrolled by lines from the top of the list. */
+  | { kind: "help"; from: View; scroll: number };
 
 /**
  * The one-line message being typed, what it is for, and the card it will be sent on. It is a
@@ -163,7 +164,7 @@ function withRequest(state: State, cardId: number, request?: OpenAttention): Ope
 
 /** The same view with the card underneath it gone: the keys stay up, over the board. */
 function closed(view: View): View {
-  return view.kind === "help" ? { kind: "help", from: { kind: "board" } } : { kind: "board" };
+  return view.kind === "help" ? { ...view, from: { kind: "board" } } : { kind: "board" };
 }
 
 /** A cursor that outlived its row sits on the last one. */

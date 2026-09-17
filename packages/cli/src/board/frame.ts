@@ -359,6 +359,10 @@ export function clampScroll(state: State, size: Size, now = Date.now()): State {
     const scroll = chatScrollWithin(state, view, size, now);
     return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
   }
+  if (view.kind === "help") {
+    const scroll = helpScrollWithin(size, view.scroll);
+    return scroll === view.scroll ? state : { ...state, view: { ...view, scroll } };
+  }
   return state;
 }
 
@@ -554,8 +558,32 @@ const KEYS = [
   "  allow, deny  on a line of their own, answer the open question",
 ];
 
-function helpFrame(state: State, size: Size): string[] {
-  const lines = [dim("keys"), "", ...KEYS.map((line) => fit(line, size.columns))];
+/**
+ * The keys screen, line by line: a dim header, a blank, and the keys. Exported because the
+ * reducer scrolls through them and knows how many there are, the way it knows the card's lines.
+ */
+export function helpLines(): string[] {
+  return ["keys", "", ...KEYS];
+}
+
+/** The scroll the keys screen draws at: down as far as its last line reaching the bottom. */
+function helpScrollWithin(size: Size, scroll: number): number {
+  return Math.min(Math.max(0, scroll), Math.max(0, helpLines().length - (size.rows - 1)));
+}
+
+/**
+ * The keys, from the line the scroll starts at. The list is taller than the shortest terminal
+ * the screen draws on, so it scrolls a line at a time rather than being cut: no key the screen
+ * has is out of reach on a terminal it accepts (032's carried finding).
+ */
+function helpFrame(state: State, view: View & { kind: "help" }, size: Size): string[] {
+  const start = helpScrollWithin(size, view.scroll);
+  const lines = helpLines()
+    .slice(start)
+    .map((line, index) =>
+      // The header is the one dim line; it is above the list, so only the top of it has one.
+      start + index === 0 ? dim(fit(line, size.columns)) : fit(line, size.columns),
+    );
   return screenful(lines, -1, size, bottomLine(state, size));
 }
 
@@ -573,6 +601,6 @@ export function frame(state: State, size: Size, now = Date.now()): string[] {
     case "chat":
       return chatFrame(state, state.view, size, now);
     case "help":
-      return helpFrame(state, size);
+      return helpFrame(state, state.view, size);
   }
 }
