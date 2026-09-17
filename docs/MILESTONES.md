@@ -43,7 +43,7 @@ table**. A later-numbered entry can come earlier in the sequence when it was car
 | 27 | 030 The screen starts the daemon | specified |
 | 28 | 031 The arrow keys move the cursor | specified |
 | 29 | 032 A card is added, started and archived from the screen | specified; the milestone's first slice, editing and the feed view follow |
-| 30 | 033 Talking to the crew on a card | planned; after 032 |
+| 30 | 033 Talking to the crew on a card | specified; after 032; no daemon change, the card's record already carries the conversation |
 | | 005 | dropped |
 
 ## Background
