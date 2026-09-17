@@ -533,6 +533,30 @@ test("the screen's sentence stays behind on the board, and does not outlast a ke
   }
 });
 
+// --- 034: a sentence shows once ---
+
+test("a sentence does not outlast the key after it, wherever it was said", () => {
+  // The line is the screen's one sentence and then goes back to teaching: a message set by `s`
+  // on a card in Done would otherwise sit there through `j`, `k` and Enter (034).
+  const done = asking({ phase: "done" }, null);
+  const said = press(done, "s").state;
+  expect(said.message).toContain("is done");
+
+  for (const key of ["j", "k", "g", "G", "z", "enter", "?", "escape"]) {
+    expect(press(said, key).state.message).toBe("");
+  }
+
+  // A key with a sentence of its own still says it in the same press: the clearing is what
+  // came before, not what this key does.
+  expect(press(said, "a").state.message).toContain("no open question");
+  // And in the card view, which has the same keys on the same card.
+  const open = openCard(done);
+  expect(press({ ...open, message: "#7 is done" }, "j").state.message).toBe("");
+  expect(press({ ...open, message: "#7 is done" }, "a").state.message).toContain(
+    "no open question",
+  );
+});
+
 test("in the chat every printable key is text, and Enter sends the line as a comment", () => {
   const chat = openChat(asking());
   expect(chat.view).toEqual({ kind: "chat", cardId: 7, scroll: 0, text: "" });

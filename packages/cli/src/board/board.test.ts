@@ -1209,6 +1209,37 @@ test("a pasted Esc in the chat acts on nothing after it either", async () => {
   await running;
 });
 
+// --- 034: the keys that apply are on the screen ---
+
+/** The frame's last row: the prompt, the sentence, or the hint. */
+function bottom(terminal: FakeTerminal): string {
+  return (terminal.frames().at(-1) ?? "").split("\r\n").at(-1) ?? "";
+}
+
+test("the bottom line teaches, says the sentence once, and then teaches again", async () => {
+  // One card, in Done, with no open question: `s` there says why the card stays where it is.
+  const fake = fakeClient([card(1, "done and dusted", { phase: "done" })]);
+  const terminal = fakeTerminal();
+  const { running } = await started(fake, terminal);
+
+  // The screen teaches from the first frame: the keys that do something on the selected row.
+  expect(bottom(terminal)).toContain("enter open");
+  expect(bottom(terminal)).toContain("? keys");
+
+  terminal.type("s");
+  await until("the sentence", () => bottom(terminal).includes("is done"));
+  expect(bottom(terminal)).not.toContain("? keys");
+
+  // The next key takes the line back to the hint: a sentence is shown on the frame after the
+  // key that set it and on no later one.
+  terminal.type("j");
+  await until("the hint again", () => bottom(terminal).includes("? keys"));
+  expect(bottom(terminal)).not.toContain("is done");
+
+  terminal.type("q");
+  await running;
+});
+
 // --- 032: filing a card, and archiving one, through the loop ---
 
 /** The `card_created` event the daemon records when a card is filed (`core.ts`). */
