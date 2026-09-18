@@ -1,7 +1,7 @@
 # skelcrew
 
-A crew of coding agents that builds your ideas through fixed phases, on your own machine, while
-you hold the gates.
+Where a solo founder runs a crew of coding agents, from any harness, on their own machine,
+through gates they hold.
 
 You write an idea as a card. An agent turns it into a spec. You approve it. An agent implements
 it, a second agent reviews it, up to three rounds, and the card stops at a pull request. You
